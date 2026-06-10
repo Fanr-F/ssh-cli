@@ -58,4 +58,41 @@
 - Each buffer line becomes a Text() component inside a Box(flexDirection: 'column')
 - getVisibleLines() returns string[] for testing
 - OpenTUI VNode factories (Box, Text, ScrollBox) are imported from @opentui/core
-- Verification: bun test with equire()-style import passes (plain text + colored cells)
+- Verification: bun test with 
+equire()-style import passes (plain text + colored cells)
+
+## Terminal Panel UI (Task 13)
+- Created `src/ui/terminal-panel.ts` with `createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI`
+- `TerminalPanelAPI` interface has: component, setTerminalRenderer, focus, showIdle/Connecting/Connected/Error/Disconnected, onKeyInput
+- State management via visibility toggling on overlay Box children (showOnly pattern)
+- `stringToStyledText()` needed for dynamic Text content through ProxiedVNode (TS type quirk)
+- onKeyDown in Box factory options captures keyboard input; forwards key.sequence to callback
+- Container uses `flexGrow: 1`, `backgroundColor: '#0d1117'` (dark terminal theme)
+- State overlays use `flexDirection: 'column', justifyContent: 'center', alignItems: 'center'` for centering
+- Color palette: gray #8B949E (idle), yellow #E3B341 (connecting/disconnected), red #F14C4C (error)
+- Evidence files created at `.sisyphus/evidence/task-13-panel-states.txt` and `task-13-keyboard.txt`
+
+## Sidebar UI (Task 11)
+- Created \src/ui/sidebar.ts\ with \createSidebar(renderer, connections): BoxVNode & SidebarAPI\
+- \Box()\ and \Text()\ factory functions return \ProxiedVNode\ (VNode data object with proxied methods)
+- Proxy pattern: calls to \dd()\/\emove()\ queue as \__pendingCalls\ before instantiation, delegate to actual Renderable after
+- \Object.assign(vnode, api)\ merges custom control methods onto the VNode for the composite component pattern
+- \ebuild()\ pattern: sets \node.children = []\ (for before-instantiation) then \node.add(newChild)\ (queues pending or delegates)
+- Connection items use Box(\{flexDirection:'column'\}) with two Text children (name line + host subtitle)
+- Selected item background: \ackgroundColor: '#334455'\ on the item Box (fills entire row)
+- Status indicator: ● (\#4ade80\ green, if \lastConnectedAt\ set) or ○ (\#565f89\ gray)
+- Theme colors: bg #1a1b26, border #3b4261, title #7aa2f7, text selected #c0caf5, text normal #a9b1d6, dim #565f89
+- Navigation stops at boundaries (no wrapping): selectNext stops at last, selectPrevious stops at first
+- Selection resets to index 0 on \setConnections()\, null on empty list
+
+## Connection Form UI (Task 12)
+- Created `src/ui/connection-form.ts` with `createConnectionForm(renderer, existing?): FormAPI`
+- Direct construction: `new BoxRenderable(ctx, props)` and `new TextRenderable(ctx, props)` — use `renderer as RenderContext` for the ctx parameter
+- Box and Text from factory functions return VNodes (ProxiedVNode), NOT actual instances
+- Import `BoxRenderable` and `TextRenderable` classes directly for constructor usage
+- KeyEvent type and `onKeyDown` callback available from `@opentui/core` — uses `key.option` (not `key.alt`)
+- OpenTUI only accepts hex colors (`#rrggbb` or `#rrggbbaa`), NOT CSS rgba() strings
+- `#000000b3` = black at ~70% opacity
+- Test via `createTestRenderer` from `@opentui/core/testing` for headless verification
+- `borderColor` setter on BoxRenderable updates live; `visible` setter shows/hides
+- Form manages state internally, rebuild is not needed — direct property updates work

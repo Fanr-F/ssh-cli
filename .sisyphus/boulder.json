@@ -11,7 +11,11 @@
     "ses_150aaef63ffefHxIJ08I7S7uL0",
     "ses_150aac927ffeByphT5cIH0DeWV",
     "ses_150aa8ca6ffexYd6MlHQS9vK3R",
-    "ses_150aa65adffekNJS2FzgirF7ft"
+    "ses_150aa65adffekNJS2FzgirF7ft",
+    "ses_150a123f9ffeu8lPqov58EypXo",
+    "ses_150a10d8affee5Ux6Rj9jHb4h4",
+    "ses_150a0f924ffeQpUiWVfzeDeFlR",
+    "ses_150a0e8b4ffeJi4J33sih79Tpr"
   ],
   "session_origins": {
     "ses_150ca6666ffezkCF1qT4PUe50g": "direct",
@@ -23,7 +27,11 @@
     "ses_150aaef63ffefHxIJ08I7S7uL0": "appended",
     "ses_150aac927ffeByphT5cIH0DeWV": "appended",
     "ses_150aa8ca6ffexYd6MlHQS9vK3R": "appended",
-    "ses_150aa65adffekNJS2FzgirF7ft": "appended"
+    "ses_150aa65adffekNJS2FzgirF7ft": "appended",
+    "ses_150a123f9ffeu8lPqov58EypXo": "appended",
+    "ses_150a10d8affee5Ux6Rj9jHb4h4": "appended",
+    "ses_150a0f924ffeQpUiWVfzeDeFlR": "appended",
+    "ses_150a0e8b4ffeJi4J33sih79Tpr": "appended"
   },
   "plan_name": "opentui-ssh-client",
   "agent": "atlas",
@@ -63,6 +71,15 @@
       "agent": "Sisyphus-Junior",
       "category": "quick",
       "updated_at": "2026-06-10T02:29:18.368Z"
+    },
+    "todo:11": {
+      "task_key": "todo:11",
+      "task_label": "11",
+      "task_title": "Sidebar (Connection List UI)",
+      "session_id": "ses_150a10d8affee5Ux6Rj9jHb4h4",
+      "agent": "Sisyphus-Junior",
+      "category": "visual-engineering",
+      "updated_at": "2026-06-10T02:42:33.604Z"
     }
   }
 }
