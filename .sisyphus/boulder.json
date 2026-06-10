@@ -1,0 +1,23 @@
+{
+  "active_plan": "D:\\Code\\ssh-cli\\.sisyphus\\plans\\opentui-ssh-client.md",
+  "started_at": "2026-06-10T02:14:15.799Z",
+  "session_ids": [
+    "ses_150ca6666ffezkCF1qT4PUe50g"
+  ],
+  "session_origins": {
+    "ses_150ca6666ffezkCF1qT4PUe50g": "direct"
+  },
+  "plan_name": "opentui-ssh-client",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Project Scaffolding + Dependency Installation",
+      "session_id": "ses_150b0651cffeJR4F76kmGL0xyk",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-06-10T02:16:21.587Z"
+    }
+  }
+}
