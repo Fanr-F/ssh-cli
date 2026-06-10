@@ -17,6 +17,9 @@ export interface TerminalPanelAPI {
   /** Attach a TerminalRenderer to use when the connected state is active. */
   setTerminalRenderer(renderer: TerminalRenderer): void;
 
+  /** Replace the connected-state content with the given Box tree. */
+  setTerminalContent(node: ReturnType<typeof Box>): void;
+
   /** Give keyboard focus to this panel. */
   focus(): void;
 
@@ -130,12 +133,26 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     renderer.requestRender();
   }
 
+  // ── Terminal content child tracking ──────────────────────────────────
+  /** The id of the Box child that holds the current terminal renderer output. */
+  let terminalContentId: string | null = null;
+
   // ── Public API ────────────────────────────────────────────────────────
   return {
     component: container,
 
     setTerminalRenderer(r: TerminalRenderer): void {
       terminalRenderer = r;
+    },
+
+    setTerminalContent(node: ReturnType<typeof Box>): void {
+      // Remove previous terminal content if any
+      if (terminalContentId) {
+        try { (connectedBox as any).remove(terminalContentId); } catch {}
+      }
+      connectedBox.add(node);
+      terminalContentId = (node as any).id ?? null;
+      renderer.requestRender();
     },
 
     focus(): void {
