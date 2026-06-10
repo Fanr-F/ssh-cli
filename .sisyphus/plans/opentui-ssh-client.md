@@ -268,7 +268,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 2. Type Definitions
+- [x] 2. Type Definitions
 
   **What to do**:
   - Create `src/types/connection.ts` with:
@@ -375,7 +375,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 3. Screen Buffer Core (2D Cell Grid + Cursor + Scrollback)
+- [x] 3. Screen Buffer Core (2D Cell Grid + Cursor + Scrollback)
 
   **What to do**:
   - Implement `src/terminal/cell.ts`:
@@ -485,7 +485,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 4. Encryption Module (AES-256-GCM)
+- [x] 4. Encryption Module (AES-256-GCM)
 
   **What to do**:
   - Implement `src/storage/encryption.ts`:
@@ -567,7 +567,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 5. Config Storage Paths + Initialization
+- [x] 5. Config Storage Paths + Initialization
 
   **What to do**:
   - Implement `src/storage/config.ts`:
@@ -639,7 +639,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 6. ANSI Processor (@ansi-tools/parser → Screen Buffer)
+- [x] 6. ANSI Processor (@ansi-tools/parser → Screen Buffer)
 
   **What to do**:
   - Implement `src/terminal/ansi-processor.ts` that bridges `@ansi-tools/parser` with the screen buffer:
@@ -757,7 +757,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 7. SSH Connection Module (ssh2 Wrapper)
+- [x] 7. SSH Connection Module (ssh2 Wrapper)
 
   **What to do**:
   - Implement `src/ssh/connection.ts`:
@@ -841,7 +841,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 8. Auth Module (Key + Password)
+- [x] 8. Auth Module (Key + Password)
 
   **What to do**:
   - Implement `src/ssh/auth.ts`:
@@ -924,7 +924,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 9. Terminal Renderer (Screen Buffer → OpenTUI Components)
+- [x] 9. Terminal Renderer (Screen Buffer → OpenTUI Components)
 
   **What to do**:
   - Implement `src/terminal/terminal-renderer.ts`:
@@ -1007,7 +1007,7 @@ Wave FINAL (After ALL tasks — 4 parallel reviews):
 
 ---
 
-- [ ] 10. Connections CRUD with Encrypted Storage
+- [x] 10. Connections CRUD with Encrypted Storage
 
   **What to do**:
   - Implement `src/storage/connections.ts`:
