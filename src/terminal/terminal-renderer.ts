@@ -145,9 +145,6 @@ export class TerminalRenderer {
         content: seg.text,
         fg: seg.fg ?? '#CCCCCC',
         bg: seg.bg,
-        bold: seg.bold ?? false,
-        italic: seg.italic ?? false,
-        underline: seg.underline ?? false,
       }),
     );
 

@@ -47,7 +47,8 @@ export function buildConnectConfig(connection: ConnectionConfig): SshConnectConf
         if (parsedKey instanceof Error) {
           console.warn(`Warning: Failed to parse key at ${resolvedPath}: ${parsedKey.message}`);
         } else {
-          config.privateKey = parsedKey;
+          // parseKey returns ParsedKey which ssh2 accepts at runtime
+          (config as any).privateKey = parsedKey;
         }
       } catch (err) {
         console.warn(`Warning: Could not read key at ${keyPath}`);
