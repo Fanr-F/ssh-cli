@@ -1,12 +1,9 @@
-import { createCliRenderer, Text } from "@opentui/core";
+import { createCliRenderer } from '@opentui/core';
+import { App } from './app';
 
 const renderer = await createCliRenderer({
-  exitOnCtrlC: true,
+  exitOnCtrlC: false,
 });
 
-renderer.root.add(
-  Text({
-    content: "Hello, OpenTUI!",
-    fg: "#00FF00",
-  })
-);
+const app = new App(renderer);
+await app.init();

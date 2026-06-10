@@ -179,6 +179,12 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     return this._state === SshConnectionState.Connected;
   }
 
+  writeToShell(data: string): void {
+    if (this.shellChannel) {
+      this.shellChannel.write(data);
+    }
+  }
+
   private cleanup(): void {
     this.shellChannel = null;
     this.setState(SshConnectionState.Disconnected);
