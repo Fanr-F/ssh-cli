@@ -326,7 +326,7 @@ export class ScreenBuffer {
           this.currentAttrs.reverse = false;
           break;
 
-        // Foreground colors
+        // Foreground colors (normalize 30-37 → 0-7)
         case 30: case 31: case 32: case 33:
         case 34: case 35: case 36: case 37:
           this.currentAttrs.fg = p - 30;
@@ -348,7 +348,7 @@ export class ScreenBuffer {
           this.currentAttrs.fg = null;
           break;
 
-        // Background colors
+        // Background colors (normalize 40-47 → 0-7)
         case 40: case 41: case 42: case 43:
         case 44: case 45: case 46: case 47:
           this.currentAttrs.bg = p - 40;
@@ -372,13 +372,13 @@ export class ScreenBuffer {
         // Bright foreground (90-97 → 8-15)
         case 90: case 91: case 92: case 93:
         case 94: case 95: case 96: case 97:
-          this.currentAttrs.fg = p - 90 + 8;
+          this.currentAttrs.fg = p - 82;
           break;
 
         // Bright background (100-107 → 8-15)
         case 100: case 101: case 102: case 103:
         case 104: case 105: case 106: case 107:
-          this.currentAttrs.bg = p - 100 + 8;
+          this.currentAttrs.bg = p - 92;
           break;
       }
 
