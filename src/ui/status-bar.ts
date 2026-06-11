@@ -33,6 +33,7 @@ export function createStatusBar(renderer: CliRenderer): StatusBarAPI {
 
   const statusBar = Box(
     {
+      id: 'status-bar',
       position: 'absolute',
       bottom: 0,
       width: '100%',
@@ -50,28 +51,50 @@ export function createStatusBar(renderer: CliRenderer): StatusBarAPI {
 
   renderer.root.add(statusBar);
 
-  // Cast to access properties directly
-  const st = statusText as unknown as { content: string; fg: string };
-  const ht = hintsText as unknown as { content: string };
+  // Box() returns a Proxy — property sets on it go nowhere after instantiation.
+  // Resolve the real Text renderables via the parent's getChildren().
+  let _resolvedStatusText: any = null;
+  let _resolvedHintsText: any = null;
+  function getStatusText(): any {
+    if (!_resolvedStatusText) {
+      const bar = renderer.root.findDescendantById('status-bar');
+      if (bar) {
+        const children = bar.getChildren();
+        if (children.length > 0) _resolvedStatusText = children[0];
+      }
+    }
+    return _resolvedStatusText;
+  }
+  function getHintsText(): any {
+    if (!_resolvedHintsText) {
+      const bar = renderer.root.findDescendantById('status-bar');
+      if (bar) {
+        const children = bar.getChildren();
+        if (children.length > 1) _resolvedHintsText = children[1];
+      }
+    }
+    return _resolvedHintsText;
+  }
 
   return {
     setStatus(text: string): void {
-      st.content = text;
-      st.fg = C.text;
+      const st = getStatusText();
+      if (st) { st.content = text; st.fg = C.text; }
     },
 
     setConnected(host: string): void {
-      st.content = `Connected to ${host}`;
-      st.fg = C.green;
+      const st = getStatusText();
+      if (st) { st.content = `Connected to ${host}`; st.fg = C.green; }
     },
 
     setDisconnected(): void {
-      st.content = 'Disconnected';
-      st.fg = C.textDim;
+      const st = getStatusText();
+      if (st) { st.content = 'Disconnected'; st.fg = C.textDim; }
     },
 
     setKeybindings(hints: string[]): void {
-      ht.content = hints.join('  ');
+      const ht = getHintsText();
+      if (ht) ht.content = hints.join('  ');
     },
   };
 }

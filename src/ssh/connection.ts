@@ -2,6 +2,7 @@ import { Client, ClientChannel, ConnectConfig } from 'ssh2-no-cpu-features';
 import { EventEmitter } from 'node:events';
 import { ShellOptions, SshConnectionState, AuthenticationError, ConnectionTimeoutError, HostKeyError } from './types';
 import { ConnectionConfig } from '../types/connection';
+import { buildConnectConfig } from './auth';
 
 interface SshConnectionEvents {
   ready: [];
@@ -61,32 +62,31 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
 
       this.setState(SshConnectionState.Connecting);
 
-      const connectConfig: ConnectConfig = {
-        host: config.host,
-        port: config.port,
-        username: config.username,
-        readyTimeout: 10000,
-        hostHash: 'sha256',
-        // Use explicit algorithms to avoid native dep compatibility issues
-        algorithms: {
-          kex: [
-            'curve25519-sha256',
-            'diffie-hellman-group14-sha256',
-            'diffie-hellman-group-exchange-sha256',
-          ],
-          serverHostKey: [
-            'ssh-ed25519',
-            'rsa-sha2-512',
-            'rsa-sha2-256',
-            'ssh-rsa',
-          ],
-        },
+      // Build config using auth.ts (handles both key and password auth)
+      const connectConfig = buildConnectConfig(config) as ConnectConfig;
+
+      // Use explicit algorithms to avoid native dep compatibility issues
+      connectConfig.algorithms = {
+        kex: [
+          'curve25519-sha256',
+          'diffie-hellman-group14-sha256',
+          'diffie-hellman-group-exchange-sha256',
+        ],
+        serverHostKey: [
+          'ssh-ed25519',
+          'rsa-sha2-512',
+          'rsa-sha2-256',
+          'ssh-rsa',
+        ],
       };
 
-      // Auth handling
-      if (config.authType === 'password' && config.password) {
-        connectConfig.password = config.password;
-      }
+      // Host key verification (auto-accept for MVP with logging)
+      connectConfig.hostVerifier = (key: Buffer) => {
+        // In MVP, accept all host keys
+        // Log the key fingerprint for potential future use
+        // In production, you'd want to cache and verify
+        return true;
+      };
 
       // Handle errors during connection
       const onError = (err: Error) => {
@@ -103,14 +103,6 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
       };
 
       this.client.once('error', onError);
-
-      // Host key verification (auto-accept for MVP with logging)
-      connectConfig.hostVerifier = (key: Buffer) => {
-        // In MVP, accept all host keys
-        // Log the key fingerprint for potential future use
-        // In production, you'd want to cache and verify
-        return true;
-      };
 
       this.client.once('ready', () => {
         this.client.removeListener('error', onError);

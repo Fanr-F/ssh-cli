@@ -44,6 +44,9 @@ export interface TerminalPanelAPI {
    * forward keystrokes to the SSH channel.
    */
   onKeyInput(callback: (key: string) => void): void;
+
+  /** Set the focusable state on the real renderable (Proxy-safe). */
+  setFocusable(value: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +80,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     height: '100%' as const,
   };
 
-  // ── State containers ──────────────────────────────────────────────────
+  // ── State containers (VNode proxies — used only at construction) ──────
 
   // 1. Idle
   const idleBox = Box(
@@ -91,6 +94,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
 
   // 3. Connected – empty terminal area
   const connectedBox = Box({
+    id: 'terminal-connected',
     width: '100%',
     height: '100%',
   });
@@ -108,6 +112,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   // ── Root container ────────────────────────────────────────────────────
   const container = Box(
     {
+      id: 'terminal-panel',
       flexGrow: 1,
       backgroundColor: C.bg,
       onKeyDown: (key: KeyEvent) => {
@@ -124,25 +129,58 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     disconnectedBox,
   );
 
-  // Only idle is visible initially.
-  idleBox.visible = true;
-  connectingBox.visible = false;
-  connectedBox.visible = false;
-  errorBox.visible = false;
-  disconnectedBox.visible = false;
+  // ── Resolve real renderable instances after mounting ──────────────────
+  // Box() returns a Proxy. After instantiation, property sets (visible,
+  // content) and method calls (add, remove, focus) on the Proxy go nowhere.
+  // We resolve the real renderable instances once the tree is mounted.
+
+  interface ResolvedInstances {
+    container: any;
+    idle: any;
+    connecting: any;
+    connected: any;
+    error: any;
+    disconnected: any;
+  }
+  let resolved: ResolvedInstances | null = null;
+
+  function resolve(): ResolvedInstances | null {
+    if (resolved) return resolved;
+    const c = renderer.root.findDescendantById('terminal-panel');
+    if (!c) return null;
+    const children = c.getChildren();
+    // Children are in the order they were added: idle, connecting, connected, error, disconnected
+    if (children.length < 5) return null;
+    resolved = {
+      container: c,
+      idle: children[0],
+      connecting: children[1],
+      connected: children[2],
+      error: children[3],
+      disconnected: children[4],
+    };
+    // Set initial visibility — only idle is visible
+    resolved.idle.visible = true;
+    resolved.connecting.visible = false;
+    resolved.connected.visible = false;
+    resolved.error.visible = false;
+    resolved.disconnected.visible = false;
+    return resolved;
+  }
 
   // ── Helper: show exactly one overlay ──────────────────────────────────
-  function showOnly(box: typeof idleBox): void {
-    idleBox.visible = box === idleBox;
-    connectingBox.visible = box === connectingBox;
-    connectedBox.visible = box === connectedBox;
-    errorBox.visible = box === errorBox;
-    disconnectedBox.visible = box === disconnectedBox;
+  function showOnly(target: any): void {
+    const r = resolve();
+    if (!r) return;
+    r.idle.visible = target === r.idle;
+    r.connecting.visible = target === r.connecting;
+    r.connected.visible = target === r.connected;
+    r.error.visible = target === r.error;
+    r.disconnected.visible = target === r.disconnected;
     renderer.requestRender();
   }
 
   // ── Terminal content child tracking ──────────────────────────────────
-  /** The id of the Box child that holds the current terminal renderer output. */
   let terminalContentId: string | null = null;
 
   // ── Public API ────────────────────────────────────────────────────────
@@ -154,46 +192,66 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     },
 
     setTerminalContent(node: ReturnType<typeof Box>): void {
+      const r = resolve();
+      if (!r) return;
       // Remove previous terminal content if any
       if (terminalContentId) {
-        try { connectedBox.remove(terminalContentId); } catch (err) {
-          // Child may not exist in tree yet
-        }
+        r.connected.remove(terminalContentId);
       }
-      connectedBox.add(node);
+      r.connected.add(node);
       terminalContentId = node.id ?? null;
       renderer.requestRender();
     },
 
     focus(): void {
-      container.focus();
+      const r = resolve();
+      if (r) r.container.focus();
       renderer.requestRender();
     },
 
     showIdle(): void {
-      showOnly(idleBox);
+      const r = resolve();
+      if (r) showOnly(r.idle);
     },
 
     showConnecting(host: string): void {
-      connectingText.content = stringToStyledText(`Connecting to ${host}\u2026`);
-      showOnly(connectingBox);
+      const r = resolve();
+      if (!r) return;
+      // Update the connecting text on the real renderable
+      const textChildren = r.connecting.getChildren();
+      if (textChildren.length > 0) {
+        textChildren[0].content = stringToStyledText(`Connecting to ${host}\u2026`);
+      }
+      showOnly(r.connecting);
     },
 
     showConnected(_host: string): void {
-      showOnly(connectedBox);
+      const r = resolve();
+      if (r) showOnly(r.connected);
     },
 
     showError(message: string): void {
-      errorText.content = stringToStyledText(message);
-      showOnly(errorBox);
+      const r = resolve();
+      if (!r) return;
+      const textChildren = r.error.getChildren();
+      if (textChildren.length > 0) {
+        textChildren[0].content = stringToStyledText(message);
+      }
+      showOnly(r.error);
     },
 
     showDisconnected(): void {
-      showOnly(disconnectedBox);
+      const r = resolve();
+      if (r) showOnly(r.disconnected);
     },
 
     onKeyInput(callback: (key: string) => void): void {
       keyCallback = callback;
+    },
+
+    setFocusable(value: boolean): void {
+      const r = resolve();
+      if (r) r.container.focusable = value;
     },
   };
 }

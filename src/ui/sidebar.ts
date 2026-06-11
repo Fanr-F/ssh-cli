@@ -1,4 +1,4 @@
-import { Box, Text } from '@opentui/core';
+import { Box, Text, ScrollBox } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import type { ConnectionConfig } from '../types/connection';
 
@@ -20,6 +20,12 @@ export interface SidebarAPI {
    * connection (e.g. 'connect', 'edit', 'delete').
    */
   onAction(callback: (action: string, conn: ConnectionConfig) => void): void;
+  /** Set the focusable state on the real renderable (Proxy-safe). */
+  setFocusable(value: boolean): void;
+  /** Set the sidebar width (triggers re-render). */
+  setWidth(value: number): void;
+  /** Get the current sidebar width. */
+  getWidth(): number;
 }
 
 // ── Colour tokens (Tokyo Night) ────────────────────────────────────────────
@@ -41,7 +47,7 @@ const DOT_DISCONNECTED = '#414868';
 export function createSidebar(
   renderer: CliRenderer,
   connections: ConnectionConfig[] = [],
-): ReturnType<typeof Box> & SidebarAPI {
+): ReturnType<typeof ScrollBox> & SidebarAPI {
   // ── Internal state ──────────────────────────────────────────────────────
 
   let items: ConnectionConfig[] = [...connections];
@@ -159,11 +165,10 @@ export function createSidebar(
 
   // ── Build the sidebar Box VNode ─────────────────────────────────────────
 
-  const sidebarBox = Box(
+  const sidebarBox = ScrollBox(
     {
       id: 'sidebar',
       width: 30,
-      flexGrow: 1,
       backgroundColor: BG_SIDEBAR,
       borderStyle: 'rounded',
       borderColor: BORDER,
@@ -171,6 +176,10 @@ export function createSidebar(
       titleColor: TITLE,
       flexDirection: 'column',
       padding: 0,
+      scrollY: true,
+      scrollX: false,
+      stickyScroll: false,
+      contentOptions: { flexDirection: 'column' },
     },
     ...buildChildren(),
   );
@@ -222,6 +231,21 @@ export function createSidebar(
 
     onAction(callback: (action: string, conn: ConnectionConfig) => void): void {
       onActionCb = callback;
+    },
+
+    setFocusable(value: boolean): void {
+      const instance = getInstance();
+      if (instance) instance.focusable = value;
+    },
+
+    setWidth(value: number): void {
+      const instance = getInstance();
+      if (instance) instance.width = value;
+    },
+
+    getWidth(): number {
+      const instance = getInstance();
+      return instance?.width ?? 30;
     },
   };
 

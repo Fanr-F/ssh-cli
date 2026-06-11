@@ -1,4 +1,4 @@
-import { Box } from '@opentui/core';
+import { Box, ScrollBox } from '@opentui/core';
 import type { CliRenderer, KeyEvent, PasteEvent } from '@opentui/core';
 import type { ConnectionConfig } from './types/connection';
 import { ConnectionStore } from './storage/connections';
@@ -7,6 +7,7 @@ import { createConnectionForm } from './ui/connection-form';
 import { createTerminalPanel, type TerminalPanelAPI } from './ui/terminal-panel';
 import { createStatusBar, type StatusBarAPI } from './ui/status-bar';
 import { createToolbar } from './ui/toolbar';
+import { createDivider } from './ui/divider';
 import { ScreenBuffer } from './terminal/screen-buffer';
 import { AnsiProcessor } from './terminal/ansi-processor';
 import { TerminalRenderer } from './terminal/terminal-renderer';
@@ -15,12 +16,41 @@ import { copyToClipboard, pasteFromClipboard } from './clipboard';
 
 type FocusZone = 'sidebar' | 'terminal' | 'form';
 
+/** Create a minimal KeyEvent-like object for injecting characters into forms. */
+function createFakeKeyEvent(ch: string) {
+  let defaultPrevented = false;
+  let propagationStopped = false;
+  return {
+    name: ch,
+    ctrl: false,
+    meta: false,
+    shift: false,
+    sequence: ch,
+    raw: ch,
+    option: false,
+    super: false,
+    hyper: false,
+    capsLock: false,
+    numLock: false,
+    baseCode: 0,
+    repeated: false,
+    code: '',
+    eventType: 'press' as const,
+    source: 'raw' as const,
+    number: false,
+    get defaultPrevented() { return defaultPrevented; },
+    get propagationStopped() { return propagationStopped; },
+    preventDefault() { defaultPrevented = true; },
+    stopPropagation() { propagationStopped = true; },
+  };
+}
+
 export class App {
   private renderer: CliRenderer;
   private store!: ConnectionStore;
   private mainContainer!: ReturnType<typeof Box>;
   private toolbar!: ReturnType<typeof Box>;
-  private sidebar!: ReturnType<typeof Box> & SidebarAPI;
+  private sidebar!: ReturnType<typeof ScrollBox> & SidebarAPI;
   private terminalPanel!: TerminalPanelAPI;
   private statusBar!: StatusBarAPI;
   private form: any = null;
@@ -75,13 +105,20 @@ export class App {
     this.statusBar = createStatusBar(this.renderer);
     this.statusBar.setKeybindings(['Ctrl+Q: Quit', 'Ctrl+Tab: Focus', 'Enter: Connect', 'A: Add', 'E: Edit', 'Del: Delete']);
 
-    // Main content: toolbar + sidebar + terminal stacked vertically
+    // Draggable divider between sidebar and terminal
+    const divider = createDivider(
+      this.renderer,
+      (newWidth) => { this.sidebar.setWidth(newWidth); },
+      () => { return this.sidebar.getWidth(); },
+    );
+
+    // Main content: toolbar + sidebar + divider + terminal stacked vertically
     this.mainContainer = Box(
       { flexDirection: 'column', width: '100%', height: '100%' },
       this.toolbar,
       Box(
         { flexDirection: 'row', width: '100%', height: '100%' },
-        this.sidebar, this.terminalPanel.component,
+        this.sidebar, divider, this.terminalPanel.component,
       ),
     );
     this.renderer.root.add(this.mainContainer);
@@ -141,17 +178,7 @@ export class App {
       } else if (this.focus === 'form' && this.form) {
         // Forward paste characters to form
         for (const ch of text) {
-          const fakeKey = {
-            name: ch, ctrl: false, meta: false, shift: false,
-            sequence: ch, raw: ch, option: false, super: false,
-            hyper: false, capsLock: false, numLock: false,
-            baseCode: 0, repeated: false, code: '',
-            _defaultPrevented: false, _propagationStopped: false,
-            get defaultPrevented() { return this._defaultPrevented; },
-            get propagationStopped() { return this._propagationStopped; },
-            preventDefault() { this._defaultPrevented = true; },
-            stopPropagation() { this._propagationStopped = true; },
-          } as unknown as KeyEvent;
+          const fakeKey = createFakeKeyEvent(ch);
           this.form.handleKey(fakeKey);
         }
         this.statusBar.setStatus('Pasted to form');
@@ -168,7 +195,8 @@ export class App {
       this.resizeTimer = setTimeout(() => {
         const width = Math.max(20, this.renderer.width ?? 80);
         const height = Math.max(5, this.renderer.height ?? 24);
-        const cols = Math.max(40, width - 32);
+        const sidebarW = this.sidebar?.getWidth() ?? 30;
+        const cols = Math.max(40, width - sidebarW - 1 - 2); // -1 divider, -2 borders
         const rows = Math.max(10, height - 2);
         if (this.screenBuffer) this.screenBuffer.resize(rows, cols);
         if (this.sshConnection?.isConnected()) this.sshConnection.resizePty(cols, rows);
@@ -177,20 +205,20 @@ export class App {
   }
 
   private focusSidebar(): void {
-    this.focus = 'sidebar'; this.sidebar.focusable = true;
-    if (this.terminalPanel) this.terminalPanel.component.focusable = false;
+    this.focus = 'sidebar'; this.sidebar.setFocusable(true);
+    if (this.terminalPanel) this.terminalPanel.setFocusable(false);
     this.statusBar.setStatus('Sidebar focused'); this.renderer.requestRender();
   }
 
   private focusTerminal(): void {
-    this.focus = 'terminal'; this.sidebar.focusable = false;
-    if (this.terminalPanel) { this.terminalPanel.component.focusable = true; this.terminalPanel.focus(); }
+    this.focus = 'terminal'; this.sidebar.setFocusable(false);
+    if (this.terminalPanel) { this.terminalPanel.setFocusable(true); this.terminalPanel.focus(); }
     this.statusBar.setStatus('Terminal focused'); this.renderer.requestRender();
   }
 
   private focusForm(): void {
-    this.focus = 'form'; this.sidebar.focusable = false;
-    if (this.terminalPanel) this.terminalPanel.component.focusable = false;
+    this.focus = 'form'; this.sidebar.setFocusable(false);
+    if (this.terminalPanel) this.terminalPanel.setFocusable(false);
   }
 
   private async connectTo(config: ConnectionConfig): Promise<void> {
@@ -362,17 +390,7 @@ export class App {
       // Insert each character into the form's active field
       // We need a proper KeyEvent object with preventDefault()
       for (const ch of text) {
-        const fakeKey = {
-          name: ch, ctrl: false, meta: false, shift: false,
-          sequence: ch, raw: ch, option: false, super: false,
-          hyper: false, capsLock: false, numLock: false,
-          baseCode: 0, repeated: false, code: '',
-          _defaultPrevented: false, _propagationStopped: false,
-          get defaultPrevented() { return this._defaultPrevented; },
-          get propagationStopped() { return this._propagationStopped; },
-          preventDefault() { this._defaultPrevented = true; },
-          stopPropagation() { this._propagationStopped = true; },
-        } as unknown as KeyEvent;
+        const fakeKey = createFakeKeyEvent(ch);
         this.form.handleKey(fakeKey);
       }
       this.statusBar.setStatus('Pasted to form');
