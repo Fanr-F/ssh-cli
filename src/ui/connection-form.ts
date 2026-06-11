@@ -1,5 +1,5 @@
 import { BoxRenderable, TextRenderable } from "@opentui/core";
-import type { CliRenderer, KeyEvent, RenderContext } from "@opentui/core";
+import type { CliRenderer, KeyEvent, MouseEvent, RenderContext } from "@opentui/core";
 import type { ConnectionConfig } from "../types/connection.js";
 
 // ─── Public API ───────────────────────────────────────────────
@@ -17,28 +17,30 @@ export interface FormAPI {
   onDelete(cb: (id: string) => void): void;
   /** Focus the first form field */
   focus(): void;
+  /** Handle a key event (used when form has keyboard focus) */
+  handleKey(key: KeyEvent): void;
   /** Remove the form from the renderer and clean up */
   destroy(): void;
 }
 
 // ─── Design tokens ────────────────────────────────────────────
-// Industrial-cyberpunk palette — dark, high-contrast, amber accents
+// Tokyo Night palette — vibrant, high-contrast
 const C = {
-  overlayBg: "#000000b3", // black at ~70% opacity
-  surfaceBg: "#16171a",
-  surfaceBorder: "#27282d",
-  titleFg: "#f59f00",
-  labelFg: "#909296",
-  fieldBg: "#1e1f24",
-  fieldBorder: "#373a40",
-  fieldFocusedBorder: "#f59f00",
-  fieldText: "#e4e5e7",
-  btnDefault: "#909296",
-  btnSave: "#51cf66",
-  btnDanger: "#ff6b6b",
-  authActive: "#f59f00",
-  authInactive: "#5c5f66",
-  dialogWidth: 58,
+  overlayBg: '#000000cc',
+  surfaceBg: '#16161e',
+  surfaceBorder: '#3b4261',
+  titleFg: '#7aa2f7',
+  labelFg: '#565f89',
+  fieldBg: '#1a1b26',
+  fieldBorder: '#3b4261',
+  fieldFocusedBorder: '#7aa2f7',
+  fieldText: '#c0caf5',
+  btnDefault: '#565f89',
+  btnSave: '#9ece6a',
+  btnDanger: '#f7768e',
+  authActive: '#bb9af7',
+  authInactive: '#414868',
+  dialogWidth: 60,
 } as const;
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -253,7 +255,8 @@ export function createConnectionForm(
     { key: "username", label: "Username" },
   ];
 
-  for (const fd of textFieldDefs) {
+  for (let i = 0; i < textFieldDefs.length; i++) {
+    const fd = textFieldDefs[i];
     const lbl = new TextRenderable(ctx, {
       content: fd.label,
       fg: C.labelFg,
@@ -272,6 +275,12 @@ export function createConnectionForm(
       backgroundColor: C.fieldBg,
       paddingX: 1,
       paddingY: 0,
+      onMouseDown: (e: MouseEvent) => {
+        e.stopPropagation();
+        focusedField = i;
+        updateFocusIndicators();
+        hasFocus = true;
+      },
     });
     inp.add(val);
     fieldBoxes.push(inp);
@@ -306,6 +315,16 @@ export function createConnectionForm(
 
   const authRow = new BoxRenderable(ctx, {
     flexDirection: "row",
+    onMouseDown: (e: MouseEvent) => {
+      e.stopPropagation();
+      // Toggle auth type on click
+      state.authType = state.authType === "key" ? "password" : "key";
+      refreshAuthToggle();
+      refreshConditional();
+      focusedField = 4;
+      updateFocusIndicators();
+      hasFocus = true;
+    },
   });
   authRow.add(authKeyText);
   authRow.add(authPassText);
@@ -329,6 +348,12 @@ export function createConnectionForm(
     backgroundColor: C.fieldBg,
     paddingX: 1,
     paddingY: 0,
+    onMouseDown: (e: MouseEvent) => {
+      e.stopPropagation();
+      focusedField = 5;
+      updateFocusIndicators();
+      hasFocus = true;
+    },
   });
   conditionalBox.add(conditionalText);
   body.add(conditionalBox);
@@ -348,6 +373,10 @@ export function createConnectionForm(
     borderColor: C.fieldBorder,
     paddingX: 2,
     paddingY: 0,
+    onMouseDown: (e: MouseEvent) => {
+      e.stopPropagation();
+      handleSubmit();
+    },
   });
   saveBtnText = new TextRenderable(ctx, { content: "  Save  ", fg: C.btnSave });
   saveBox.add(saveBtnText);
@@ -359,6 +388,10 @@ export function createConnectionForm(
     borderColor: C.fieldBorder,
     paddingX: 2,
     paddingY: 0,
+    onMouseDown: (e: MouseEvent) => {
+      e.stopPropagation();
+      if (onCancelCb) onCancelCb();
+    },
   });
   cancelBtnText = new TextRenderable(ctx, { content: " Cancel ", fg: C.btnDefault });
   cancelBox.add(cancelBtnText);
@@ -371,6 +404,10 @@ export function createConnectionForm(
       borderColor: C.fieldBorder,
       paddingX: 2,
       paddingY: 0,
+      onMouseDown: (e: MouseEvent) => {
+        e.stopPropagation();
+        if (onDeleteCb) onDeleteCb(existing.id);
+      },
     });
     deleteBtnText = new TextRenderable(ctx, { content: " Delete ", fg: C.btnDanger });
     deleteBtnBox.add(deleteBtnText);
@@ -475,7 +512,6 @@ export function createConnectionForm(
   function focus() {
     hasFocus = true;
     focusedField = 0;
-    overlay.focus();
     updateFocusIndicators();
   }
 
@@ -499,6 +535,7 @@ export function createConnectionForm(
     onCancel: (cb) => { onCancelCb = cb; },
     onDelete: (cb) => { onDeleteCb = cb; },
     focus,
+    handleKey: handleKeyDown,
     destroy,
   };
 

@@ -1,12 +1,12 @@
-import { Box, Text, stringToStyledText } from '@opentui/core';
+import { Box, Text } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
 import type { ConnectionConfig } from './types/connection';
 import { ConnectionStore } from './storage/connections';
-import { configExists } from './storage/config';
 import { createSidebar, type SidebarAPI } from './ui/sidebar';
 import { createConnectionForm, type FormAPI } from './ui/connection-form';
 import { createTerminalPanel, type TerminalPanelAPI } from './ui/terminal-panel';
 import { createStatusBar, type StatusBarAPI } from './ui/status-bar';
+import { createToolbar } from './ui/toolbar';
 import { ScreenBuffer } from './terminal/screen-buffer';
 import { AnsiProcessor } from './terminal/ansi-processor';
 import { TerminalRenderer } from './terminal/terminal-renderer';
@@ -19,6 +19,7 @@ export class App {
   private renderer: CliRenderer;
   private store!: ConnectionStore;
   private mainContainer!: ReturnType<typeof Box>;
+  private toolbar!: ReturnType<typeof Box>;
   private sidebar!: ReturnType<typeof Box> & SidebarAPI;
   private terminalPanel!: TerminalPanelAPI;
   private statusBar!: StatusBarAPI;
@@ -36,12 +37,7 @@ export class App {
   }
 
   async init(): Promise<void> {
-    const password = await this.promptMasterPassword();
-    if (!password) {
-      this.renderer.destroy();
-      process.exit(0);
-    }
-    this.store = new ConnectionStore(password);
+    this.store = new ConnectionStore();
     try {
       this.connections = await this.store.getAll();
     } catch {
@@ -53,44 +49,16 @@ export class App {
     this.renderer.start();
   }
 
-  private async promptMasterPassword(): Promise<string | null> {
-    const hasConfig = await configExists();
-    return new Promise((resolve) => {
-      const promptText = Text({
-        content: hasConfig ? 'Enter master password to unlock connections:' : 'Create a master password to encrypt connections:',
-        fg: '#c0caf5',
-      });
-      const errorText = Text({ content: '', fg: '#F14C4C' });
-      let inputValue = '';
-      const inputDisplay = Text({ content: '\u25CF', fg: '#a9b1d6' });
-      const updateInputDisplay = () => {
-        inputDisplay.content = stringToStyledText(inputValue.length > 0 ? '\u25CF'.repeat(inputValue.length) : ' ');
-        this.renderer.requestRender();
-      };
-      const promptBox = Box(
-        { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', backgroundColor: '#000000' },
-        Box(
-          { flexDirection: 'column', padding: 2, backgroundColor: '#1a1b26', borderStyle: 'rounded', borderColor: '#3b4261' },
-          promptText, Box({ height: 1 }), inputDisplay, Box({ height: 1 }), errorText,
-        ),
-      );
-      this.renderer.root.add(promptBox);
-      this.renderer.requestRender();
-      const handler = (key: KeyEvent) => {
-        if (key.name === 'return' || key.name === 'enter') {
-          if (inputValue.length === 0) { errorText.content = stringToStyledText('Password cannot be empty'); this.renderer.requestRender(); return; }
-          cleanup(); resolve(inputValue); return;
-        }
-        if (key.name === 'escape' || (key.ctrl && key.name === 'c')) { cleanup(); resolve(null); return; }
-        if (key.name === 'backspace') { inputValue = inputValue.slice(0, -1); updateInputDisplay(); return; }
-        if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) { inputValue += key.sequence; updateInputDisplay(); }
-      };
-      this.renderer.keyInput.on('keypress', handler);
-      const cleanup = () => { this.renderer.keyInput.off('keypress', handler); try { promptBox.destroy(); } catch {} this.renderer.requestRender(); };
-    });
-  }
-
   private buildLayout(): void {
+    // Toolbar with clickable shortcuts
+    this.toolbar = createToolbar(this.renderer, {
+      onNew: () => this.openForm(null),
+      onEdit: () => { const c = this.sidebar.getSelectedConnection(); if (c) this.openForm(c); },
+      onConnect: () => { const c = this.sidebar.getSelectedConnection(); if (c) this.connectTo(c); },
+      onDelete: () => { const c = this.sidebar.getSelectedConnection(); if (c) this.deleteConnection(c); },
+      onQuit: () => this.shutdown(),
+    });
+
     this.sidebar = createSidebar(this.renderer, this.connections);
     this.sidebar.onConnectionSelect((conn) => { this.statusBar.setStatus('Selected: ' + conn.name); });
     this.sidebar.onAction((action, conn) => {
@@ -106,9 +74,15 @@ export class App {
     });
     this.statusBar = createStatusBar(this.renderer);
     this.statusBar.setKeybindings(['Ctrl+Q: Quit', 'Ctrl+Tab: Focus', 'Enter: Connect', 'A: Add', 'E: Edit', 'Del: Delete']);
+
+    // Main content: toolbar + sidebar + terminal stacked vertically
     this.mainContainer = Box(
-      { flexDirection: 'row', width: '100%', height: '100%' },
-      this.sidebar, this.terminalPanel.component,
+      { flexDirection: 'column', width: '100%', height: '100%' },
+      this.toolbar,
+      Box(
+        { flexDirection: 'row', width: '100%', height: '100%' },
+        this.sidebar, this.terminalPanel.component,
+      ),
     );
     this.renderer.root.add(this.mainContainer);
     this.focusSidebar();
@@ -122,7 +96,10 @@ export class App {
         else if (this.focus === 'terminal') this.focusSidebar();
         key.preventDefault(); return;
       }
-      if (this.focus === 'form') return;
+      if (this.focus === 'form') {
+        if (this.form) { this.form.handleKey(key); key.preventDefault(); }
+        return;
+      }
       if (this.focus === 'sidebar') {
         if (key.name === 'up') { this.sidebar.selectPrevious(); key.preventDefault(); }
         else if (key.name === 'down') { this.sidebar.selectNext(); key.preventDefault(); }
@@ -245,6 +222,8 @@ export class App {
     });
     this.form = form;
     this.renderer.root.add(form);
+    // Activate keyboard input for the form
+    form.focus();
     this.renderer.requestRender();
   }
 

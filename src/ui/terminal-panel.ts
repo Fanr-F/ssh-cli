@@ -60,6 +60,15 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   let keyCallback: ((key: string) => void) | null = null;
 
   // ── Shared styling constants ──────────────────────────────────────────
+  // Tokyo Night palette
+  const C = {
+    bg: '#1a1b26',
+    textDim: '#565f89',
+    yellow: '#e0af68',
+    red: '#f7768e',
+    cyan: '#7dcfff',
+  };
+
   const overlayProps = {
     flexDirection: 'column' as const,
     justifyContent: 'center' as const,
@@ -73,35 +82,34 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   // 1. Idle
   const idleBox = Box(
     overlayProps,
-    Text({ content: '\u2190 Select a connection to begin', fg: '#8B949E' }),
+    Text({ content: '\u2190 Select a connection to begin', fg: C.textDim }),
   );
 
-  // 2. Connecting  (the host name is swapped dynamically)
-  const connectingText = Text({ content: 'Connecting\u2026', fg: '#E3B341' });
+  // 2. Connecting
+  const connectingText = Text({ content: 'Connecting\u2026', fg: C.yellow });
   const connectingBox = Box(overlayProps, connectingText);
 
-  // 3. Connected  – empty terminal area; the app bridge wires
-  //    TerminalRenderer.renderFull() into the render tree separately.
+  // 3. Connected – empty terminal area
   const connectedBox = Box({
     width: '100%',
     height: '100%',
   });
 
   // 4. Error
-  const errorText = Text({ content: '', fg: '#F14C4C' });
+  const errorText = Text({ content: '', fg: C.red });
   const errorBox = Box(overlayProps, errorText);
 
   // 5. Disconnected
   const disconnectedBox = Box(
     overlayProps,
-    Text({ content: 'Connection closed', fg: '#E3B341' }),
+    Text({ content: 'Connection closed', fg: C.yellow }),
   );
 
   // ── Root container ────────────────────────────────────────────────────
   const container = Box(
     {
       flexGrow: 1,
-      backgroundColor: '#0d1117',
+      backgroundColor: C.bg,
       onKeyDown: (key: KeyEvent) => {
         if (keyCallback) {
           keyCallback(key.sequence);

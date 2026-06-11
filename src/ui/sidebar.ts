@@ -1,5 +1,5 @@
 import { Box, Text } from '@opentui/core';
-import type { CliRenderer } from '@opentui/core';
+import type { CliRenderer, MouseEvent } from '@opentui/core';
 import type { ConnectionConfig } from '../types/connection';
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -22,17 +22,19 @@ export interface SidebarAPI {
   onAction(callback: (action: string, conn: ConnectionConfig) => void): void;
 }
 
-// ── Colour tokens (dark theme) ──────────────────────────────────────────────
+// ── Colour tokens (Tokyo Night) ────────────────────────────────────────────
 
-const BG_SIDEBAR = '#1a1b26';
-const BG_SELECTED = '#334455';
+const BG_SIDEBAR = '#16161e';
+const BG_SELECTED = '#1f2335';
+const BG_HOVER = '#292e42';
 const BORDER = '#3b4261';
+const BORDER_ACTIVE = '#7aa2f7';
 const TITLE = '#7aa2f7';
 const TEXT_SELECTED = '#c0caf5';
 const TEXT_NORMAL = '#a9b1d6';
 const TEXT_DIM = '#565f89';
-const DOT_CONNECTED = '#4ade80';
-const DOT_DISCONNECTED = '#565f89';
+const DOT_CONNECTED = '#9ece6a';
+const DOT_DISCONNECTED = '#414868';
 
 // ── Factory ─────────────────────────────────────────────────────────────────
 
@@ -48,6 +50,11 @@ export function createSidebar(
   let onActionCb: ((action: string, conn: ConnectionConfig) => void) | null = null;
 
   // ── Connection item factory ─────────────────────────────────────────────
+
+  const ITEM_HEIGHT = 2; // rows per connection item
+  let lastClickIndex = -1;
+  let lastClickTime = 0;
+  const DOUBLE_CLICK_MS = 300;
 
   function createItemVNode(
     conn: ConnectionConfig,
@@ -65,6 +72,23 @@ export function createSidebar(
         paddingX: 1,
         paddingY: 0,
         backgroundColor: isSelected ? BG_SELECTED : undefined,
+        onMouseDown: (e: MouseEvent) => {
+          e.stopPropagation();
+          const now = Date.now();
+          const isDoubleClick = index === lastClickIndex && (now - lastClickTime) < DOUBLE_CLICK_MS;
+          lastClickIndex = index;
+          lastClickTime = now;
+
+          selectedIndex = index;
+          rebuild();
+          fireSelection();
+
+          if (isDoubleClick && onActionCb) {
+            onActionCb('connect', conn);
+          } else if (onActionCb) {
+            onActionCb('select', conn);
+          }
+        },
       },
       Text({
         content: ` ${dot} ${conn.name}`,
