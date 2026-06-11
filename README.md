@@ -34,6 +34,8 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 | `e` | Edit selected connection |
 | `Delete` / `Backspace` | Delete selected connection |
 | `Tab` | Switch focus between sidebar, terminal, and form |
+| `Ctrl+C` | Copy (connection info in sidebar, last line in terminal) |
+| `Ctrl+V` | Paste (clipboard content to terminal/form) |
 | `Ctrl+Q` | Quit application |
 | `Esc` | Cancel / close form |
 
@@ -204,6 +206,8 @@ Press `Ctrl+Q` to quit the application.
 | `e` | 编辑选中的连接 |
 | `Delete` / `Backspace` | 删除选中的连接 |
 | `Tab` | 在侧边栏、终端和表单之间切换焦点 |
+| `Ctrl+C` | 复制（侧边栏复制连接信息，终端复制最后一行） |
+| `Ctrl+V` | 粘贴（剪贴板内容粘贴到终端/表单） |
 | `Ctrl+Q` | 退出应用 |
 | `Esc` | 取消 / 关闭表单 |
 

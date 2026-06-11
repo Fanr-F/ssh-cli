@@ -85,7 +85,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
 
       // Auth handling
       if (config.authType === 'password' && config.password) {
-        (connectConfig as any).password = config.password;
+        connectConfig.password = config.password;
       }
 
       // Handle errors during connection
@@ -105,7 +105,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
       this.client.once('error', onError);
 
       // Host key verification (auto-accept for MVP with logging)
-      (connectConfig as any).hostVerifier = (key: Buffer) => {
+      connectConfig.hostVerifier = (key: Buffer) => {
         // In MVP, accept all host keys
         // Log the key fingerprint for potential future use
         // In production, you'd want to cache and verify
@@ -188,6 +188,8 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
   private cleanup(): void {
     this.shellChannel = null;
     this.setState(SshConnectionState.Disconnected);
-    try { this.client.end(); } catch {}
+    try { this.client.end(); } catch (err) {
+      // Ignore errors during cleanup — client may already be closed
+    }
   }
 }

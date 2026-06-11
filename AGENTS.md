@@ -46,6 +46,8 @@ The app uses a focus zone system: `sidebar`, `terminal`, `form`. Keyboard events
 
 ### Keyboard Shortcuts
 - **Ctrl+Q** — Quit application (NOT Ctrl+C)
+- **Ctrl+C** — Copy (connection info in sidebar, last line in terminal)
+- **Ctrl+V** — Paste (clipboard content to terminal/form)
 - **Ctrl+Tab** — Toggle focus between sidebar and terminal
 - **Enter** — Connect to selected server (in sidebar)
 - **a** — Add new connection

@@ -1,9 +1,9 @@
-import { Box, Text } from '@opentui/core';
-import type { CliRenderer, KeyEvent } from '@opentui/core';
+import { Box } from '@opentui/core';
+import type { CliRenderer, KeyEvent, PasteEvent } from '@opentui/core';
 import type { ConnectionConfig } from './types/connection';
 import { ConnectionStore } from './storage/connections';
 import { createSidebar, type SidebarAPI } from './ui/sidebar';
-import { createConnectionForm, type FormAPI } from './ui/connection-form';
+import { createConnectionForm } from './ui/connection-form';
 import { createTerminalPanel, type TerminalPanelAPI } from './ui/terminal-panel';
 import { createStatusBar, type StatusBarAPI } from './ui/status-bar';
 import { createToolbar } from './ui/toolbar';
@@ -11,7 +11,7 @@ import { ScreenBuffer } from './terminal/screen-buffer';
 import { AnsiProcessor } from './terminal/ansi-processor';
 import { TerminalRenderer } from './terminal/terminal-renderer';
 import { SshConnection } from './ssh/connection';
-import { SshConnectionState } from './ssh/types';
+import { copyToClipboard, pasteFromClipboard } from './clipboard';
 
 type FocusZone = 'sidebar' | 'terminal' | 'form';
 
@@ -89,13 +89,31 @@ export class App {
   }
 
   private setupGlobalKeys(): void {
-    this.renderer.keyInput.on('keypress', (key: KeyEvent) => {
+    this.renderer.keyInput.on('keypress', async (key: KeyEvent) => {
+      // Global: Ctrl+Q → quit
       if (key.ctrl && key.name === 'q') { this.shutdown(); return; }
+
+      // Global: Ctrl+C → copy
+      if (key.ctrl && key.name === 'c') {
+        key.preventDefault();
+        await this.handleCopy();
+        return;
+      }
+
+      // Global: Ctrl+V → paste
+      if (key.ctrl && key.name === 'v') {
+        key.preventDefault();
+        await this.handlePaste();
+        return;
+      }
+
+      // Global: Ctrl+Tab → toggle focus
       if (key.ctrl && key.name === 'tab') {
         if (this.focus === 'sidebar') this.focusTerminal();
         else if (this.focus === 'terminal') this.focusSidebar();
         key.preventDefault(); return;
       }
+
       if (this.focus === 'form') {
         if (this.form) { this.form.handleKey(key); key.preventDefault(); }
         return;
@@ -109,14 +127,47 @@ export class App {
         else if (key.name === 'delete' || key.name === 'backspace') { const c = this.sidebar.getSelectedConnection(); if (c) this.deleteConnection(c); key.preventDefault(); }
       }
     });
+
+    // Handle terminal-initiated paste (bracketed paste from Windows Terminal, etc.)
+    // Windows Terminal intercepts Ctrl+V for its own paste, so we listen for
+    // the paste event that OpenTUI emits when bracketed paste sequences arrive.
+    this.renderer.keyInput.on('paste', async (event: PasteEvent) => {
+      const text = Buffer.from(event.bytes).toString('utf-8');
+      if (!text) return;
+
+      if (this.focus === 'terminal' && this.sshConnection && this.sshConnection.isConnected()) {
+        this.sshConnection.writeToShell(text);
+        this.statusBar.setStatus('Pasted to terminal');
+      } else if (this.focus === 'form' && this.form) {
+        // Forward paste characters to form
+        for (const ch of text) {
+          const fakeKey = {
+            name: ch, ctrl: false, meta: false, shift: false,
+            sequence: ch, raw: ch, option: false, super: false,
+            hyper: false, capsLock: false, numLock: false,
+            baseCode: 0, repeated: false, code: '',
+            _defaultPrevented: false, _propagationStopped: false,
+            get defaultPrevented() { return this._defaultPrevented; },
+            get propagationStopped() { return this._propagationStopped; },
+            preventDefault() { this._defaultPrevented = true; },
+            stopPropagation() { this._propagationStopped = true; },
+          } as unknown as KeyEvent;
+          this.form.handleKey(fakeKey);
+        }
+        this.statusBar.setStatus('Pasted to form');
+      } else {
+        this.statusBar.setStatus('Nothing to paste to');
+      }
+      this.renderer.requestRender();
+    });
   }
 
   private setupResizeHandler(): void {
     process.stdout.on('resize', () => {
       if (this.resizeTimer) clearTimeout(this.resizeTimer);
       this.resizeTimer = setTimeout(() => {
-        const width = Math.max(20, (this.renderer as any).width ?? 80);
-        const height = Math.max(5, (this.renderer as any).height ?? 24);
+        const width = Math.max(20, this.renderer.width ?? 80);
+        const height = Math.max(5, this.renderer.height ?? 24);
         const cols = Math.max(40, width - 32);
         const rows = Math.max(10, height - 2);
         if (this.screenBuffer) this.screenBuffer.resize(rows, cols);
@@ -127,19 +178,19 @@ export class App {
 
   private focusSidebar(): void {
     this.focus = 'sidebar'; this.sidebar.focusable = true;
-    if (this.terminalPanel) (this.terminalPanel.component as any).focusable = false;
+    if (this.terminalPanel) this.terminalPanel.component.focusable = false;
     this.statusBar.setStatus('Sidebar focused'); this.renderer.requestRender();
   }
 
   private focusTerminal(): void {
     this.focus = 'terminal'; this.sidebar.focusable = false;
-    if (this.terminalPanel) { (this.terminalPanel.component as any).focusable = true; this.terminalPanel.focus(); }
+    if (this.terminalPanel) { this.terminalPanel.component.focusable = true; this.terminalPanel.focus(); }
     this.statusBar.setStatus('Terminal focused'); this.renderer.requestRender();
   }
 
   private focusForm(): void {
     this.focus = 'form'; this.sidebar.focusable = false;
-    if (this.terminalPanel) (this.terminalPanel.component as any).focusable = false;
+    if (this.terminalPanel) this.terminalPanel.component.focusable = false;
   }
 
   private async connectTo(config: ConnectionConfig): Promise<void> {
@@ -195,12 +246,15 @@ export class App {
   private async openForm(existing: ConnectionConfig | null): Promise<void> {
     if (this.form) return;
     this.focusForm();
-    const form = createConnectionForm(this.renderer, existing ?? undefined) as any;
+    const form = createConnectionForm(this.renderer, existing ?? undefined);
     form.onCancel(() => { this.closeForm(form); });
     form.onSubmit(async (data: ConnectionConfig) => {
       try {
-        if (existing) await this.store.update(existing.id, data);
-        else await this.store.add(data);
+        if (existing) {
+          await this.store.update(existing.id, data);
+        } else {
+          await this.store.add(data);
+        }
         this.connections = await this.store.getAll();
         this.sidebar.setConnections(this.connections);
         this.closeForm(form); this.focusSidebar();
@@ -229,7 +283,9 @@ export class App {
 
   private closeForm(form: any): void {
     if (this.form === form) this.form = null;
-    try { form.destroy(); } catch {}
+    try { form.destroy(); } catch (err) {
+      // Ignore destroy errors — form may already be torn down
+    }
     this.renderer.requestRender();
   }
 
@@ -250,5 +306,79 @@ export class App {
     if (this.sshConnection) await this.sshConnection.disconnect();
     this.renderer.destroy();
     process.exit(0);
+  }
+
+  // ── Clipboard handlers ─────────────────────────────────────────
+
+  private async handleCopy(): Promise<void> {
+    let text = '';
+
+    if (this.focus === 'sidebar') {
+      // Copy selected connection info
+      const conn = this.sidebar.getSelectedConnection();
+      if (conn) {
+        text = `${conn.username}@${conn.host}:${conn.port}`;
+      }
+    } else if (this.focus === 'terminal') {
+      // Copy last line of terminal output
+      if (this.screenBuffer) {
+        const lines = this.screenBuffer.getVisibleLines();
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].map(c => c.char).join('').trim();
+          if (line) { text = line; break; }
+        }
+      }
+    } else if (this.focus === 'form' && this.form) {
+      // Copy the content of the currently focused form field
+      text = this.form.getFocusedFieldContent();
+    }
+
+    if (text) {
+      const ok = await copyToClipboard(text);
+      this.statusBar.setStatus(ok ? 'Copied to clipboard' : 'Copy failed');
+    } else {
+      this.statusBar.setStatus('Nothing to copy');
+    }
+    this.renderer.requestRender();
+  }
+
+  private async handlePaste(): Promise<void> {
+    const text = await pasteFromClipboard();
+    if (!text) {
+      this.statusBar.setStatus('Clipboard is empty');
+      this.renderer.requestRender();
+      return;
+    }
+
+    if (this.focus === 'terminal') {
+      // Paste to SSH shell
+      if (this.sshConnection && this.sshConnection.isConnected()) {
+        this.sshConnection.writeToShell(text);
+        this.statusBar.setStatus('Pasted to terminal');
+      } else {
+        this.statusBar.setStatus('Not connected');
+      }
+    } else if (this.focus === 'form' && this.form) {
+      // Insert each character into the form's active field
+      // We need a proper KeyEvent object with preventDefault()
+      for (const ch of text) {
+        const fakeKey = {
+          name: ch, ctrl: false, meta: false, shift: false,
+          sequence: ch, raw: ch, option: false, super: false,
+          hyper: false, capsLock: false, numLock: false,
+          baseCode: 0, repeated: false, code: '',
+          _defaultPrevented: false, _propagationStopped: false,
+          get defaultPrevented() { return this._defaultPrevented; },
+          get propagationStopped() { return this._propagationStopped; },
+          preventDefault() { this._defaultPrevented = true; },
+          stopPropagation() { this._propagationStopped = true; },
+        } as unknown as KeyEvent;
+        this.form.handleKey(fakeKey);
+      }
+      this.statusBar.setStatus('Pasted to form');
+    } else {
+      this.statusBar.setStatus('Nothing to paste to');
+    }
+    this.renderer.requestRender();
   }
 }

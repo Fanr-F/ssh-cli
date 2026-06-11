@@ -19,6 +19,8 @@ export interface FormAPI {
   focus(): void;
   /** Handle a key event (used when form has keyboard focus) */
   handleKey(key: KeyEvent): void;
+  /** Get the content of the currently focused field */
+  getFocusedFieldContent(): string;
   /** Remove the form from the renderer and clean up */
   destroy(): void;
 }
@@ -502,6 +504,16 @@ export function createConnectionForm(
     return buildConnectionConfig();
   }
 
+  function getFocusedFieldContent(): string {
+    if (focusedField >= 0 && focusedField < 4) {
+      const k = getStateKey(focusedField);
+      return state[k] as string;
+    } else if (focusedField === 5) {
+      return state.authType === "key" ? state.privateKeyPath : state.password;
+    }
+    return "";
+  }
+
   function handleSubmit() {
     const errs = validate();
     if (errs.length > 0) return;
@@ -511,7 +523,6 @@ export function createConnectionForm(
 
   function focus() {
     hasFocus = true;
-    focusedField = 0;
     updateFocusIndicators();
   }
 
@@ -530,6 +541,7 @@ export function createConnectionForm(
 
   const api: FormAPI = {
     getFormData,
+    getFocusedFieldContent,
     validate,
     onSubmit: (cb) => { onSubmitCb = cb; },
     onCancel: (cb) => { onCancelCb = cb; },

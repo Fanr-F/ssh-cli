@@ -39,13 +39,24 @@ const DOT_DISCONNECTED = '#414868';
 // ── Factory ─────────────────────────────────────────────────────────────────
 
 export function createSidebar(
-  _renderer: CliRenderer,
+  renderer: CliRenderer,
   connections: ConnectionConfig[] = [],
 ): ReturnType<typeof Box> & SidebarAPI {
   // ── Internal state ──────────────────────────────────────────────────────
 
   let items: ConnectionConfig[] = [...connections];
   let selectedIndex = 0;
+
+  // Box() returns a Proxy that queues add/remove to __pendingCalls.
+  // After instantiation those calls go nowhere.  We resolve the real
+  // renderable instance once the sidebar is mounted in the render tree.
+  let _instance: any = null;
+  function getInstance(): any {
+    if (!_instance) {
+      _instance = renderer.root.findDescendantById('sidebar');
+    }
+    return _instance;
+  }
   let onSelectCb: ((conn: ConnectionConfig) => void) | null = null;
   let onActionCb: ((action: string, conn: ConnectionConfig) => void) | null = null;
 
@@ -115,32 +126,22 @@ export function createSidebar(
    * Replace all children in the sidebar Box with ones that reflect the
    * current internal state (selection, connection list).
    *
-   * Works both **before** and **after** the VNode is added to the render tree
-   * (i.e. instantiated):
-   *
-   * ─ Before instantiation – pending calls are queued, VNode children array
-   *   is swapped so that instantiation starts with a clean slate.
-   * ─ After  instantiation – proxied remove/add calls hit the actual
-   *   BoxRenderable children directly.
+   * Uses the resolved renderable instance (not the Box() Proxy) so that
+   * add/remove calls actually hit the BoxRenderable and trigger a re-render.
    */
   function rebuild(): void {
-    // Remove old children from the actual Renderable (after instantiation).
-    for (const id of childIds) {
-      try {
-        (sidebarBox as any).remove(id);
-      } catch {
-        // Not instantiated yet – nothing to remove.
-      }
-    }
+    const instance = getInstance();
+    if (!instance) return;
 
-    // Swap the VNode children array so that before-instantiation never sees
-    // stale children.
-    sidebarBox.children = [];
+    // Remove old children from the actual Renderable.
+    for (const id of childIds) {
+      instance.remove(id);
+    }
 
     // Insert fresh children.
     const fresh = buildChildren();
     for (const child of fresh) {
-      sidebarBox.add(child);
+      instance.add(child);
     }
 
     // Remember the new IDs for the next rebuild.
@@ -160,6 +161,7 @@ export function createSidebar(
 
   const sidebarBox = Box(
     {
+      id: 'sidebar',
       width: 30,
       flexGrow: 1,
       backgroundColor: BG_SIDEBAR,

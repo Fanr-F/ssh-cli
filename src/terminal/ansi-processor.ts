@@ -1,5 +1,5 @@
 import { ScreenBuffer } from './screen-buffer';
-import { parse, type CODE } from '@ansi-tools/parser';
+import { parse } from '@ansi-tools/parser';
 
 /**
  * AnsiProcessor feeds raw ANSI escape code text into a ScreenBuffer,

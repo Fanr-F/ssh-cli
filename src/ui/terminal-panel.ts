@@ -156,10 +156,12 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     setTerminalContent(node: ReturnType<typeof Box>): void {
       // Remove previous terminal content if any
       if (terminalContentId) {
-        try { (connectedBox as any).remove(terminalContentId); } catch {}
+        try { connectedBox.remove(terminalContentId); } catch (err) {
+          // Child may not exist in tree yet
+        }
       }
       connectedBox.add(node);
-      terminalContentId = (node as any).id ?? null;
+      terminalContentId = node.id ?? null;
       renderer.requestRender();
     },
 

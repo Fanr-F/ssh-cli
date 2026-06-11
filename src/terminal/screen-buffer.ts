@@ -1,5 +1,5 @@
 import { Cell, CursorPosition } from '../types/terminal';
-import { createCell, cellsEqual } from './cell';
+import { createCell } from './cell';
 
 export interface SGRState {
   fg: number | null;

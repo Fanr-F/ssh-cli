@@ -5,12 +5,14 @@ import { utils } from 'ssh2-no-cpu-features';
 import { ConnectionConfig } from '../types/connection';
 
 // ssh2 connection config type (we don't import it directly to avoid issues)
+type ParsedKey = Exclude<ReturnType<typeof utils.parseKey>, Error>;
+
 interface SshConnectConfig {
   host: string;
   port: number;
   username: string;
   password?: string;
-  privateKey?: Buffer | string;
+  privateKey?: Buffer | string | ParsedKey;
   passphrase?: string;
   readyTimeout?: number;
   hostHash?: string;
@@ -47,8 +49,7 @@ export function buildConnectConfig(connection: ConnectionConfig): SshConnectConf
         if (parsedKey instanceof Error) {
           console.warn(`Warning: Failed to parse key at ${resolvedPath}: ${parsedKey.message}`);
         } else {
-          // parseKey returns ParsedKey which ssh2 accepts at runtime
-          (config as any).privateKey = parsedKey;
+          config.privateKey = parsedKey;
         }
       } catch (err) {
         console.warn(`Warning: Could not read key at ${keyPath}`);
@@ -77,8 +78,8 @@ export function discoverKeys(): string[] {
         found.push(keyPath);
       }
     }
-  } catch {
-    // .ssh directory might not exist
+  } catch (err) {
+    // .ssh directory might not exist — silently ignore
   }
 
   return found;
