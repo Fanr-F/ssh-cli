@@ -89,6 +89,7 @@ export function createConnectionForm(
 
   let hasFocus = false;
   let focusedField = 0;
+  let passwordRevealed = false;
 
   // ── Renderable references (stored for direct updates) ──
 
@@ -105,6 +106,7 @@ export function createConnectionForm(
   let conditionalLabel: TextRenderable;
   let conditionalText: TextRenderable;
   let conditionalBox: BoxRenderable;
+  let eyeIcon: TextRenderable;
 
   // Buttons
   let saveBtnText: TextRenderable;
@@ -160,7 +162,7 @@ export function createConnectionForm(
           conditionalText.content = state.privateKeyPath || " ";
         } else {
           state.password = state.password.slice(0, -1);
-          conditionalText.content = maskPassword(state.password);
+          conditionalText.content = passwordRevealed ? (state.password || " ") : maskPassword(state.password);
         }
       }
       return;
@@ -180,7 +182,7 @@ export function createConnectionForm(
           conditionalText.content = state.privateKeyPath || " ";
         } else {
           state.password = state.password.slice(1);
-          conditionalText.content = maskPassword(state.password);
+          conditionalText.content = passwordRevealed ? (state.password || " ") : maskPassword(state.password);
         }
       }
       return;
@@ -189,18 +191,19 @@ export function createConnectionForm(
     // Printable character input
     if (key.name.length === 1 && !key.ctrl && !key.meta && !key.option) {
       key.preventDefault();
+      const ch = key.shift ? key.name.toUpperCase() : key.name;
       const idx = mapFocusToTextIndex(focusedField);
       if (idx >= 0) {
         const k = getStateKey(idx);
-        state[k] = ((state[k] as string) + key.name) as never;
+        state[k] = ((state[k] as string) + ch) as never;
         refreshTextField(idx);
       } else if (focusedField === 5) {
         if (state.authType === "key") {
-          state.privateKeyPath += key.name;
+          state.privateKeyPath += ch;
           conditionalText.content = state.privateKeyPath;
         } else {
-          state.password += key.name;
-          conditionalText.content = maskPassword(state.password);
+          state.password += ch;
+          conditionalText.content = passwordRevealed ? (state.password || " ") : maskPassword(state.password);
         }
       }
       return;
@@ -345,6 +348,7 @@ export function createConnectionForm(
   });
 
   conditionalBox = new BoxRenderable(ctx, {
+    flexDirection: "row",
     border: true,
     borderColor: C.fieldBorder,
     backgroundColor: C.fieldBg,
@@ -357,7 +361,35 @@ export function createConnectionForm(
       hasFocus = true;
     },
   });
-  conditionalBox.add(conditionalText);
+
+  // Text wrapper — flexGrow: 1 pushes the eye icon to the right edge
+  const conditionalTextWrapper = new BoxRenderable(ctx, {
+    flexDirection: "row",
+    flexGrow: 1,
+  });
+  conditionalTextWrapper.add(conditionalText);
+  conditionalBox.add(conditionalTextWrapper);
+
+  // Eye icon — press and hold to reveal password plaintext
+  eyeIcon = new TextRenderable(ctx, {
+    content: "\u{1F441}",
+    fg: C.labelFg,
+    onMouseDown: (e: MouseEvent) => {
+      e.stopPropagation();
+      focusedField = 5;
+      updateFocusIndicators();
+      hasFocus = true;
+      passwordRevealed = true;
+      refreshConditional();
+    },
+    onMouseUp: (e: MouseEvent) => {
+      e.stopPropagation();
+      passwordRevealed = false;
+      refreshConditional();
+    },
+  });
+  conditionalBox.add(eyeIcon);
+
   body.add(conditionalBox);
 
   // ── Button row ─────────────────────────────────────────
@@ -440,9 +472,15 @@ export function createConnectionForm(
   function refreshConditional() {
     const isKey = state.authType === "key";
     conditionalLabel.content = isKey ? "Key Path" : "Password";
-    conditionalText.content = isKey
-      ? (state.privateKeyPath || "~/.ssh/id_ed25519")
-      : maskPassword(state.password || "");
+    if (isKey) {
+      conditionalText.content = state.privateKeyPath || "~/.ssh/id_ed25519";
+    } else {
+      conditionalText.content = passwordRevealed
+        ? (state.password || " ")
+        : maskPassword(state.password || "");
+    }
+    // Show/hide eye icon based on auth type
+    eyeIcon.visible = !isKey;
   }
 
   function updateFocusIndicators() {
@@ -535,6 +573,13 @@ export function createConnectionForm(
     onCancelCb = null;
     onDeleteCb = null;
   }
+
+  // ── Sync initial UI state ────────────────────────────────
+  // The state is correctly initialised from `existing` (authType, password,
+  // etc.) but the rendered toggle / conditional field only update on user
+  // interaction.  Sync them once so the form reflects saved data.
+  refreshAuthToggle();
+  refreshConditional();
 
   // ── Mount ──────────────────────────────────────────────
   renderer.root.add(overlay);

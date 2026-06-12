@@ -22,6 +22,7 @@ export class ScreenBuffer {
   private currentAttrs: SGRState;
   private dirty: boolean;
   private dirtyRows: Set<number>;
+  private _scrollOffset: number = 0; // lines scrolled up from bottom (0 = bottom)
 
   constructor(
     rows: number = 24,
@@ -221,6 +222,16 @@ export class ScreenBuffer {
     for (let r = startRow; r < this.rows; r++) {
       const beginCol = r === startRow ? startCol : 0;
       for (let c = beginCol; c < this.cols; c++) {
+        Object.assign(this.grid[r][c], createCell());
+      }
+      this.markDirty(r);
+    }
+  }
+
+  clearFromStartToCursor(): void {
+    for (let r = 0; r <= this.cursor.row; r++) {
+      const endCol = r === this.cursor.row ? this.cursor.col : this.cols;
+      for (let c = 0; c < endCol; c++) {
         Object.assign(this.grid[r][c], createCell());
       }
       this.markDirty(r);
@@ -431,6 +442,26 @@ export class ScreenBuffer {
   }
 
   getVisibleLines(): Cell[][] {
+    // When scrolled up, show scrollback lines + visible grid (clipped by viewport)
+    if (this._scrollOffset > 0) {
+      const totalAvailable = this.scrollback.length + this.rows;
+      const offset = Math.min(this._scrollOffset, this.scrollback.length);
+      const lines: Cell[][] = [];
+
+      // Lines from scrollback (oldest first)
+      const scrollbackStart = Math.max(0, this.scrollback.length - offset);
+      for (let i = scrollbackStart; i < this.scrollback.length; i++) {
+        lines.push(this.scrollback[i]);
+      }
+
+      // Fill remaining with visible grid rows
+      const remaining = this.rows - lines.length;
+      for (let r = 0; r < remaining; r++) {
+        lines.push(this.grid[r]);
+      }
+
+      return lines;
+    }
     return this.grid.map(row => row.map(cell => ({ ...cell })));
   }
 
@@ -440,5 +471,35 @@ export class ScreenBuffer {
 
   getMaxScrollbackLines(): number {
     return this.maxScrollbackLines;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scroll offset (for user scroll-wheel viewing)
+  // ---------------------------------------------------------------------------
+
+  /** How many lines the user has scrolled up from the bottom. 0 = at bottom. */
+  getScrollOffset(): number {
+    return this._scrollOffset;
+  }
+
+  /** Set scroll offset. Clamped to [0, scrollback.length]. */
+  setScrollOffset(offset: number): void {
+    this._scrollOffset = Math.max(0, Math.min(offset, this.scrollback.length));
+  }
+
+  /** Scroll up by `lines` (toward older content). Returns new offset. */
+  scrollBy(lines: number): number {
+    this._scrollOffset = Math.max(0, Math.min(this._scrollOffset + lines, this.scrollback.length));
+    return this._scrollOffset;
+  }
+
+  /** Jump to the very bottom (newest content). */
+  scrollToBottom(): void {
+    this._scrollOffset = 0;
+  }
+
+  /** Are we at the bottom (auto-scroll position)? */
+  isAtBottom(): boolean {
+    return this._scrollOffset === 0;
   }
 }

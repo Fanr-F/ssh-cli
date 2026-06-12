@@ -1,4 +1,4 @@
-import { Box, Text } from '@opentui/core';
+import { Box, Text, StyledText, parseColor } from '@opentui/core';
 import { ScreenBuffer } from './screen-buffer';
 import { Cell } from '../types/terminal';
 
@@ -25,136 +25,147 @@ const ANSI_COLORS: Record<number, string> = {
 /**
  * TerminalRenderer converts ScreenBuffer cells into OpenTUI Box/Text components.
  *
- * It provides:
- *   - Full re-render: builds a component tree from the entire visible buffer
- *   - Dirty re-render: only rebuilds changed lines (performance optimization)
- *   - Per-line Text components with ANSI color mapping
+ * Uses a persistent Box with per-line Text components. Content is updated
+ * in-place by setting `.content` on resolved Text renderables, avoiding
+ * native resource churn (SyntaxStyle / TextBuffer allocation in WASM).
  */
 export class TerminalRenderer {
   private buffer: ScreenBuffer | null = null;
-  private lastRenderedLines: string[] = [];  // Cache of last rendered content for diff
-  private container: ReturnType<typeof Box> | null = null;
+  private contentBox: ReturnType<typeof Box> | null = null;
+  private lineTexts: any[] = [];  // Resolved Text renderable references
+  private initialized = false;
 
-  constructor() {
-    // No renderer needed - we build VNode constructs
-  }
+  constructor() {}
 
   setBuffer(buffer: ScreenBuffer): void {
     this.buffer = buffer;
   }
 
   /**
-   * Build or update the OpenTUI component tree from the screen buffer.
-   * Uses Box with column flex-direction for scrollable output.
+   * Create the persistent terminal content box with one Text child per row.
+   * Call this ONCE when SSH connects. The returned VNode should be added
+   * to the connectedBox via setTerminalContent().
    */
-  renderFull(): ReturnType<typeof Box> {
-    if (!this.buffer) {
-      return Box(
-        {
-          width: '100%',
-          height: '100%',
-          backgroundColor: '#0d1117',
-          padding: 1,
-        },
-        Text({ content: '', fg: '#FFFFFF' }),
-      );
-    }
+  createContentBox(rows: number): ReturnType<typeof Box> {
+    this.initialized = false;
+    this.lineTexts = [];
 
-    const visibleLines = this.buffer.getVisibleLines();
-    const textComponents = visibleLines.map((row, rowIndex) => {
-      return this.renderLine(row, rowIndex);
-    });
+    const textChildren = Array.from({ length: rows }, () =>
+      Text({ content: '', fg: '#CCCCCC' }),
+    );
 
-    return Box(
+    this.contentBox = Box(
       {
+        id: 'terminal-content',
         width: '100%',
         height: '100%',
         backgroundColor: '#0d1117',
         flexDirection: 'column',
         padding: 0,
       },
-      ...textComponents,
+      ...textChildren,
     );
+
+    return this.contentBox;
   }
 
   /**
-   * Only re-render changed lines using dirty tracking.
-   * Returns the full component tree (dirty + clean), rebuilding only changed lines.
+   * Resolve real Text renderables after the box is mounted.
+   * Call this once after setTerminalContent() adds the box to the tree.
    */
-  renderDirty(): ReturnType<typeof Box> {
-    if (!this.buffer) {
-      return this.renderFull();
-    }
+  resolveChildren(children: any[]): void {
+    this.lineTexts = children;
+    this.initialized = true;
+  }
 
-    if (!this.buffer.isDirty()) {
-      return this.container || this.renderFull();
-    }
+  /**
+   * Update terminal content in-place by setting .content on resolved Text
+   * renderables. Returns true if content was updated, false if not ready.
+   */
+  updateContent(): boolean {
+    if (!this.buffer || !this.initialized || this.lineTexts.length === 0) return false;
 
     this.buffer.clearDirty();
+    const visibleLines = this.buffer.getVisibleLines();
+    const cursor = this.buffer.cursor;
 
-    return this.renderFull();
+    for (let i = 0; i < this.lineTexts.length; i++) {
+      if (i < visibleLines.length) {
+        const styledText = this.buildLineStyledText(visibleLines[i], i, cursor);
+        this.lineTexts[i].content = styledText;
+      } else {
+        // Clear extra lines
+        this.lineTexts[i].content = new StyledText([]);
+      }
+    }
+
+    return true;
   }
 
   /**
-    * Render a single line of the buffer as a row Box containing per-segment Text components.
-    * Groups consecutive cells with the same styling attributes into segments
-    * for efficient rendering.
-    */
-   private renderLine(row: Cell[], rowIndex: number): ReturnType<typeof Box> {
-    // Build the text content with styled segments
-    // Group consecutive cells with the same attributes into styled segments
-    const segments: { text: string; fg?: string; bg?: string; bold?: boolean; italic?: boolean; underline?: boolean }[] = [];
-    let currentSegment: typeof segments[0] | null = null;
+   * Build a StyledText for a single line from buffer cells.
+   * Groups consecutive cells with the same styling into styled chunks.
+   */
+  private buildLineStyledText(row: Cell[], rowIndex: number, cursor?: { row: number; col: number; visible: boolean }): StyledText {
+    const segments = this.buildSegments(row, rowIndex, cursor);
 
-    for (const cell of row) {
+    const chunks = segments.map(seg => ({
+      __isChunk: true as const,
+      text: seg.text,
+      fg: seg.fg ? parseColor(seg.fg) : undefined,
+      bg: seg.bg ? parseColor(seg.bg) : undefined,
+      attributes: 0,
+    }));
+
+    return new StyledText(chunks);
+  }
+
+  /**
+   * Group consecutive cells with the same styling into segments.
+   */
+  private buildSegments(row: Cell[], rowIndex: number, cursor?: { row: number; col: number; visible: boolean }): { text: string; fg?: string; bg?: string }[] {
+    const segments: { text: string; fg?: string; bg?: string }[] = [];
+    let current: typeof segments[0] | null = null;
+
+    const isCursorRow = cursor?.visible && cursor.row === rowIndex;
+
+    for (let colIndex = 0; colIndex < row.length; colIndex++) {
+      const cell = row[colIndex];
       let fgHex = cell.fg !== null ? (ANSI_COLORS[cell.fg] ?? ANSI_COLORS[7]) : undefined;
       let bgHex = cell.bg !== null ? (ANSI_COLORS[cell.bg] ?? ANSI_COLORS[0]) : undefined;
 
       if (cell.reverse) {
-        // Swap foreground and background for reverse video
         const temp = fgHex;
         fgHex = bgHex;
         bgHex = temp;
       }
 
+      // Cursor block: swap fg/bg
+      if (isCursorRow && cursor && colIndex === cursor.col) {
+        const cursorFg = bgHex ?? '#000000';
+        const cursorBg = fgHex ?? '#CCCCCC';
+        const char = cell.char === ' ' ? ' ' : cell.char;
+
+        if (current && current.fg === cursorFg && current.bg === cursorBg) {
+          current.text += char;
+        } else {
+          current = { text: char, fg: cursorFg, bg: cursorBg };
+          segments.push(current);
+        }
+        continue;
+      }
+
       const char = cell.char;
 
-      if (
-        currentSegment &&
-        currentSegment.fg === fgHex &&
-        currentSegment.bg === bgHex &&
-        currentSegment.bold === cell.bold
-      ) {
-        currentSegment.text += char;
+      if (current && current.fg === fgHex && current.bg === bgHex) {
+        current.text += char;
       } else {
-        currentSegment = {
-          text: char,
-          fg: fgHex,
-          bg: bgHex,
-          bold: cell.bold,
-          italic: cell.italic,
-          underline: cell.underline,
-        };
-        segments.push(currentSegment);
+        current = { text: char, fg: fgHex, bg: bgHex };
+        segments.push(current);
       }
     }
 
-    // Build a styled Text component per segment, wrapped in a row Box
-    const textComponents = segments.map(seg =>
-      Text({
-        content: seg.text,
-        fg: seg.fg ?? '#CCCCCC',
-        bg: seg.bg,
-      }),
-    );
-
-    return Box(
-      {
-        flexDirection: 'row',
-        width: '100%',
-      },
-      ...textComponents,
-    );
+    return segments;
   }
 
   /**

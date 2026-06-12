@@ -1,5 +1,5 @@
 import { Box, Text, stringToStyledText } from '@opentui/core';
-import type { CliRenderer, KeyEvent } from '@opentui/core';
+import type { CliRenderer, KeyEvent, MouseEvent } from '@opentui/core';
 import { TerminalRenderer } from '../terminal/terminal-renderer';
 
 /**
@@ -19,6 +19,9 @@ export interface TerminalPanelAPI {
 
   /** Replace the connected-state content with the given Box tree. */
   setTerminalContent(node: ReturnType<typeof Box>): void;
+
+  /** Update terminal content in-place (no remove/add, updates resolved Text renderables). */
+  updateTerminalContent(): boolean;
 
   /** Give keyboard focus to this panel. */
   focus(): void;
@@ -45,6 +48,12 @@ export interface TerminalPanelAPI {
    */
   onKeyInput(callback: (key: string) => void): void;
 
+  /**
+   * Register a callback for mouse scroll events.
+   * Receives the scroll direction: "up" or "down".
+   */
+  onScroll(callback: (direction: 'up' | 'down') => void): void;
+
   /** Set the focusable state on the real renderable (Proxy-safe). */
   setFocusable(value: boolean): void;
 }
@@ -61,6 +70,7 @@ export interface TerminalPanelAPI {
 export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   let terminalRenderer: TerminalRenderer | null = null;
   let keyCallback: ((key: string) => void) | null = null;
+  let scrollCallback: ((direction: 'up' | 'down') => void) | null = null;
 
   // ── Shared styling constants ──────────────────────────────────────────
   // Tokyo Night palette
@@ -97,6 +107,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     id: 'terminal-connected',
     width: '100%',
     height: '100%',
+    flexDirection: 'column',
   });
 
   // 4. Error
@@ -119,6 +130,12 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
         if (keyCallback) {
           keyCallback(key.sequence);
           key.preventDefault();
+        }
+      },
+      onMouseScroll: (e: MouseEvent) => {
+        if (scrollCallback && e.scroll) {
+          scrollCallback(e.scroll.direction);
+          e.preventDefault();
         }
       },
     },
@@ -181,7 +198,8 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   }
 
   // ── Terminal content child tracking ──────────────────────────────────
-  let terminalContentId: string | null = null;
+  const TERMINAL_CONTENT_ID = 'terminal-content';
+  let hasTerminalContent = false;
 
   // ── Public API ────────────────────────────────────────────────────────
   return {
@@ -195,12 +213,24 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       const r = resolve();
       if (!r) return;
       // Remove previous terminal content if any
-      if (terminalContentId) {
-        r.connected.remove(terminalContentId);
+      if (hasTerminalContent) {
+        r.connected.remove(TERMINAL_CONTENT_ID);
       }
       r.connected.add(node);
-      terminalContentId = node.id ?? null;
+      hasTerminalContent = true;
+      // Resolve children for in-place updates
+      if (terminalRenderer) {
+        const children = r.connected.getChildren();
+        terminalRenderer.resolveChildren(children);
+      }
       renderer.requestRender();
+    },
+
+    updateTerminalContent(): boolean {
+      if (!terminalRenderer) return false;
+      const ok = terminalRenderer.updateContent();
+      if (ok) renderer.requestRender();
+      return ok;
     },
 
     focus(): void {
@@ -247,6 +277,10 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
 
     onKeyInput(callback: (key: string) => void): void {
       keyCallback = callback;
+    },
+
+    onScroll(callback: (direction: 'up' | 'down') => void): void {
+      scrollCallback = callback;
     },
 
     setFocusable(value: boolean): void {

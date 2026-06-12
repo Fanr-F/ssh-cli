@@ -13,6 +13,24 @@ import { AnsiProcessor } from './terminal/ansi-processor';
 import { TerminalRenderer } from './terminal/terminal-renderer';
 import { SshConnection } from './ssh/connection';
 import { copyToClipboard, pasteFromClipboard } from './clipboard';
+import { appendFileSync, writeFileSync } from 'fs';
+
+const LOG_FILE = 'ssh-cli-debug.log';
+const IO_LOG_FILE = 'ssh-cli-io.log';
+
+function logDebug(msg: string) {
+  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
+
+function logIO(direction: 'IN' | 'OUT', data: string | Buffer) {
+  try {
+    const ts = new Date().toISOString();
+    const preview = typeof data === 'string'
+      ? data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[^\x20-\x7E\n\r\t]/g, '·')
+      : data.toString('utf-8').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[^\x20-\x7E\n\r\t]/g, '·');
+    appendFileSync(IO_LOG_FILE, `[${ts}] ${direction} (${typeof data === 'string' ? data.length : data.length}B): ${preview.substring(0, 500)}\n`);
+  } catch {}
+}
 
 type FocusZone = 'sidebar' | 'terminal' | 'form';
 
@@ -67,6 +85,9 @@ export class App {
   }
 
   async init(): Promise<void> {
+    writeFileSync(LOG_FILE, '');
+    writeFileSync(IO_LOG_FILE, '');
+    logDebug('App starting');
     this.store = new ConnectionStore();
     try {
       this.connections = await this.store.getAll();
@@ -100,7 +121,17 @@ export class App {
     });
     this.terminalPanel = createTerminalPanel(this.renderer);
     this.terminalPanel.onKeyInput((key: string) => {
-      if (this.sshConnection && this.sshConnection.isConnected()) { this.sshConnection.writeToShell(key); }
+      if (this.sshConnection && this.sshConnection.isConnected()) {
+        logIO('OUT', key);
+        this.sshConnection.writeToShell(key);
+      }
+    });
+    this.terminalPanel.onScroll((direction: 'up' | 'down') => {
+      if (this.screenBuffer) {
+        const delta = direction === 'up' ? 3 : -3;
+        this.screenBuffer.scrollBy(delta);
+        this.terminalPanel.updateTerminalContent();
+      }
     });
     this.statusBar = createStatusBar(this.renderer);
     this.statusBar.setKeybindings(['Ctrl+Q: Quit', 'Ctrl+Tab: Focus', 'Enter: Connect', 'A: Add', 'E: Edit', 'Del: Delete']);
@@ -233,20 +264,40 @@ export class App {
     this.terminalRenderer = new TerminalRenderer();
     this.terminalRenderer.setBuffer(this.screenBuffer);
     this.terminalPanel.setTerminalRenderer(this.terminalRenderer);
+    // Create terminal content box ONCE and add it to the connected panel
+    const contentBox = this.terminalRenderer.createContentBox(rows);
+    this.terminalPanel.setTerminalContent(contentBox);
     this.sshConnection = new SshConnection();
+
+    // Track whether the SSH session was ever established so the close handler
+    // can distinguish a failed connection attempt from a dropped session.
+    let wasConnected = false;
+
     this.sshConnection.on('ready', async () => {
+      wasConnected = true;
       this.terminalPanel.showConnected(config.host);
       this.statusBar.setConnected(config.host);
       this.renderer.requestRender();
       try {
         const channel = await this.sshConnection!.startShell({ cols, rows, term: 'xterm-256color' });
         const onSshData = (data: Buffer) => {
-          this.ansiProcessor!.process(data.toString('utf-8'));
-          if (this.terminalRenderer) {
-            const rendered = this.terminalRenderer.renderDirty();
-            this.terminalPanel.setTerminalContent(rendered);
+          logIO('IN', data);
+          try {
+            const wasAtBottom = this.screenBuffer!.isAtBottom();
+            this.ansiProcessor!.process(data.toString('utf-8'));
+            if (wasAtBottom) {
+              this.screenBuffer!.scrollToBottom();
+            }
+            // Update terminal content in-place (no VNode recreation)
+            this.terminalPanel.updateTerminalContent();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const stack = err instanceof Error ? err.stack : '';
+            logDebug(`[SSH DATA ERROR] ${msg}\n${stack}`);
+            this.terminalPanel.showError('Render error: ' + msg);
+            this.statusBar.setStatus('Render error');
+            this.renderer.requestRender();
           }
-          this.renderer.requestRender();
         };
         channel.on('data', onSshData);
         channel.stderr.on('data', onSshData);
@@ -258,10 +309,18 @@ export class App {
       }
     });
     this.sshConnection.on('error', (err: Error) => {
+      logDebug(`[SSH ERROR] ${err.message}`);
       this.terminalPanel.showError(err.message); this.statusBar.setStatus('Error: ' + err.message); this.renderer.requestRender();
     });
     this.sshConnection.on('close', () => {
-      this.terminalPanel.showDisconnected(); this.statusBar.setDisconnected(); this.focus = 'sidebar'; this.renderer.requestRender();
+      logDebug('[SSH CLOSE] Connection closed');
+      // Only show the "disconnected" state when the connection was previously
+      // established.  When the connection never succeeded, the error message
+      // displayed by the error/catch handler should remain visible instead of
+      // being overwritten by a generic "Connection closed".
+      if (wasConnected) {
+        this.terminalPanel.showDisconnected(); this.statusBar.setDisconnected(); this.focus = 'sidebar'; this.renderer.requestRender();
+      }
     });
     try {
       await this.sshConnection.connect(config);

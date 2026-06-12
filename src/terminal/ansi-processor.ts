@@ -71,11 +71,11 @@ export class AnsiProcessor {
             }
 
             case 'J': {  // ED — erase in display
-              // 0 or missing = cursor to end of screen, 1 = start to cursor, 2 = all
+              // 0 = cursor to end of screen (default), 1 = start to cursor, 2 = all
               if (n === 2 || n === 3) {
                 this.buffer.clearScreen();
               } else if (n === 1) {
-                this.buffer.clearToEndOfScreen();
+                this.buffer.clearFromStartToCursor();
               } else {
                 this.buffer.clearToEndOfScreen();
               }
