@@ -8,8 +8,7 @@ import { createTerminalPanel, type TerminalPanelAPI } from './ui/terminal-panel'
 import { createStatusBar, type StatusBarAPI } from './ui/status-bar';
 import { createToolbar } from './ui/toolbar';
 import { createDivider } from './ui/divider';
-import { ScreenBuffer } from './terminal/screen-buffer';
-import { AnsiProcessor } from './terminal/ansi-processor';
+import { VtermAdapter } from './terminal/vterm-adapter';
 import { TerminalRenderer } from './terminal/terminal-renderer';
 import { SshConnection } from './ssh/connection';
 import { copyToClipboard, pasteFromClipboard } from './clipboard';
@@ -72,8 +71,7 @@ export class App {
   private terminalPanel!: TerminalPanelAPI;
   private statusBar!: StatusBarAPI;
   private form: any = null;
-  private screenBuffer: ScreenBuffer | null = null;
-  private ansiProcessor: AnsiProcessor | null = null;
+  private vterm: VtermAdapter | null = null;
   private terminalRenderer: TerminalRenderer | null = null;
   private sshConnection: SshConnection | null = null;
   private focus: FocusZone = 'sidebar';
@@ -126,12 +124,8 @@ export class App {
         this.sshConnection.writeToShell(key);
       }
     });
-    this.terminalPanel.onScroll((direction: 'up' | 'down') => {
-      if (this.screenBuffer) {
-        const delta = direction === 'up' ? 3 : -3;
-        this.screenBuffer.scrollBy(delta);
-        this.terminalPanel.updateTerminalContent();
-      }
+    this.terminalPanel.onScroll((_direction: 'up' | 'down') => {
+      // vterm handles scrolling internally via scrollViewport
     });
     this.statusBar = createStatusBar(this.renderer);
     this.statusBar.setKeybindings(['Ctrl+Q: Quit', 'Ctrl+Tab: Focus', 'Enter: Connect', 'A: Add', 'E: Edit', 'Del: Delete']);
@@ -229,7 +223,7 @@ export class App {
         const sidebarW = this.sidebar?.getWidth() ?? 30;
         const cols = Math.max(40, width - sidebarW - 1 - 2); // -1 divider, -2 borders
         const rows = Math.max(10, height - 2);
-        if (this.screenBuffer) this.screenBuffer.resize(rows, cols);
+        if (this.vterm) this.vterm.resize(cols, rows);
         if (this.sshConnection?.isConnected()) this.sshConnection.resizePty(cols, rows);
       }, 100);
     });
@@ -259,10 +253,15 @@ export class App {
     this.renderer.requestRender();
     const cols = Math.max(40, this.renderer.width - 32);
     const rows = Math.max(10, this.renderer.height - 2);
-    this.screenBuffer = new ScreenBuffer(rows, cols);
-    this.ansiProcessor = new AnsiProcessor(this.screenBuffer);
+
+    // Create vterm adapter (replaces ansi-processor + screen-buffer)
+    this.vterm = new VtermAdapter(cols, rows, (response) => {
+      if (this.sshConnection?.isConnected()) {
+        this.sshConnection.writeToShell(response);
+      }
+    });
     this.terminalRenderer = new TerminalRenderer();
-    this.terminalRenderer.setBuffer(this.screenBuffer);
+    this.terminalRenderer.setVterm(this.vterm);
     this.terminalPanel.setTerminalRenderer(this.terminalRenderer);
     // Create terminal content box ONCE and add it to the connected panel
     const contentBox = this.terminalRenderer.createContentBox(rows);
@@ -282,14 +281,11 @@ export class App {
         const channel = await this.sshConnection!.startShell({ cols, rows, term: 'xterm-256color' });
         const onSshData = (data: Buffer) => {
           logIO('IN', data);
+          logDebug(`[SSH DATA] vterm=${!!this.vterm} renderer=${!!this.terminalRenderer} connected=${this.sshConnection?.isConnected()}`);
           try {
-            const wasAtBottom = this.screenBuffer!.isAtBottom();
-            this.ansiProcessor!.process(data.toString('utf-8'));
-            if (wasAtBottom) {
-              this.screenBuffer!.scrollToBottom();
-            }
-            // Update terminal content in-place (no VNode recreation)
-            this.terminalPanel.updateTerminalContent();
+            this.vterm!.feed(data);
+            const ok = this.terminalPanel.updateTerminalContent();
+            logDebug(`[SSH DATA] updateContent result: ${ok}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             const stack = err instanceof Error ? err.stack : '';
@@ -408,10 +404,10 @@ export class App {
       }
     } else if (this.focus === 'terminal') {
       // Copy last line of terminal output
-      if (this.screenBuffer) {
-        const lines = this.screenBuffer.getVisibleLines();
+      if (this.vterm) {
+        const lines = this.terminalRenderer?.getVisibleLines() ?? [];
         for (let i = lines.length - 1; i >= 0; i--) {
-          const line = lines[i].map(c => c.char).join('').trim();
+          const line = lines[i].trim();
           if (line) { text = line; break; }
         }
       }

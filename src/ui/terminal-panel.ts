@@ -219,9 +219,13 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       r.connected.add(node);
       hasTerminalContent = true;
       // Resolve children for in-place updates
+      // VNode proxy's getChildren() returns undefined — must find real renderable by id
       if (terminalRenderer) {
-        const children = r.connected.getChildren();
-        terminalRenderer.resolveChildren(children);
+        const contentBox = renderer.root.findDescendantById(TERMINAL_CONTENT_ID);
+        if (contentBox) {
+          const nodeChildren = contentBox.getChildren();
+          terminalRenderer.resolveChildren(nodeChildren ?? []);
+        }
       }
       renderer.requestRender();
     },
