@@ -115,6 +115,7 @@ export class App {
       onConnect: () => { const c = this.sidebar.getSelectedConnection(); if (c) this.connectTo(c); },
       onDelete: () => { const c = this.sidebar.getSelectedConnection(); if (c) this.deleteConnection(c); },
       onQuit: () => this.shutdown(),
+      onHelp: () => this.helpPopup.toggle(),
     });
 
     this.sidebar = createSidebar(this.renderer, this.connections);

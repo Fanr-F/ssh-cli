@@ -21,6 +21,7 @@ export interface ToolbarCallbacks {
   onDelete?: () => void;
   onConnect?: () => void;
   onQuit?: () => void;
+  onHelp?: () => void;
 }
 
 export function createToolbar(
@@ -51,6 +52,7 @@ export function createToolbar(
     { label: 'connect [enter]', key: '↵', action: () => callbacks.onConnect?.(), color: C.blue },
     { label: 'delete [del]', key: '⌫', action: () => callbacks.onDelete?.(), color: C.red },
     { label: 'quit [^q]', key: '^q', action: () => callbacks.onQuit?.(), color: C.magenta },
+    { label: 'help [f1]', key: 'f1', action: () => callbacks.onHelp?.(), color: C.cyan },
   ];
 
   for (const item of items) {

@@ -97,20 +97,29 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
     lines.push(titleBox);
 
     // Separator
-    const sepBox = Box({ paddingX: 1 });
+    const sepBox = Box({ height: 1, paddingX: 1 });
     sepBox.add(Text({ content: '─'.repeat(50), fg: C.border }));
     lines.push(sepBox);
 
     // Shortcuts by category
-    for (const category of SHORTCUTS) {
+    for (let ci = 0; ci < SHORTCUTS.length; ci++) {
+      const category = SHORTCUTS[ci];
+
+      // Separator between categories
+      if (ci > 0) {
+        const sepBox = Box({ height: 1, paddingX: 1 });
+        sepBox.add(Text({ content: '─'.repeat(50), fg: C.border }));
+        lines.push(sepBox);
+      }
+
       // Category header
-      const catBox = Box({ paddingX: 1, paddingY: 0 });
-      catBox.add(Text({ content: `\n${category.category}`, fg: C.yellow, bold: true }));
+      const catBox = Box({ paddingX: 1, paddingY: 1 });
+      catBox.add(Text({ content: category.category, fg: C.yellow, bold: true }));
       lines.push(catBox);
 
       // Keys
       for (const { key, action } of category.keys) {
-        const keyBox = Box({ paddingX: 2, flexDirection: 'row' });
+        const keyBox = Box({ height: 1, paddingX: 2, flexDirection: 'row' });
         keyBox.add(Text({ content: key.padEnd(20), fg: C.green }));
         keyBox.add(Text({ content: action, fg: C.text }));
         lines.push(keyBox);
@@ -152,7 +161,7 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
       top: '20%',
       left: '25%',
       width: '50%',
-      height: '60%',
+      height: '80%',
       backgroundColor: C.bgOverlay,
       borderColor: C.border,
       flexDirection: 'column',
