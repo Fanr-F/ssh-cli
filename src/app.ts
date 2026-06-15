@@ -8,6 +8,8 @@ import { createTerminalPanel, type TerminalPanelAPI } from './ui/terminal-panel'
 import { createStatusBar, type StatusBarAPI } from './ui/status-bar';
 import { createToolbar } from './ui/toolbar';
 import { createDivider } from './ui/divider';
+import { createTabBar, type TabBarAPI } from './ui/tab-bar';
+import { createHelpPopup, type HelpPopupAPI } from './ui/help-popup';
 import { VtermAdapter } from './terminal/vterm-adapter';
 import { TerminalRenderer } from './terminal/terminal-renderer';
 import { SshConnection } from './ssh/connection';
@@ -70,13 +72,20 @@ export class App {
   private sidebar!: ReturnType<typeof ScrollBox> & SidebarAPI;
   private terminalPanel!: TerminalPanelAPI;
   private statusBar!: StatusBarAPI;
+  private tabBar!: TabBarAPI;
+  private helpPopup!: HelpPopupAPI;
   private form: any = null;
-  private vterm: VtermAdapter | null = null;
-  private terminalRenderer: TerminalRenderer | null = null;
-  private sshConnection: SshConnection | null = null;
   private focus: FocusZone = 'sidebar';
   private connections: ConnectionConfig[] = [];
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // ── Multi-tab state ──────────────────────────────────────────────
+  private tabs = new Map<string, {
+    vterm: VtermAdapter;
+    renderer: TerminalRenderer;
+    ssh: SshConnection;
+    config: ConnectionConfig;
+  }>();
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer;
@@ -117,15 +126,55 @@ export class App {
         case 'delete': this.deleteConnection(conn); break;
       }
     });
+
+    // Tab bar for multi-terminal support
+    this.tabBar = createTabBar(this.renderer);
+    this.tabBar.onTabSwitch((id) => this.switchToTab(id));
+    this.tabBar.onTabClose((id) => this.closeTab(id));
+
+    // Help popup
+    this.helpPopup = createHelpPopup(this.renderer);
+
     this.terminalPanel = createTerminalPanel(this.renderer);
     this.terminalPanel.onKeyInput((key: string) => {
-      if (this.sshConnection && this.sshConnection.isConnected()) {
-        logIO('OUT', key);
-        this.sshConnection.writeToShell(key);
+      const activeId = this.tabBar.getActiveTabId();
+      if (activeId) {
+        const tab = this.tabs.get(activeId);
+        if (tab?.ssh.isConnected()) {
+          // Auto-scroll to bottom when user types
+          if (!tab.vterm.isAtBottom()) {
+            tab.vterm.scrollToBottom();
+            this.terminalPanel.updateTerminalContentForTab(activeId);
+            this.renderer.requestRender();
+          }
+          logIO('OUT', key);
+          tab.ssh.writeToShell(key);
+        }
       }
     });
-    this.terminalPanel.onScroll((_direction: 'up' | 'down') => {
-      // vterm handles scrolling internally via scrollViewport
+    this.terminalPanel.onScroll((direction: 'up' | 'down') => {
+      // Scroll the active tab's vterm viewport
+      const activeId = this.tabBar.getActiveTabId();
+      if (activeId) {
+        const tab = this.tabs.get(activeId);
+        if (tab?.vterm) {
+          const beforeOffset = tab.vterm.getViewportOffset();
+          const scrollback = tab.vterm.getScrollbackLength();
+          logDebug(`[SCROLL] direction=${direction}, scrollback=${scrollback}, viewportOffset=${beforeOffset}`);
+          
+          // up = scroll up (older content) = positive delta
+          // down = scroll down (newer content) = negative delta
+          const delta = direction === 'up' ? 3 : -3;
+          logDebug(`[SCROLL] applying delta=${delta} (reversed from direction=${direction})`);
+          
+          tab.vterm.scrollViewport(delta);
+          const afterOffset = tab.vterm.getViewportOffset();
+          logDebug(`[SCROLL] after: viewportOffset=${afterOffset}, changed=${beforeOffset !== afterOffset}`);
+          
+          this.terminalPanel.updateTerminalContentForTab(activeId);
+          this.renderer.requestRender();
+        }
+      }
     });
     this.statusBar = createStatusBar(this.renderer);
     this.statusBar.setKeybindings(['Ctrl+Q: Quit', 'Ctrl+Tab: Focus', 'Enter: Connect', 'A: Add', 'E: Edit', 'Del: Delete']);
@@ -137,16 +186,21 @@ export class App {
       () => { return this.sidebar.getWidth(); },
     );
 
-    // Main content: toolbar + sidebar + divider + terminal stacked vertically
+    // Main content: toolbar + sidebar + divider + (tab bar + terminal) stacked vertically
     this.mainContainer = Box(
       { flexDirection: 'column', width: '100%', height: '100%' },
       this.toolbar,
       Box(
         { flexDirection: 'row', width: '100%', height: '100%' },
-        this.sidebar, divider, this.terminalPanel.component,
+        this.sidebar, divider, Box(
+          { flexDirection: 'column', flexGrow: 1 },
+          this.tabBar.component,
+          this.terminalPanel.component,
+        ),
       ),
     );
     this.renderer.root.add(this.mainContainer);
+    this.renderer.root.add(this.helpPopup.component);
     this.focusSidebar();
   }
 
@@ -176,6 +230,40 @@ export class App {
         key.preventDefault(); return;
       }
 
+      // Global: Ctrl+Shift+C → close current tab
+      if (key.ctrl && key.shift && key.name === 'c') {
+        const activeId = this.tabBar.getActiveTabId();
+        if (activeId) this.closeTab(activeId);
+        key.preventDefault(); return;
+      }
+
+      // Global: Ctrl+Shift+Tab → cycle to next tab
+      if (key.ctrl && key.shift && key.name === 'tab') {
+        this.cycleNextTab();
+        key.preventDefault(); return;
+      }
+
+      // Global: F1 → toggle help popup
+      if (key.name === 'f1') {
+        this.helpPopup.toggle();
+        key.preventDefault(); return;
+      }
+
+      // Global: F2-F12 → switch to tab 1-11
+      if (key.name.startsWith('f') && !key.ctrl && !key.shift) {
+        const num = parseInt(key.name.slice(1), 10);
+        if (num >= 2 && num <= 12) {
+          this.switchToTabIndex(num - 2);
+          key.preventDefault(); return;
+        }
+      }
+
+      // Help popup: any key closes it
+      if (this.helpPopup.isVisible()) {
+        this.helpPopup.hide();
+        key.preventDefault(); return;
+      }
+
       if (this.focus === 'form') {
         if (this.form) { this.form.handleKey(key); key.preventDefault(); }
         return;
@@ -191,17 +279,20 @@ export class App {
     });
 
     // Handle terminal-initiated paste (bracketed paste from Windows Terminal, etc.)
-    // Windows Terminal intercepts Ctrl+V for its own paste, so we listen for
-    // the paste event that OpenTUI emits when bracketed paste sequences arrive.
     this.renderer.keyInput.on('paste', async (event: PasteEvent) => {
       const text = Buffer.from(event.bytes).toString('utf-8');
       if (!text) return;
 
-      if (this.focus === 'terminal' && this.sshConnection && this.sshConnection.isConnected()) {
-        this.sshConnection.writeToShell(text);
-        this.statusBar.setStatus('Pasted to terminal');
+      if (this.focus === 'terminal') {
+        const activeId = this.tabBar.getActiveTabId();
+        if (activeId) {
+          const tab = this.tabs.get(activeId);
+          if (tab?.ssh.isConnected()) {
+            tab.ssh.writeToShell(text);
+            this.statusBar.setStatus('Pasted to terminal');
+          }
+        }
       } else if (this.focus === 'form' && this.form) {
-        // Forward paste characters to form
         for (const ch of text) {
           const fakeKey = createFakeKeyEvent(ch);
           this.form.handleKey(fakeKey);
@@ -223,8 +314,12 @@ export class App {
         const sidebarW = this.sidebar?.getWidth() ?? 30;
         const cols = Math.max(40, width - sidebarW - 1 - 2); // -1 divider, -2 borders
         const rows = Math.max(10, height - 2);
-        if (this.vterm) this.vterm.resize(cols, rows);
-        if (this.sshConnection?.isConnected()) this.sshConnection.resizePty(cols, rows);
+
+        // Resize all active tabs
+        for (const [, tab] of this.tabs) {
+          if (tab.vterm) tab.vterm.resize(cols, rows);
+          if (tab.ssh?.isConnected()) tab.ssh.resizePty(cols, rows);
+        }
       }, 100);
     });
   }
@@ -247,44 +342,67 @@ export class App {
   }
 
   private async connectTo(config: ConnectionConfig): Promise<void> {
-    if (this.sshConnection && this.sshConnection.isConnected()) await this.sshConnection.disconnect();
     this.terminalPanel.showConnecting(config.host);
     this.statusBar.setStatus('Connecting to ' + config.host + '...');
     this.renderer.requestRender();
     const cols = Math.max(40, this.renderer.width - 32);
     const rows = Math.max(10, this.renderer.height - 2);
 
-    // Create vterm adapter (replaces ansi-processor + screen-buffer)
-    this.vterm = new VtermAdapter(cols, rows, (response) => {
-      if (this.sshConnection?.isConnected()) {
-        this.sshConnection.writeToShell(response);
+    // Create tab ID
+    const tabId = `tab-${Date.now()}`;
+    const tabTitle = `${config.username}@${config.host}`;
+
+    // Create vterm adapter and renderer for this tab
+    const vterm = new VtermAdapter(cols, rows, (response) => {
+      if (tab?.ssh.isConnected()) {
+        tab.ssh.writeToShell(response);
       }
     });
-    this.terminalRenderer = new TerminalRenderer();
-    this.terminalRenderer.setVterm(this.vterm);
-    this.terminalPanel.setTerminalRenderer(this.terminalRenderer);
-    // Create terminal content box ONCE and add it to the connected panel
-    const contentBox = this.terminalRenderer.createContentBox(rows);
-    this.terminalPanel.setTerminalContent(contentBox);
-    this.sshConnection = new SshConnection();
+    const terminalRenderer = new TerminalRenderer();
+    terminalRenderer.setVterm(vterm);
 
-    // Track whether the SSH session was ever established so the close handler
-    // can distinguish a failed connection attempt from a dropped session.
+    // Register with terminal panel
+    const contentBox = this.terminalPanel.registerTerminal(tabId, terminalRenderer, rows);
+    this.terminalPanel.setTerminalContent(contentBox);
+
+    // Create SSH connection
+    const ssh = new SshConnection();
+    const tab = { vterm, renderer: terminalRenderer, ssh, config };
+    this.tabs.set(tabId, tab);
+
+    // Add tab to tab bar
+    this.tabBar.addTab(tabId, tabTitle);
+
+    // Track whether the SSH session was ever established
     let wasConnected = false;
 
-    this.sshConnection.on('ready', async () => {
+    ssh.on('ready', async () => {
       wasConnected = true;
+      // Update tab title with connected status
+      this.tabBar.updateTabTitle(tabId, `${config.username}@${config.host}`);
+
+      // Switch to this tab
+      this.tabBar.switchTo(tabId);
+      this.terminalPanel.switchTerminal(tabId);
       this.terminalPanel.showConnected(config.host);
       this.statusBar.setConnected(config.host);
+      this.focusTerminal();
       this.renderer.requestRender();
+
       try {
-        const channel = await this.sshConnection!.startShell({ cols, rows, term: 'xterm-256color' });
+        const channel = await ssh.startShell({ cols, rows, term: 'xterm-256color' });
         const onSshData = (data: Buffer) => {
           logIO('IN', data);
-          logDebug(`[SSH DATA] vterm=${!!this.vterm} renderer=${!!this.terminalRenderer} connected=${this.sshConnection?.isConnected()}`);
+          const wasAtBottom = vterm.isAtBottom();
+          logDebug(`[SSH DATA] tab=${tabId} vterm=${!!vterm} renderer=${!!terminalRenderer} connected=${ssh.isConnected()} dataLen=${data.length} wasAtBottom=${wasAtBottom} viewportOffset=${vterm.getViewportOffset()}`);
           try {
-            this.vterm!.feed(data);
-            const ok = this.terminalPanel.updateTerminalContent();
+            vterm.feed(data);
+            // Auto-scroll to bottom on new data only if already at bottom
+            // (don't interrupt user's scroll position)
+            if (wasAtBottom) {
+              vterm.scrollToBottom();
+            }
+            const ok = this.terminalPanel.updateTerminalContentForTab(tabId);
             logDebug(`[SSH DATA] updateContent result: ${ok}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -297,33 +415,104 @@ export class App {
         };
         channel.on('data', onSshData);
         channel.stderr.on('data', onSshData);
-        channel.on('close', () => { this.terminalPanel.showDisconnected(); this.statusBar.setDisconnected(); this.renderer.requestRender(); });
-        this.focusTerminal();
+        channel.on('close', () => {
+          logDebug(`[SSH CLOSE] Tab ${tabId} channel closed`);
+          this.terminalPanel.showDisconnected();
+          this.statusBar.setDisconnected();
+          this.renderer.requestRender();
+          // Auto-close tab on disconnect
+          if (wasConnected) {
+            this.closeTab(tabId);
+          }
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unknown error';
-        this.terminalPanel.showError('Shell error: ' + msg); this.statusBar.setStatus('Shell error'); this.renderer.requestRender();
+        this.terminalPanel.showError('Shell error: ' + msg);
+        this.statusBar.setStatus('Shell error');
+        this.renderer.requestRender();
       }
     });
-    this.sshConnection.on('error', (err: Error) => {
-      logDebug(`[SSH ERROR] ${err.message}`);
-      this.terminalPanel.showError(err.message); this.statusBar.setStatus('Error: ' + err.message); this.renderer.requestRender();
+
+    ssh.on('error', (err: Error) => {
+      logDebug(`[SSH ERROR] Tab ${tabId}: ${err.message}`);
+      this.terminalPanel.showError(err.message);
+      this.statusBar.setStatus('Error: ' + err.message);
+      this.renderer.requestRender();
     });
-    this.sshConnection.on('close', () => {
-      logDebug('[SSH CLOSE] Connection closed');
-      // Only show the "disconnected" state when the connection was previously
-      // established.  When the connection never succeeded, the error message
-      // displayed by the error/catch handler should remain visible instead of
-      // being overwritten by a generic "Connection closed".
+
+    ssh.on('close', () => {
+      logDebug(`[SSH CLOSE] Tab ${tabId} connection closed`);
       if (wasConnected) {
-        this.terminalPanel.showDisconnected(); this.statusBar.setDisconnected(); this.focus = 'sidebar'; this.renderer.requestRender();
+        this.closeTab(tabId);
       }
     });
+
     try {
-      await this.sshConnection.connect(config);
+      await ssh.connect(config);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Connection failed';
-      this.terminalPanel.showError(msg); this.statusBar.setStatus('Connection failed'); this.renderer.requestRender();
+      this.terminalPanel.showError(msg);
+      this.statusBar.setStatus('Connection failed');
+      this.renderer.requestRender();
     }
+  }
+
+  private switchToTab(id: string): void {
+    logDebug(`[APP] switchToTab: id=${id}`);
+    const tab = this.tabs.get(id);
+    if (!tab) {
+      logDebug(`[APP] switchToTab: tab not found for ${id}`);
+      return;
+    }
+
+    logDebug(`[APP] switchToTab: calling terminalPanel.switchTerminal(${id})`);
+    this.terminalPanel.switchTerminal(id);
+    this.focusTerminal();
+    this.renderer.requestRender();
+    logDebug(`[APP] switchToTab: done`);
+  }
+
+  private switchToTabIndex(index: number): void {
+    const ids = this.tabBar.getTabIds();
+    if (index < ids.length) {
+      this.switchToTab(ids[index]);
+    }
+  }
+
+  private cycleNextTab(): void {
+    const ids = this.tabBar.getTabIds();
+    if (ids.length === 0) return;
+
+    const currentId = this.tabBar.getActiveTabId();
+    const currentIndex = currentId ? ids.indexOf(currentId) : -1;
+    const nextIndex = (currentIndex + 1) % ids.length;
+    this.switchToTab(ids[nextIndex]);
+  }
+
+  private async closeTab(id: string): Promise<void> {
+    const tab = this.tabs.get(id);
+    if (!tab) return;
+
+    // Disconnect SSH
+    if (tab.ssh.isConnected()) {
+      await tab.ssh.disconnect();
+    }
+
+    // Remove from terminal panel
+    this.terminalPanel.unregisterTerminal(id);
+
+    // Remove from tab bar
+    this.tabBar.removeTab(id);
+
+    // Remove from tabs map
+    this.tabs.delete(id);
+
+    // Show idle if no tabs left
+    if (this.tabs.size === 0) {
+      this.terminalPanel.showIdle();
+    }
+
+    this.renderer.requestRender();
   }
 
   private async openForm(existing: ConnectionConfig | null): Promise<void> {
@@ -386,7 +575,11 @@ export class App {
   }
 
   private async shutdown(): Promise<void> {
-    if (this.sshConnection) await this.sshConnection.disconnect();
+    // Disconnect all tabs
+    for (const [, tab] of this.tabs) {
+      if (tab.ssh.isConnected()) await tab.ssh.disconnect();
+    }
+    this.tabs.clear();
     this.renderer.destroy();
     process.exit(0);
   }
@@ -404,11 +597,15 @@ export class App {
       }
     } else if (this.focus === 'terminal') {
       // Copy last line of terminal output
-      if (this.vterm) {
-        const lines = this.terminalRenderer?.getVisibleLines() ?? [];
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const line = lines[i].trim();
-          if (line) { text = line; break; }
+      const activeId = this.tabBar.getActiveTabId();
+      if (activeId) {
+        const tab = this.tabs.get(activeId);
+        if (tab) {
+          const lines = tab.renderer.getVisibleLines() ?? [];
+          for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (line) { text = line; break; }
+          }
         }
       }
     } else if (this.focus === 'form' && this.form) {
@@ -435,15 +632,18 @@ export class App {
 
     if (this.focus === 'terminal') {
       // Paste to SSH shell
-      if (this.sshConnection && this.sshConnection.isConnected()) {
-        this.sshConnection.writeToShell(text);
-        this.statusBar.setStatus('Pasted to terminal');
-      } else {
-        this.statusBar.setStatus('Not connected');
+      const activeId = this.tabBar.getActiveTabId();
+      if (activeId) {
+        const tab = this.tabs.get(activeId);
+        if (tab?.ssh.isConnected()) {
+          tab.ssh.writeToShell(text);
+          this.statusBar.setStatus('Pasted to terminal');
+        } else {
+          this.statusBar.setStatus('Not connected');
+        }
       }
     } else if (this.focus === 'form' && this.form) {
       // Insert each character into the form's active field
-      // We need a proper KeyEvent object with preventDefault()
       for (const ch of text) {
         const fakeKey = createFakeKeyEvent(ch);
         this.form.handleKey(fakeKey);

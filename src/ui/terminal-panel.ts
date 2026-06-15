@@ -1,6 +1,12 @@
 import { Box, Text, stringToStyledText } from '@opentui/core';
 import type { CliRenderer, KeyEvent, MouseEvent } from '@opentui/core';
 import { TerminalRenderer } from '../terminal/terminal-renderer';
+import { appendFileSync } from 'fs';
+
+const LOG_FILE = 'ssh-cli-debug.log';
+function log(msg: string) {
+  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
 
 /**
  * Public API for the terminal panel component.
@@ -22,6 +28,25 @@ export interface TerminalPanelAPI {
 
   /** Update terminal content in-place (no remove/add, updates resolved Text renderables). */
   updateTerminalContent(): boolean;
+
+  // ── Multi-tab API ──────────────────────────────────────────────────
+
+  /** Register a terminal renderer for a tab. Returns a content Box to mount. */
+  registerTerminal(tabId: string, r: TerminalRenderer, rows: number): ReturnType<typeof Box>;
+
+  /** Unregister and remove a terminal renderer for a tab. */
+  unregisterTerminal(tabId: string): void;
+
+  /** Switch the visible terminal to the given tab. */
+  switchTerminal(tabId: string): void;
+
+  /** Get the currently active tab id. */
+  getActiveTabId(): string | null;
+
+  /** Update terminal content for a specific tab. */
+  updateTerminalContentForTab(tabId: string): boolean;
+
+  // ── State management ───────────────────────────────────────────────
 
   /** Give keyboard focus to this panel. */
   focus(): void;
@@ -134,6 +159,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       },
       onMouseScroll: (e: MouseEvent) => {
         if (scrollCallback && e.scroll) {
+          log(`[TERMINAL PANEL] onMouseScroll: direction=${e.scroll.direction}, deltaY=${e.scroll.deltaY}`);
           scrollCallback(e.scroll.direction);
           e.preventDefault();
         }
@@ -197,13 +223,105 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     renderer.requestRender();
   }
 
-  // ── Terminal content child tracking ──────────────────────────────────
+  // ── Multi-tab terminal tracking ──────────────────────────────────────
+  interface TerminalEntry {
+    renderer: TerminalRenderer;
+    contentBox: ReturnType<typeof Box>;
+    resolvedChildren: any[];
+  }
+  const terminals = new Map<string, TerminalEntry>();
+  let activeTabId: string | null = null;
+
+  // ── Terminal content child tracking (legacy single-tab) ─────────────
   const TERMINAL_CONTENT_ID = 'terminal-content';
   let hasTerminalContent = false;
 
   // ── Public API ────────────────────────────────────────────────────────
   return {
     component: container,
+
+    registerTerminal(tabId: string, r: TerminalRenderer, rows: number): ReturnType<typeof Box> {
+      log(`[TERMINAL PANEL] registerTerminal: tabId=${tabId}, rows=${rows}`);
+      // Use a unique id per tab so we can find the real renderable later
+      const contentBox = r.createContentBox(rows, `tab-content-${tabId}`);
+      terminals.set(tabId, { renderer: r, contentBox, resolvedChildren: [] });
+      log(`[TERMINAL PANEL] registerTerminal: terminals count now=${terminals.size}`);
+      return contentBox;
+    },
+
+    unregisterTerminal(tabId: string): void {
+      const entry = terminals.get(tabId);
+      if (!entry) return;
+      const r = resolve();
+      if (r) {
+        try { r.connected.remove(entry.contentBox); } catch {}
+      }
+      terminals.delete(tabId);
+      if (activeTabId === tabId) activeTabId = null;
+      renderer.requestRender();
+    },
+
+    switchTerminal(tabId: string): void {
+      log(`[TERMINAL PANEL] switchTerminal: tabId=${tabId}, current activeTabId=${activeTabId}`);
+      const r = resolve();
+      if (!r) {
+        log(`[TERMINAL PANEL] switchTerminal: resolve() returned null`);
+        return;
+      }
+
+      log(`[TERMINAL PANEL] switchTerminal: terminals count=${terminals.size}`);
+      log(`[TERMINAL PANEL] switchTerminal: terminals keys=[${[...terminals.keys()].join(', ')}]`);
+
+      // Hide all terminals — must use REAL renderables, not VNode proxies
+      for (const [id, entry] of terminals) {
+        const shouldShow = id === tabId;
+        log(`[TERMINAL PANEL] switchTerminal: setting tab ${id} visible=${shouldShow}`);
+        // Find the REAL renderable by id
+        const realBox = renderer.root.findDescendantById(`tab-content-${id}`);
+        if (realBox) {
+          log(`[TERMINAL PANEL] switchTerminal: found real renderable for ${id}`);
+          realBox.visible = shouldShow;
+        } else {
+          log(`[TERMINAL PANEL] switchTerminal: real renderable NOT found for ${id}, falling back to proxy`);
+          try { entry.contentBox.visible = shouldShow; } catch (err) {
+            log(`[TERMINAL PANEL] switchTerminal: error setting visible for ${id}: ${err}`);
+          }
+        }
+      }
+
+      activeTabId = tabId;
+      showOnly(r.connected);
+
+      // Resolve children for the active terminal
+      const entry = terminals.get(tabId);
+      if (entry) {
+        log(`[TERMINAL PANEL] switchTerminal: found entry for ${tabId}, resolving children`);
+        // Find the content box by its unique id
+        const contentBox = renderer.root.findDescendantById(`tab-content-${tabId}`);
+        if (contentBox) {
+          const nodeChildren = contentBox.getChildren();
+          entry.resolvedChildren = nodeChildren ?? [];
+          log(`[TERMINAL PANEL] switchTerminal: resolved ${entry.resolvedChildren.length} children`);
+          entry.renderer.resolveChildren(entry.resolvedChildren);
+        } else {
+          log(`[TERMINAL PANEL] switchTerminal: contentBox not found by id 'tab-content-${tabId}'`);
+        }
+      } else {
+        log(`[TERMINAL PANEL] switchTerminal: no entry found for ${tabId}`);
+      }
+
+      renderer.requestRender();
+    },
+
+    getActiveTabId: () => activeTabId,
+
+    updateTerminalContentForTab(tabId: string): boolean {
+      const entry = terminals.get(tabId);
+      if (!entry) return false;
+      const ok = entry.renderer.updateContent();
+      if (ok) renderer.requestRender();
+      return ok;
+    },
 
     setTerminalRenderer(r: TerminalRenderer): void {
       terminalRenderer = r;

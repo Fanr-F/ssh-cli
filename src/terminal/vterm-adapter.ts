@@ -33,16 +33,50 @@ const BRIGHT_PALETTE: Record<number, string> = {
   15: '#FFFFFF',  // Bright White
 };
 
+/**
+ * Helper: compare two ScreenCell arrays for equality (by char + fg + bg).
+ */
+function cellsEqual(a: ScreenCell[], b: ScreenCell[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].char !== b[i].char) return false;
+    const aFg = a[i].fg, bFg = b[i].fg;
+    const aBg = a[i].bg, bBg = b[i].bg;
+    if ((aFg?.r ?? -1) !== (bFg?.r ?? -1) || (aFg?.g ?? -1) !== (bFg?.g ?? -1) || (aFg?.b ?? -1) !== (bFg?.b ?? -1)) return false;
+    if ((aBg?.r ?? -1) !== (bBg?.r ?? -1) || (aBg?.g ?? -1) !== (bBg?.g ?? -1) || (aBg?.b ?? -1) !== (bBg?.b ?? -1)) return false;
+  }
+  return true;
+}
+
 export class VtermAdapter {
   private screen: VtermScreen;
   private _cols: number;
   private _rows: number;
 
+  // ── Custom scrollback buffer ────────────────────────────────────
+  // vterm.js getLine() only reads the visible grid (not scrollback).
+  // We maintain our own scrollback buffer by capturing lines before they scroll off.
+  private _scrollbackBuffer: ScreenCell[][] = [];
+  private _scrollbackLimit: number;
+  private _prevTopLine: ScreenCell[] = [];
+  private _prevScreen: ScreenCell[][] = [];
+
   constructor(cols: number, rows: number, onResponse?: (data: string) => void) {
     this._cols = cols;
     this._rows = rows;
-    this.screen = createVtermScreen({ cols, rows, scrollbackLimit: 5000, onResponse });
+    this._scrollbackLimit = 5000;
+    this.screen = createVtermScreen({ cols, rows, scrollbackLimit: this._scrollbackLimit, onResponse });
     this.applyBrightPalette();
+    this.captureScreen();
+  }
+
+  /** Capture the current screen state for scrollback tracking. */
+  private captureScreen(): void {
+    this._prevTopLine = this.screen.getLine(0).map(c => ({ ...c }));
+    this._prevScreen = [];
+    for (let i = 0; i < this._rows; i++) {
+      this._prevScreen.push(this.screen.getLine(i).map(c => ({ ...c })));
+    }
   }
 
   /** Remap ANSI 16-color palette to brighter colors via OSC 4 sequences. */
@@ -55,11 +89,76 @@ export class VtermAdapter {
   }
 
   feed(data: Uint8Array | string): void {
-    if (typeof data === 'string') {
-      this.screen.process(new TextEncoder().encode(data));
-    } else {
-      this.screen.process(data);
+    try {
+      // Save screen state before feed for scrollback detection
+      this.captureScreen();
+
+      if (typeof data === 'string') {
+        this.screen.process(new TextEncoder().encode(data));
+      } else {
+        this.screen.process(data);
+      }
+
+      // Detect scrolled lines and add to our scrollback buffer
+      this.detectScrolledLines();
+    } catch (err) {
+      logIo(`FEED ERROR: ${err}`);
     }
+  }
+
+  /**
+   * Detect lines that scrolled off the top and add them to scrollback buffer.
+   * Compares the screen state before and after feed to find scrolled lines.
+   */
+  private detectScrolledLines(): void {
+    const newTopLine = this.screen.getLine(0).map(c => ({ ...c }));
+    
+    // If top line changed, lines have scrolled
+    if (!cellsEqual(this._prevTopLine, newTopLine)) {
+      // Find how many lines scrolled by comparing old screen with new screen
+      let scrolledCount = 0;
+      
+      // Simple heuristic: check how many of the old screen's top lines are gone
+      // The old line 0 is definitely gone if it's not in the new screen
+      if (!this.lineExistsInScreen(this._prevTopLine)) {
+        scrolledCount = 1;
+        
+        // Check if more lines scrolled (old line 1 is now gone, etc.)
+        for (let i = 1; i < this._prevScreen.length; i++) {
+          if (!this.lineExistsInScreen(this._prevScreen[i])) {
+            scrolledCount = i + 1;
+          } else {
+            break;
+          }
+        }
+      }
+      
+      // Add scrolled lines to our buffer (oldest first)
+      for (let i = 0; i < scrolledCount && i < this._prevScreen.length; i++) {
+        this._scrollbackBuffer.push(this._prevScreen[i]);
+      }
+      
+      // Trim buffer if too large
+      while (this._scrollbackBuffer.length > this._scrollbackLimit) {
+        this._scrollbackBuffer.shift();
+      }
+      
+      if (scrolledCount > 0) {
+        logIo(`SCROLLBACK: captured ${scrolledCount} lines, buffer size=${this._scrollbackBuffer.length}`);
+      }
+    }
+    
+    // Update prev screen state
+    this.captureScreen();
+  }
+
+  /** Check if a line exists anywhere in the current visible screen. */
+  private lineExistsInScreen(line: ScreenCell[]): boolean {
+    for (let i = 0; i < this._rows; i++) {
+      const screenLine = this.screen.getLine(i);
+      if (cellsEqual(line, screenLine)) return true;
+    }
+    return false;
   }
 
   /** Resize the terminal. */
@@ -88,23 +187,115 @@ export class VtermAdapter {
     return this.screen.getCursorShape();
   }
 
+  // ── Scrollback ────────────────────────────────────────────────────
+
+  /** Number of scrollback lines available. */
+  getScrollbackLength(): number {
+    return this._scrollbackBuffer.length;
+  }
+
+  /** Current viewport scroll offset (0 = at bottom). */
+  getViewportOffset(): number {
+    return this.screen.getViewportOffset();
+  }
+
+  /** Scroll the viewport. Positive = up (older), negative = down (newer). */
+  scrollViewport(delta: number): void {
+    const before = this.screen.getViewportOffset();
+    const scrollback = this._scrollbackBuffer.length;
+    logIo(`SCROLL_VIEWPORT: delta=${delta}, before=${before}, scrollback=${scrollback}`);
+    
+    // Clamp delta to valid range
+    const maxOffset = this._scrollbackBuffer.length;
+    const newOffset = Math.max(0, Math.min(maxOffset, before + delta));
+    const actualDelta = newOffset - before;
+    
+    // Use vterm.js scrollViewport (even though getLine doesn't use it, we track offset ourselves)
+    this.screen.scrollViewport(actualDelta);
+    
+    const after = this.screen.getViewportOffset();
+    logIo(`SCROLL_VIEWPORT: after=${after}, actualDelta=${actualDelta}`);
+  }
+
+  /** Scroll to bottom (viewport offset = 0). */
+  scrollToBottom(): void {
+    const offset = this.screen.getViewportOffset();
+    if (offset > 0) {
+      this.screen.scrollViewport(-offset);
+      logIo(`SCROLL_TO_BOTTOM: was at offset=${offset}`);
+    }
+  }
+
+  /** Check if viewport is at the bottom. */
+  isAtBottom(): boolean {
+    return this.screen.getViewportOffset() === 0;
+  }
+
   /**
    * Get all visible lines as StyledText arrays.
    * Returns an array of StyledText, one per row.
+   * 
+   * When viewport is offset (scrolled up), reads from our custom scrollback buffer
+   * for older content, and from vterm.js grid for newer content.
    */
   getStyledLines(): StyledText[] {
     const lines: StyledText[] = [];
+    const viewportOffset = this.screen.getViewportOffset();
+    const scrollbackSize = this._scrollbackBuffer.length;
+    logIo(`GET_STYLED_LINES: rows=${this._rows}, scrollback=${scrollbackSize}, viewportOffset=${viewportOffset}`);
+    
     for (let row = 0; row < this._rows; row++) {
-      lines.push(this.getStyledLine(row));
+      // Calculate which line to show at this display row
+      // viewportOffset=0 means bottom of scrollback (newest)
+      // Higher viewportOffset means further back in history
+      
+      const scrollbackIndex = scrollbackSize - viewportOffset + row;
+      
+      let cells: ScreenCell[];
+      if (scrollbackIndex >= 0 && scrollbackIndex < scrollbackSize) {
+        // Read from our custom scrollback buffer
+        cells = this._scrollbackBuffer[scrollbackIndex];
+        if (row < 3) {
+          const firstChars = cells.slice(0, 20).map(c => c.char).join('');
+          logIo(`GET_STYLED_LINES row=${row}: from scrollback[${scrollbackIndex}], content="${firstChars}"`);
+        }
+      } else {
+        // Read from vterm.js visible grid
+        const gridRow = scrollbackIndex - scrollbackSize;
+        cells = this.screen.getLine(gridRow);
+        if (row < 3) {
+          const firstChars = cells.slice(0, 20).map(c => c.char).join('');
+          logIo(`GET_STYLED_LINES row=${row}: from grid[${gridRow}], content="${firstChars}"`);
+        }
+      }
+      
+      lines.push(this.cellsToStyledText(cells));
     }
     return lines;
   }
 
   /**
    * Get a single row as StyledText.
+   * Note: row is viewport-relative (0 = top of visible area)
    */
   getStyledLine(row: number): StyledText {
-    const cells = this.screen.getLine(row);
+    const viewportOffset = this.screen.getViewportOffset();
+    const scrollbackSize = this._scrollbackBuffer.length;
+    const scrollbackIndex = scrollbackSize - viewportOffset + row;
+    
+    let cells: ScreenCell[];
+    if (scrollbackIndex >= 0 && scrollbackIndex < scrollbackSize) {
+      cells = this._scrollbackBuffer[scrollbackIndex];
+    } else {
+      const gridRow = scrollbackIndex - scrollbackSize;
+      cells = this.screen.getLine(gridRow);
+    }
+    
+    // Log first few calls for debugging
+    if (row < 3) {
+      const firstChars = cells.slice(0, 20).map(c => c.char).join('');
+      logIo(`GET_LINE row=${row}: scrollbackIdx=${scrollbackIndex}, first20="${firstChars}"`);
+    }
     return this.cellsToStyledText(cells);
   }
 
@@ -196,13 +387,27 @@ export class VtermAdapter {
 
   /**
    * Get plain text for a row (for debugging).
+   * Note: row is viewport-relative
    */
   getLineText(row: number): string {
-    return this.screen.getLine(row).map(c => c.char).join('');
+    const viewportOffset = this.screen.getViewportOffset();
+    const scrollbackSize = this._scrollbackBuffer.length;
+    const scrollbackIndex = scrollbackSize - viewportOffset + row;
+    
+    let cells: ScreenCell[];
+    if (scrollbackIndex >= 0 && scrollbackIndex < scrollbackSize) {
+      cells = this._scrollbackBuffer[scrollbackIndex];
+    } else {
+      const gridRow = scrollbackIndex - scrollbackSize;
+      cells = this.screen.getLine(gridRow);
+    }
+    
+    return cells.map(c => c.char).join('');
   }
 
   /** Reset the terminal. */
   reset(): void {
     this.screen.reset();
+    this._scrollbackBuffer = [];
   }
 }
