@@ -233,8 +233,8 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   let activeTabId: string | null = null;
 
   // ── Terminal content child tracking (legacy single-tab) ─────────────
-  const TERMINAL_CONTENT_ID = 'terminal-content';
   let hasTerminalContent = false;
+  let lastAddedContentBox: ReturnType<typeof Box> | null = null;
 
   // ── Public API ────────────────────────────────────────────────────────
   return {
@@ -245,19 +245,57 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       // Use a unique id per tab so we can find the real renderable later
       const contentBox = r.createContentBox(rows, `tab-content-${tabId}`);
       terminals.set(tabId, { renderer: r, contentBox, resolvedChildren: [] });
-      log(`[TERMINAL PANEL] registerTerminal: terminals count now=${terminals.size}`);
+
+      // Add directly to connected box (multi-tab: each tab owns its own contentBox)
+      const resolved = resolve();
+      if (resolved) {
+        resolved.connected.add(contentBox);
+        // Hide by default — switchTerminal will show the active one
+        contentBox.visible = false;
+        log(`[TERMINAL PANEL] registerTerminal: added contentBox to connected, hidden by default`);
+      }
+
+      log(`[TERMINAL PANEL] registerTerminal: terminals count now=${terminals.size}, terminals keys=[${[...terminals.keys()].join(', ')}]`);
       return contentBox;
     },
 
     unregisterTerminal(tabId: string): void {
+      log(`[TERMINAL PANEL] unregisterTerminal: tabId=${tabId}`);
       const entry = terminals.get(tabId);
-      if (!entry) return;
+      if (!entry) {
+        log(`[TERMINAL PANEL] unregisterTerminal: entry not found for ${tabId}`);
+        return;
+      }
       const r = resolve();
       if (r) {
-        try { r.connected.remove(entry.contentBox); } catch {}
+        // Find and remove by iterating children (more reliable than findDescendantById)
+        const children = r.connected.getChildren() ?? [];
+        log(`[TERMINAL PANEL] unregisterTerminal: connected has ${children.length} children`);
+        for (let i = children.length - 1; i >= 0; i--) {
+          const child = children[i];
+          const childId = child?.id ?? '';
+          log(`[TERMINAL PANEL] unregisterTerminal: checking child ${i} id=${childId}`);
+          if (childId === `tab-content-${tabId}`) {
+            log(`[TERMINAL PANEL] unregisterTerminal: removing child ${i} (tab-content-${tabId})`);
+            try { 
+              r.connected.remove(childId); 
+              log(`[TERMINAL PANEL] unregisterTerminal: successfully removed`);
+            } catch (err) {
+              log(`[TERMINAL PANEL] unregisterTerminal: error removing: ${err}`);
+            }
+            break;
+          }
+        }
       }
       terminals.delete(tabId);
-      if (activeTabId === tabId) activeTabId = null;
+      if (activeTabId === tabId) {
+        log(`[TERMINAL PANEL] unregisterTerminal: was active tab, setting activeTabId=null`);
+        activeTabId = null;
+      }
+      // Reset terminal content tracking since we removed the content
+      hasTerminalContent = false;
+      lastAddedContentBox = null;
+      log(`[TERMINAL PANEL] unregisterTerminal: terminals count now=${terminals.size}`);
       renderer.requestRender();
     },
 
@@ -271,6 +309,14 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
 
       log(`[TERMINAL PANEL] switchTerminal: terminals count=${terminals.size}`);
       log(`[TERMINAL PANEL] switchTerminal: terminals keys=[${[...terminals.keys()].join(', ')}]`);
+      
+      // Log connected children
+      const connectedChildren = r.connected.getChildren() ?? [];
+      log(`[TERMINAL PANEL] switchTerminal: connected has ${connectedChildren.length} children`);
+      for (let i = 0; i < connectedChildren.length; i++) {
+        const child = connectedChildren[i];
+        log(`[TERMINAL PANEL] switchTerminal: child ${i} id=${child?.id ?? 'unknown'}`);
+      }
 
       // Hide all terminals — must use REAL renderables, not VNode proxies
       for (const [id, entry] of terminals) {
@@ -329,21 +375,31 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
 
     setTerminalContent(node: ReturnType<typeof Box>): void {
       const r = resolve();
-      if (!r) return;
-      // Remove previous terminal content if any
-      if (hasTerminalContent) {
-        r.connected.remove(TERMINAL_CONTENT_ID);
+      if (!r) {
+        log(`[TERMINAL PANEL] setTerminalContent: resolve() returned null`);
+        return;
       }
-      r.connected.add(node);
-      hasTerminalContent = true;
-      // Resolve children for in-place updates
-      // VNode proxy's getChildren() returns undefined — must find real renderable by id
-      if (terminalRenderer) {
-        const contentBox = renderer.root.findDescendantById(TERMINAL_CONTENT_ID);
-        if (contentBox) {
-          const nodeChildren = contentBox.getChildren();
-          terminalRenderer.resolveChildren(nodeChildren ?? []);
+      log(`[TERMINAL PANEL] setTerminalContent: hasTerminalContent=${hasTerminalContent}`);
+      
+      // If there's still old content (shouldn't happen after unregisterTerminal), remove it
+      if (hasTerminalContent) {
+        const children = r.connected.getChildren() ?? [];
+        log(`[TERMINAL PANEL] setTerminalContent: clearing ${children.length} old children`);
+        for (let i = children.length - 1; i >= 0; i--) {
+          try { r.connected.remove(children[i]?.id ?? ''); } catch {}
         }
+      }
+      
+      log(`[TERMINAL PANEL] setTerminalContent: adding new node`);
+      r.connected.add(node);
+      lastAddedContentBox = node;
+      hasTerminalContent = true;
+      
+      // Resolve children for in-place updates
+      if (terminalRenderer) {
+        const nodeChildren = node.getChildren?.() ?? [];
+        terminalRenderer.resolveChildren(nodeChildren);
+        log(`[TERMINAL PANEL] setTerminalContent: resolved ${nodeChildren.length} children`);
       }
       renderer.requestRender();
     },

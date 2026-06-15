@@ -342,6 +342,8 @@ export class App {
   }
 
   private async connectTo(config: ConnectionConfig): Promise<void> {
+    logDebug(`[CONNECT] host=${config.host}, username=${config.username}, current tabs=${this.tabs.size}`);
+    
     this.terminalPanel.showConnecting(config.host);
     this.statusBar.setStatus('Connecting to ' + config.host + '...');
     this.renderer.requestRender();
@@ -351,6 +353,7 @@ export class App {
     // Create tab ID
     const tabId = `tab-${Date.now()}`;
     const tabTitle = `${config.username}@${config.host}`;
+    logDebug(`[CONNECT] creating tab id=${tabId}, title=${tabTitle}`);
 
     // Create vterm adapter and renderer for this tab
     const vterm = new VtermAdapter(cols, rows, (response) => {
@@ -362,15 +365,18 @@ export class App {
     terminalRenderer.setVterm(vterm);
 
     // Register with terminal panel
+    logDebug(`[CONNECT] registering terminal ${tabId}`);
     const contentBox = this.terminalPanel.registerTerminal(tabId, terminalRenderer, rows);
-    this.terminalPanel.setTerminalContent(contentBox);
+    logDebug(`[CONNECT] terminal registered: ${tabId}`);
 
     // Create SSH connection
     const ssh = new SshConnection();
     const tab = { vterm, renderer: terminalRenderer, ssh, config };
     this.tabs.set(tabId, tab);
+    logDebug(`[CONNECT] tabs map size now=${this.tabs.size}`);
 
     // Add tab to tab bar
+    logDebug(`[CONNECT] adding tab ${tabId} to tab bar`);
     this.tabBar.addTab(tabId, tabTitle);
 
     // Track whether the SSH session was ever established
@@ -491,24 +497,48 @@ export class App {
 
   private async closeTab(id: string): Promise<void> {
     const tab = this.tabs.get(id);
-    if (!tab) return;
+    if (!tab) {
+      logDebug(`[CLOSE TAB] id=${id} not found in tabs map`);
+      return;
+    }
+
+    logDebug(`[CLOSE TAB] id=${id}, ssh connected=${tab.ssh.isConnected()}`);
+
+    // Remember if this was the active tab before removing
+    const wasActive = this.tabBar.getActiveTabId() === id;
 
     // Disconnect SSH
     if (tab.ssh.isConnected()) {
+      logDebug(`[CLOSE TAB] disconnecting SSH for ${id}`);
       await tab.ssh.disconnect();
+      logDebug(`[CLOSE TAB] SSH disconnected for ${id}`);
     }
 
     // Remove from terminal panel
+    logDebug(`[CLOSE TAB] unregistering terminal ${id}`);
     this.terminalPanel.unregisterTerminal(id);
 
     // Remove from tab bar
+    logDebug(`[CLOSE TAB] removing tab ${id} from tab bar`);
     this.tabBar.removeTab(id);
 
     // Remove from tabs map
     this.tabs.delete(id);
+    logDebug(`[CLOSE TAB] tabs map size now=${this.tabs.size}`);
 
-    // Show idle if no tabs left
-    if (this.tabs.size === 0) {
+    // If there are remaining tabs and we closed the active one, switch to another
+    if (this.tabs.size > 0 && wasActive) {
+      const remainingIds = this.tabBar.getTabIds();
+      if (remainingIds.length > 0) {
+        const switchToId = remainingIds[0];
+        logDebug(`[CLOSE TAB] switching to remaining tab: ${switchToId}`);
+        // Log current state before switching
+        logDebug(`[CLOSE TAB] tabs map keys: ${[...this.tabs.keys()].join(', ')}`);
+        logDebug(`[CLOSE TAB] tab bar ids: ${remainingIds.join(', ')}`);
+        this.switchToTab(switchToId);
+      }
+    } else if (this.tabs.size === 0) {
+      logDebug(`[CLOSE TAB] no tabs left, showing idle`);
       this.terminalPanel.showIdle();
     }
 

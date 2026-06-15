@@ -66,6 +66,7 @@ export class VtermAdapter {
     this._rows = rows;
     this._scrollbackLimit = 5000;
     this.screen = createVtermScreen({ cols, rows, scrollbackLimit: this._scrollbackLimit, onResponse });
+    this._scrollbackBuffer = [];
     this.applyBrightPalette();
     this.captureScreen();
   }
