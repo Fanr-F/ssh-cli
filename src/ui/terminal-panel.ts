@@ -79,12 +79,6 @@ export interface TerminalPanelAPI {
    */
   onScroll(callback: (direction: 'up' | 'down') => void): void;
 
-  /**
-   * Register a callback for mouse selection events.
-   * Receives the event type and row/col coordinates.
-   */
-  onMouseSelect(callback: (event: 'start' | 'extend' | 'end', row: number, col: number) => void): void;
-
   /** Set the focusable state on the real renderable (Proxy-safe). */
   setFocusable(value: boolean): void;
 
@@ -105,7 +99,6 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   let terminalRenderer: TerminalRenderer | null = null;
   let keyCallback: ((key: string) => void) | null = null;
   let scrollCallback: ((direction: 'up' | 'down') => void) | null = null;
-  let mouseSelectCallback: ((event: 'start' | 'extend' | 'end', row: number, col: number) => void) | null = null;
 
   // ── Shared styling constants ──────────────────────────────────────────
   // Tokyo Night palette
@@ -471,10 +464,6 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
 
     onScroll(callback: (direction: 'up' | 'down') => void): void {
       scrollCallback = callback;
-    },
-
-    onMouseSelect(callback: (event: 'start' | 'extend' | 'end', row: number, col: number) => void): void {
-      mouseSelectCallback = callback;
     },
 
     setFocusable(value: boolean): void {

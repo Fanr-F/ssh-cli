@@ -15,6 +15,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
   private client: Client;
   private _state: SshConnectionState = SshConnectionState.Disconnected;
   private shellChannel: ClientChannel | null = null;
+  private _lastError: Error | null = null;
 
   constructor() {
     super();
@@ -26,6 +27,10 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     return this._state;
   }
 
+  getLastError(): Error | null {
+    return this._lastError;
+  }
+
   private setState(state: SshConnectionState): void {
     this._state = state;
     this.emit('stateChange', state);
@@ -34,6 +39,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
   private setupClientHandlers(): void {
     this.client.on('ready', () => {
       this.setState(SshConnectionState.Connected);
+      this._lastError = null; // Clear error on successful connection
       this.emit('ready');
     });
 
@@ -44,6 +50,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     });
 
     this.client.on('error', (err: Error) => {
+      this._lastError = err; // Track the error
       this.emit('error', err);
     });
 

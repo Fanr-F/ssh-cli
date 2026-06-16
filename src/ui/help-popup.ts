@@ -1,5 +1,5 @@
-import { Box, Text, stringToStyledText } from '@opentui/core';
-import type { CliRenderer, KeyEvent } from '@opentui/core';
+import { Box, Text } from '@opentui/core';
+import type { CliRenderer, MouseEvent } from '@opentui/core';
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -55,21 +55,16 @@ const SHORTCUTS: Shortcut[] = [
   {
     category: 'Tab Bar',
     keys: [
-      { key: 'Click', action: 'Switch to tab' },
       { key: 'Double-click', action: 'Close tab' },
     ],
   },
   {
     category: 'Form',
     keys: [
-      { key: '↑/↓', action: 'Navigate between fields' },
       { key: 'Tab', action: 'Next field' },
       { key: 'Shift+Tab', action: 'Previous field' },
-      { key: '←/→', action: 'Move cursor in field' },
       { key: 'Home', action: 'Move cursor to start' },
       { key: 'End', action: 'Move cursor to end' },
-      { key: 'Enter', action: 'Save' },
-      { key: 'Esc', action: 'Cancel' },
     ],
   },
 ];
@@ -98,6 +93,10 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
     }
     return _instance;
   }
+
+  // ── Drag state ──────────────────────────────────────────────────
+  let lastDragX = -1;
+  let lastDragY = -1;
 
   // Build the help content
   function buildContent(): ReturnType<typeof Box>[] {
@@ -175,13 +174,41 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
       position: 'absolute',
       top: '20%',
       left: '25%',
-      width: '50%',
+      width: '30%',
       height: '80%',
       backgroundColor: C.bgOverlay,
       borderColor: C.border,
       flexDirection: 'column',
       padding: 1,
       visible: false,
+      // ── Drag handler ────────────────────────────────────────────
+      onMouseDrag: (e: MouseEvent) => {
+        if (!visible) return;
+        // Initialize on first drag event
+        if (lastDragX === -1) {
+          lastDragX = e.x;
+          lastDragY = e.y;
+          return;
+        }
+        // Calculate delta
+        const deltaX = e.x - lastDragX;
+        const deltaY = e.y - lastDragY;
+        lastDragX = e.x;
+        lastDragY = e.y;
+        // Update position
+        const instance = getInstance();
+        if (instance) {
+          const screenWidth = renderer.width ?? 80;
+          const screenHeight = renderer.height ?? 24;
+          const currentLeft = (parseFloat(String(instance.left)) / 100) * screenWidth;
+          const currentTop = (parseFloat(String(instance.top)) / 100) * screenHeight;
+          const newLeft = currentLeft + deltaX;
+          const newTop = currentTop + deltaY;
+          instance.left = `${Math.max(0, Math.min(80, (newLeft / screenWidth) * 100))}%`;
+          instance.top = `${Math.max(0, Math.min(80, (newTop / screenHeight) * 100))}%`;
+          renderer.requestRender();
+        }
+      },
     },
     ...contentLines,
   );

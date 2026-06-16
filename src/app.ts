@@ -382,6 +382,14 @@ export class App {
   private async connectTo(config: ConnectionConfig): Promise<void> {
     logDebug(`[CONNECT] host=${config.host}, username=${config.username}, current tabs=${this.tabs.size}`);
     
+    // Close any tabs that failed to connect (in error state)
+    for (const [tabId, tab] of this.tabs) {
+      if (!tab.ssh.isConnected() && tab.ssh.getLastError()) {
+        logDebug(`[CONNECT] closing failed tab ${tabId}`);
+        this.closeTab(tabId);
+      }
+    }
+    
     this.terminalPanel.showConnecting(config.host);
     this.statusBar.setStatus('Connecting to ' + config.host + '...');
     this.renderer.requestRender();
