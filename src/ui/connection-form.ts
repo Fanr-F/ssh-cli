@@ -1,6 +1,51 @@
-import { BoxRenderable, TextRenderable } from "@opentui/core";
+import { BoxRenderable, TextRenderable, StyledText } from "@opentui/core";
 import type { CliRenderer, KeyEvent, MouseEvent, RenderContext } from "@opentui/core";
 import type { ConnectionConfig } from "../types/connection.js";
+import { appendFileSync } from "fs";
+
+const LOG_FILE = 'ssh-cli-debug.log';
+function logForm(msg: string) {
+  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] [FORM] ${msg}\n`); } catch {}
+}
+
+/** Create a StyledText from a plain string with optional per-char styling */
+function makeStyledText(text: string, fg?: string): StyledText {
+  const chunks: Array<{
+    __isChunk: true;
+    text: string;
+    fg?: string;
+    bg?: string;
+    attributes: number;
+  }> = [];
+  for (const ch of text) {
+    chunks.push({ __isChunk: true, text: ch, fg, attributes: 0 });
+  }
+  return new StyledText(chunks);
+}
+
+/** Create StyledText with cursor character highlighted (background color) */
+function createStyledWithCursor(text: string, pos: number, fg: string = C.fieldText): StyledText {
+  const chunks: Array<{
+    __isChunk: true;
+    text: string;
+    fg?: string;
+    bg?: string;
+    attributes: number;
+  }> = [];
+  for (let i = 0; i < text.length; i++) {
+    if (i === pos) {
+      // Highlight character at cursor position
+      chunks.push({ __isChunk: true, text: text[i], fg: '#1a1b26', bg: C.cursorBg, attributes: 0 });
+    } else {
+      chunks.push({ __isChunk: true, text: text[i], fg, attributes: 0 });
+    }
+  }
+  // When cursor is at end, add a cursor marker (space with inverted colors)
+  if (pos >= text.length && text.length > 0) {
+    chunks.push({ __isChunk: true, text: ' ', fg: '#1a1b26', bg: C.cursorBg, attributes: 0 });
+  }
+  return new StyledText(chunks);
+}
 
 // ─── Public API ───────────────────────────────────────────────
 
@@ -42,6 +87,7 @@ const C = {
   btnDanger: '#f7768e',
   authActive: '#bb9af7',
   authInactive: '#414868',
+  cursorBg: '#7aa2f7',  // Cursor highlight background
   dialogWidth: 60,
 } as const;
 
@@ -69,6 +115,7 @@ export function createConnectionForm(
   renderer: CliRenderer,
   existing?: ConnectionConfig,
 ): BoxRenderable & FormAPI {
+  logForm(`createConnectionForm called, existing=${existing ? 'yes' : 'no'}`);
   const ctx = renderer as unknown as RenderContext;
 
   // ── State ──────────────────────────────────────────────
@@ -90,6 +137,11 @@ export function createConnectionForm(
   let hasFocus = false;
   let focusedField = 0;
   let passwordRevealed = false;
+  let justFocused = true;
+
+  // Cursor state for each text field (0=name, 1=host, 2=port, 3=username, 5=conditional)
+  const cursorPositions: number[] = [0, 0, 0, 0, 0, 0]; // index 4 unused (auth toggle)
+  let cursorVisible = false;
 
   // ── Renderable references (stored for direct updates) ──
 
@@ -113,10 +165,14 @@ export function createConnectionForm(
   let cancelBtnText: TextRenderable;
   let deleteBtnText: TextRenderable | null = null;
   let deleteBtnBox: BoxRenderable | null = null;
+  let saveBox: BoxRenderable;
+  let cancelBox: BoxRenderable;
+  let authRow: BoxRenderable;
 
   // ── Key handler ────────────────────────────────────────
   function handleKeyDown(key: KeyEvent) {
     if (!hasFocus) return;
+    logForm(`handleKeyDown: name=${key.name}, ctrl=${key.ctrl}, shift=${key.shift}`);
 
     if (key.name === "escape") {
       key.preventDefault();
@@ -129,6 +185,40 @@ export function createConnectionForm(
       const dir = key.shift ? -1 : 1;
       const total = getTotalFields();
       focusedField = ((focusedField + dir) % total + total) % total;
+      justFocused = true;
+      cursorVisible = false;
+      // Reset cursor position to end of new field's text
+      const idx = mapFocusToTextIndex(focusedField);
+      if (idx >= 0) {
+        const k = getStateKey(idx);
+        const text = (state[k] as string) || "";
+        cursorPositions[idx] = text.length;
+      } else if (focusedField === 5) {
+        const text = state.authType === "key" ? state.privateKeyPath : state.password;
+        cursorPositions[5] = text.length;
+      }
+      updateFocusIndicators();
+      return;
+    }
+
+    // Up/Down arrows to navigate between fields
+    if (key.name === "up" || key.name === "down") {
+      key.preventDefault();
+      const dir = key.name === "down" ? 1 : -1;
+      const total = getTotalFields();
+      focusedField = ((focusedField + dir) % total + total) % total;
+      justFocused = true;
+      cursorVisible = false;
+      // Reset cursor position to end of new field's text
+      const idx = mapFocusToTextIndex(focusedField);
+      if (idx >= 0) {
+        const k = getStateKey(idx);
+        const text = (state[k] as string) || "";
+        cursorPositions[idx] = text.length;
+      } else if (focusedField === 5) {
+        const text = state.authType === "key" ? state.privateKeyPath : state.password;
+        cursorPositions[5] = text.length;
+      }
       updateFocusIndicators();
       return;
     }
@@ -148,21 +238,100 @@ export function createConnectionForm(
       return;
     }
 
-    // Backspace
-    if (key.name === "backspace") {
+    // Left/Right arrows to move cursor
+    if (key.name === "left" || key.name === "right") {
       key.preventDefault();
+      justFocused = false;
+      cursorVisible = true;
       const idx = mapFocusToTextIndex(focusedField);
       if (idx >= 0) {
         const k = getStateKey(idx);
-        state[k] = (state[k] as string).slice(0, -1) as never;
+        const text = (state[k] as string) || "";
+        const pos = cursorPositions[idx];
+        if (key.name === "left") {
+          cursorPositions[idx] = Math.max(0, pos - 1);
+        } else {
+          cursorPositions[idx] = Math.min(text.length, pos + 1);
+        }
         refreshTextField(idx);
       } else if (focusedField === 5) {
-        if (state.authType === "key") {
-          state.privateKeyPath = state.privateKeyPath.slice(0, -1);
-          conditionalText.content = state.privateKeyPath || " ";
+        const text = state.authType === "key" ? state.privateKeyPath : state.password;
+        const pos = cursorPositions[5];
+        if (key.name === "left") {
+          cursorPositions[5] = Math.max(0, pos - 1);
         } else {
-          state.password = state.password.slice(0, -1);
-          conditionalText.content = passwordRevealed ? (state.password || " ") : maskPassword(state.password);
+          cursorPositions[5] = Math.min(text.length, pos + 1);
+        }
+        refreshConditional();
+      }
+      return;
+    }
+
+    // Home key - move to start
+    if (key.name === "home") {
+      key.preventDefault();
+      justFocused = false;
+      cursorVisible = true;
+      const idx = mapFocusToTextIndex(focusedField);
+      if (idx >= 0) {
+        cursorPositions[idx] = 0;
+        refreshTextField(idx);
+      } else if (focusedField === 5) {
+        cursorPositions[5] = 0;
+        refreshConditional();
+      }
+      return;
+    }
+
+    // End key - move to end
+    if (key.name === "end") {
+      key.preventDefault();
+      justFocused = false;
+      cursorVisible = true;
+      const idx = mapFocusToTextIndex(focusedField);
+      if (idx >= 0) {
+        const k = getStateKey(idx);
+        const text = (state[k] as string) || "";
+        cursorPositions[idx] = text.length;
+        refreshTextField(idx);
+      } else if (focusedField === 5) {
+        const text = state.authType === "key" ? state.privateKeyPath : state.password;
+        cursorPositions[5] = text.length;
+        refreshConditional();
+      }
+      return;
+    }
+
+    // Backspace
+    if (key.name === "backspace") {
+      key.preventDefault();
+      justFocused = false;
+      cursorVisible = true;
+      const idx = mapFocusToTextIndex(focusedField);
+      if (idx >= 0) {
+        const k = getStateKey(idx);
+        const text = (state[k] as string) || "";
+        const pos = cursorPositions[idx];
+        if (pos > 0) {
+          state[k] = (text.slice(0, pos - 1) + text.slice(pos)) as never;
+          cursorPositions[idx] = pos - 1;
+          refreshTextField(idx);
+        }
+      } else if (focusedField === 5) {
+        if (state.authType === "key") {
+          const pos = cursorPositions[5];
+          if (pos > 0) {
+            state.privateKeyPath = state.privateKeyPath.slice(0, pos - 1) + state.privateKeyPath.slice(pos);
+            cursorPositions[5] = pos - 1;
+            refreshConditional();
+          }
+        } else {
+          const pos = cursorPositions[5];
+          if (pos > 0) {
+            state.password = state.password.slice(0, pos - 1) + state.password.slice(pos);
+            cursorPositions[5] = pos - 1;
+            refreshConditional();
+          }
         }
       }
       return;
@@ -171,18 +340,30 @@ export function createConnectionForm(
     // Delete
     if (key.name === "delete") {
       key.preventDefault();
+      justFocused = false;
+      cursorVisible = true;
       const idx = mapFocusToTextIndex(focusedField);
       if (idx >= 0) {
         const k = getStateKey(idx);
-        state[k] = (state[k] as string).slice(1) as never;
-        refreshTextField(idx);
+        const text = (state[k] as string) || "";
+        const pos = cursorPositions[idx];
+        if (pos < text.length) {
+          state[k] = (text.slice(0, pos) + text.slice(pos + 1)) as never;
+          refreshTextField(idx);
+        }
       } else if (focusedField === 5) {
         if (state.authType === "key") {
-          state.privateKeyPath = state.privateKeyPath.slice(1);
-          conditionalText.content = state.privateKeyPath || " ";
+          const pos = cursorPositions[5];
+          if (pos < state.privateKeyPath.length) {
+            state.privateKeyPath = state.privateKeyPath.slice(0, pos) + state.privateKeyPath.slice(pos + 1);
+            refreshConditional();
+          }
         } else {
-          state.password = state.password.slice(1);
-          conditionalText.content = passwordRevealed ? (state.password || " ") : maskPassword(state.password);
+          const pos = cursorPositions[5];
+          if (pos < state.password.length) {
+            state.password = state.password.slice(0, pos) + state.password.slice(pos + 1);
+            refreshConditional();
+          }
         }
       }
       return;
@@ -192,19 +373,45 @@ export function createConnectionForm(
     if (key.name.length === 1 && !key.ctrl && !key.meta && !key.option) {
       key.preventDefault();
       const ch = key.shift ? key.name.toUpperCase() : key.name;
+      const wasCursorHidden = !cursorVisible;
+      justFocused = false;
+      cursorVisible = true;
       const idx = mapFocusToTextIndex(focusedField);
+      
       if (idx >= 0) {
         const k = getStateKey(idx);
-        state[k] = ((state[k] as string) + ch) as never;
+        if (wasCursorHidden) {
+          // No cursor visible → replace entire field content
+          state[k] = ch as never;
+          cursorPositions[idx] = 1;
+        } else {
+          // Cursor visible → insert at cursor position
+          const text = (state[k] as string) || "";
+          const pos = cursorPositions[idx];
+          state[k] = (text.slice(0, pos) + ch + text.slice(pos)) as never;
+          cursorPositions[idx] = pos + 1;
+        }
         refreshTextField(idx);
       } else if (focusedField === 5) {
-        if (state.authType === "key") {
-          state.privateKeyPath += ch;
-          conditionalText.content = state.privateKeyPath;
+        if (wasCursorHidden) {
+          // No cursor visible → replace entire field content
+          if (state.authType === "key") {
+            state.privateKeyPath = ch;
+          } else {
+            state.password = ch;
+          }
+          cursorPositions[5] = 1;
         } else {
-          state.password += ch;
-          conditionalText.content = passwordRevealed ? (state.password || " ") : maskPassword(state.password);
+          // Cursor visible → insert at cursor position
+          const pos = cursorPositions[5];
+          if (state.authType === "key") {
+            state.privateKeyPath = state.privateKeyPath.slice(0, pos) + ch + state.privateKeyPath.slice(pos);
+          } else {
+            state.password = state.password.slice(0, pos) + ch + state.password.slice(pos);
+          }
+          cursorPositions[5] = pos + 1;
         }
+        refreshConditional();
       }
       return;
     }
@@ -272,6 +479,8 @@ export function createConnectionForm(
       content: getInitialText(fd.key),
       fg: C.fieldText,
     });
+    // Set initial styled text
+    val.textBuffer.setStyledText(makeStyledText(getInitialText(fd.key), C.fieldText));
     fieldTexts.push(val);
 
     const inp = new BoxRenderable(ctx, {
@@ -283,6 +492,12 @@ export function createConnectionForm(
       onMouseDown: (e: MouseEvent) => {
         e.stopPropagation();
         focusedField = i;
+        justFocused = false;
+        cursorVisible = true;
+        // Position cursor at end on click
+        const k = getStateKey(i);
+        const text = (state[k] as string) || "";
+        cursorPositions[i] = text.length;
         updateFocusIndicators();
         hasFocus = true;
       },
@@ -297,9 +512,7 @@ export function createConnectionForm(
   function getInitialText(key: string): string {
     const s = state as unknown as Record<string, string>;
     const v = s[key];
-    if (v) return v;
-    if (key === "port") return "22";
-    return " ";
+    return v || (key === "port" ? "22" : " ");
   }
 
   // ── Auth toggle ────────────────────────────────────────
@@ -318,8 +531,10 @@ export function createConnectionForm(
     fg: C.authInactive,
   });
 
-  const authRow = new BoxRenderable(ctx, {
+  authRow = new BoxRenderable(ctx, {
     flexDirection: "row",
+    border: true,
+    borderColor: C.fieldBorder,
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
       // Toggle auth type on click
@@ -346,6 +561,8 @@ export function createConnectionForm(
     content: state.privateKeyPath || "~/.ssh/id_ed25519",
     fg: C.fieldText,
   });
+  // Set initial styled text
+  conditionalText.textBuffer.setStyledText(makeStyledText(state.privateKeyPath || "~/.ssh/id_ed25519", C.fieldText));
 
   conditionalBox = new BoxRenderable(ctx, {
     flexDirection: "row",
@@ -357,6 +574,11 @@ export function createConnectionForm(
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
       focusedField = 5;
+      justFocused = false;
+      cursorVisible = true;
+      // Position cursor at end on click
+      const text = state.authType === "key" ? state.privateKeyPath : state.password;
+      cursorPositions[5] = text.length;
       updateFocusIndicators();
       hasFocus = true;
     },
@@ -377,6 +599,11 @@ export function createConnectionForm(
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
       focusedField = 5;
+      justFocused = false;
+      cursorVisible = true;
+      // Position cursor at end on click
+      const text = state.authType === "key" ? state.privateKeyPath : state.password;
+      cursorPositions[5] = text.length;
       updateFocusIndicators();
       hasFocus = true;
       passwordRevealed = true;
@@ -402,7 +629,7 @@ export function createConnectionForm(
   body.add(btnRow);
 
   // Save
-  const saveBox = new BoxRenderable(ctx, {
+  saveBox = new BoxRenderable(ctx, {
     border: true,
     borderColor: C.fieldBorder,
     paddingX: 2,
@@ -417,7 +644,7 @@ export function createConnectionForm(
   btnRow.add(saveBox);
 
   // Cancel
-  const cancelBox = new BoxRenderable(ctx, {
+  cancelBox = new BoxRenderable(ctx, {
     border: true,
     borderColor: C.fieldBorder,
     paddingX: 2,
@@ -458,7 +685,21 @@ export function createConnectionForm(
   function refreshTextField(idx: number) {
     if (idx < 0 || idx >= fieldTexts.length) return;
     const k = getStateKey(idx);
-    fieldTexts[idx].content = (state[k] as string) || " ";
+    const text = (state[k] as string) || " ";
+    try {
+      if (idx === focusedField && cursorVisible) {
+        const cursorPos = cursorPositions[idx];
+        if (text.length > 0) {
+          fieldTexts[idx].textBuffer.setStyledText(createStyledWithCursor(text, cursorPos));
+        } else {
+          fieldTexts[idx].textBuffer.setStyledText(makeStyledText(text, C.fieldText));
+        }
+      } else {
+        fieldTexts[idx].textBuffer.setStyledText(makeStyledText(text, C.fieldText));
+      }
+    } catch (err) {
+      logForm(`refreshTextField error: ${err}`);
+    }
   }
 
   function refreshAuthToggle() {
@@ -472,22 +713,61 @@ export function createConnectionForm(
   function refreshConditional() {
     const isKey = state.authType === "key";
     conditionalLabel.content = isKey ? "Key Path" : "Password";
-    if (isKey) {
-      conditionalText.content = state.privateKeyPath || "~/.ssh/id_ed25519";
-    } else {
-      conditionalText.content = passwordRevealed
-        ? (state.password || " ")
-        : maskPassword(state.password || "");
+    const showCursor = focusedField === 5 && cursorVisible;
+    try {
+      if (isKey) {
+        const text = state.privateKeyPath || "~/.ssh/id_ed25519";
+        if (showCursor) {
+          if (text.length > 0) {
+            conditionalText.textBuffer.setStyledText(createStyledWithCursor(text, cursorPositions[5]));
+          } else {
+            conditionalText.textBuffer.setStyledText(makeStyledText(text, C.fieldText));
+          }
+        } else {
+          conditionalText.textBuffer.setStyledText(makeStyledText(text, C.fieldText));
+        }
+      } else {
+        const displayText = passwordRevealed
+          ? (state.password || " ")
+          : maskPassword(state.password || "");
+        if (showCursor) {
+          if (displayText.length > 0) {
+            conditionalText.textBuffer.setStyledText(createStyledWithCursor(displayText, cursorPositions[5]));
+          } else {
+            conditionalText.textBuffer.setStyledText(makeStyledText(displayText, C.fieldText));
+          }
+        } else {
+          conditionalText.textBuffer.setStyledText(makeStyledText(displayText, C.fieldText));
+        }
+      }
+      // Show/hide eye icon based on auth type
+      eyeIcon.visible = !isKey;
+    } catch (err) {
+      logForm(`refreshConditional error: ${err}`);
     }
-    // Show/hide eye icon based on auth type
-    eyeIcon.visible = !isKey;
   }
 
   function updateFocusIndicators() {
+    // Text field boxes (0-3)
     for (let i = 0; i < fieldBoxes.length; i++) {
       fieldBoxes[i].borderColor = i === focusedField ? C.fieldFocusedBorder : C.fieldBorder;
     }
+    // Conditional field (5)
     conditionalBox.borderColor = focusedField === 5 ? C.fieldFocusedBorder : C.fieldBorder;
+    // Auth toggle (4)
+    authRow.borderColor = focusedField === 4 ? C.fieldFocusedBorder : C.fieldBorder;
+    // Buttons (6=save, 7=cancel, 8=delete)
+    saveBox.borderColor = focusedField === 6 ? C.fieldFocusedBorder : C.fieldBorder;
+    cancelBox.borderColor = focusedField === 7 ? C.fieldFocusedBorder : C.fieldBorder;
+    if (deleteBtnBox) {
+      deleteBtnBox.borderColor = focusedField === 8 ? C.fieldFocusedBorder : C.fieldBorder;
+    }
+    // Update cursor display for all text fields
+    for (let i = 0; i < fieldTexts.length; i++) {
+      refreshTextField(i);
+    }
+    // Update cursor for conditional field
+    refreshConditional();
   }
 
   function mapFocusToTextIndex(focus: number): number {
@@ -561,6 +841,16 @@ export function createConnectionForm(
 
   function focus() {
     hasFocus = true;
+    justFocused = true;
+    cursorVisible = false;
+    // Initialize cursor positions to end of each field
+    for (let i = 0; i < 4; i++) {
+      const k = getStateKey(i);
+      const text = (state[k] as string) || "";
+      cursorPositions[i] = text.length;
+    }
+    const condText = state.authType === "key" ? state.privateKeyPath : state.password;
+    cursorPositions[5] = condText.length;
     updateFocusIndicators();
   }
 

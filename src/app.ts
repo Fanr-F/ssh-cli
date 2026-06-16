@@ -588,7 +588,7 @@ export class App {
     if (this.form) return;
     this.focusForm();
     const form = createConnectionForm(this.renderer, existing ?? undefined);
-    form.onCancel(() => { this.closeForm(form); });
+    form.onCancel(() => { this.closeForm(form); this.focusSidebar(); });
     form.onSubmit(async (data: ConnectionConfig) => {
       try {
         if (existing) {

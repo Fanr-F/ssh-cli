@@ -34,6 +34,7 @@ const SHORTCUTS: Shortcut[] = [
     category: 'Sidebar',
     keys: [
       { key: 'Alt+↑/↓', action: 'Navigate connections (global)' },
+      { key: '↑/↓', action: 'Navigate connections (when focused)' },
       { key: 'Enter', action: 'Connect to selected server' },
       { key: 'A', action: 'Add new connection' },
       { key: 'E', action: 'Edit selected connection' },
@@ -56,6 +57,19 @@ const SHORTCUTS: Shortcut[] = [
     keys: [
       { key: 'Click', action: 'Switch to tab' },
       { key: 'Double-click', action: 'Close tab' },
+    ],
+  },
+  {
+    category: 'Form',
+    keys: [
+      { key: '↑/↓', action: 'Navigate between fields' },
+      { key: 'Tab', action: 'Next field' },
+      { key: 'Shift+Tab', action: 'Previous field' },
+      { key: '←/→', action: 'Move cursor in field' },
+      { key: 'Home', action: 'Move cursor to start' },
+      { key: 'End', action: 'Move cursor to end' },
+      { key: 'Enter', action: 'Save' },
+      { key: 'Esc', action: 'Cancel' },
     ],
   },
 ];
