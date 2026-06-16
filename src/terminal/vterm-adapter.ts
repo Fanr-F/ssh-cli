@@ -232,6 +232,8 @@ export class VtermAdapter {
     return this.screen.getViewportOffset() === 0;
   }
 
+
+
   /**
    * Get all visible lines as StyledText arrays.
    * Returns an array of StyledText, one per row.

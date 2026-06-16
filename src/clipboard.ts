@@ -6,16 +6,24 @@
  */
 
 import { spawn } from 'bun';
+import { appendFileSync } from 'fs';
+
+const LOG_FILE = 'ssh-cli-debug.log';
+function logDebug(msg: string) {
+  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
 
 // ─── Copy ──────────────────────────────────────────────────────
 
 export async function copyToClipboard(text: string): Promise<boolean> {
+  logDebug(`[CLIPBOARD] copyToClipboard: text="${text.substring(0, 100)}"`);
   const input = Buffer.from(text, 'utf-8');
   const platform = process.platform;
 
   try {
     if (platform === 'darwin') {
       const proc = await spawn(['pbcopy'], { stdin: input }).exited;
+      logDebug(`[CLIPBOARD] pbcopy result: ${proc}`);
       return proc === 0;
     }
 
@@ -30,6 +38,7 @@ export async function copyToClipboard(text: string): Promise<boolean> {
         ],
         { stdin: input, stdout: 'ignore', stderr: 'ignore' },
       ).exited;
+      logDebug(`[CLIPBOARD] powershell Set-Clipboard result: ${proc}`);
       return proc === 0;
     }
 
@@ -54,7 +63,8 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     }
 
     return false;
-  } catch {
+  } catch (e) {
+    logDebug(`[CLIPBOARD] copyToClipboard ERROR: ${e}`);
     return false;
   }
 }

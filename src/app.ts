@@ -658,34 +658,50 @@ export class App {
   private async handleCopy(): Promise<void> {
     let text = '';
 
+    logDebug(`[COPY] handleCopy called, focus=${this.focus}`);
+
     if (this.focus === 'sidebar') {
       // Copy selected connection info
       const conn = this.sidebar.getSelectedConnection();
       if (conn) {
         text = `${conn.username}@${conn.host}:${conn.port}`;
+        logDebug(`[COPY] sidebar: copied connection info="${text}"`);
       }
     } else if (this.focus === 'terminal') {
-      // Copy last line of terminal output
-      const activeId = this.tabBar.getActiveTabId();
-      if (activeId) {
-        const tab = this.tabs.get(activeId);
-        if (tab) {
-          const lines = tab.renderer.getVisibleLines() ?? [];
-          for (let i = lines.length - 1; i >= 0; i--) {
-            const line = lines[i].trim();
-            if (line) { text = line; break; }
+      // Copy selected text using OpenTUI's built-in selection, otherwise copy last line
+      if (this.renderer.hasSelection) {
+        const selection = this.renderer.getSelection();
+        text = selection?.getSelectedText() ?? '';
+        logDebug(`[COPY] terminal: copied OpenTUI selection="${text.substring(0, 100)}"`);
+        this.renderer.clearSelection();
+      } else {
+        const activeId = this.tabBar.getActiveTabId();
+        logDebug(`[COPY] terminal: activeId=${activeId}`);
+        if (activeId) {
+          const tab = this.tabs.get(activeId);
+          if (tab) {
+            const lines = tab.renderer.getVisibleLines() ?? [];
+            logDebug(`[COPY] terminal: ${lines.length} visible lines`);
+            for (let i = lines.length - 1; i >= 0; i--) {
+              const line = lines[i].trim();
+              if (line) { text = line; logDebug(`[COPY] terminal: last non-empty line[${i}]="${line.substring(0, 50)}"`); break; }
+            }
           }
         }
       }
     } else if (this.focus === 'form' && this.form) {
       // Copy the content of the currently focused form field
       text = this.form.getFocusedFieldContent();
+      logDebug(`[COPY] form: copied field content="${text?.substring(0, 50)}"`);
     }
 
     if (text) {
+      logDebug(`[COPY] copying to clipboard: "${text.substring(0, 100)}"`);
       const ok = await copyToClipboard(text);
+      logDebug(`[COPY] copyToClipboard result: ok=${ok}`);
       this.statusBar.setStatus(ok ? 'Copied to clipboard' : 'Copy failed');
     } else {
+      logDebug(`[COPY] no text to copy`);
       this.statusBar.setStatus('Nothing to copy');
     }
     this.renderer.requestRender();
