@@ -81,6 +81,9 @@ export interface TerminalPanelAPI {
 
   /** Set the focusable state on the real renderable (Proxy-safe). */
   setFocusable(value: boolean): void;
+
+  /** Set visual focus highlight (changes border color). */
+  setFocused(value: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +154,8 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       id: 'terminal-panel',
       flexGrow: 1,
       backgroundColor: C.bg,
+      borderStyle: 'rounded',
+      borderColor: '#3b4261',
       onKeyDown: (key: KeyEvent) => {
         if (keyCallback) {
           keyCallback(key.sequence);
@@ -464,6 +469,11 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     setFocusable(value: boolean): void {
       const r = resolve();
       if (r) r.container.focusable = value;
+    },
+
+    setFocused(value: boolean): void {
+      const r = resolve();
+      if (r) r.container.borderColor = value ? '#7aa2f7' : '#3b4261';
     },
   };
 }

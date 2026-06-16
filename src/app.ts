@@ -207,6 +207,9 @@ export class App {
 
   private setupGlobalKeys(): void {
     this.renderer.keyInput.on('keypress', async (key: KeyEvent) => {
+      const seqHex = [...(key.sequence ?? '')].map(c => `0x${c.charCodeAt(0).toString(16).padStart(2,'0')}`).join(' ');
+      logDebug(`[KEY] name=${key.name} ctrl=${key.ctrl} shift=${key.shift} alt=${key.alt} seqHex=[${seqHex}] raw=${JSON.stringify(key.sequence)}`);
+
       // Global: Ctrl+Q → quit
       if (key.ctrl && key.name === 'q') { this.shutdown(); return; }
 
@@ -224,13 +227,6 @@ export class App {
         return;
       }
 
-      // Global: Ctrl+Tab → toggle focus
-      if (key.ctrl && key.name === 'tab') {
-        if (this.focus === 'sidebar') this.focusTerminal();
-        else if (this.focus === 'terminal') this.focusSidebar();
-        key.preventDefault(); return;
-      }
-
       // Global: Ctrl+Shift+C → close current tab
       if (key.ctrl && key.shift && key.name === 'c') {
         const activeId = this.tabBar.getActiveTabId();
@@ -244,6 +240,17 @@ export class App {
         key.preventDefault(); return;
       }
 
+      // Global: Alt+Up/Down → navigate sidebar connections
+      // OpenTUI doesn't set key.alt, detect via xterm escape sequence: ESC[1;3A (Alt+Up) / ESC[1;3B (Alt+Down)
+      const seq = key.sequence ?? '';
+      logDebug(`[KEY ALT] seq.length=${seq.length} seq[0]=0x${(seq.charCodeAt(0)||0).toString(16)} seq === altLeft? ${seq === '\x1b[1;3D'} seq === altRight? ${seq === '\x1b[1;3C'}`);
+      if (seq === '\x1b[1;3A') { this.sidebar.selectPrevious(); key.preventDefault(); return; }
+      if (seq === '\x1b[1;3B') { this.sidebar.selectNext(); key.preventDefault(); return; }
+
+      // Global: Alt+Left/Right → switch focus between sidebar and terminal
+      if (seq === '\x1b[1;3D') { logDebug(`[KEY] Alt+Left matched, switching to sidebar`); this.focusSidebar(); key.preventDefault(); return; }
+      if (seq === '\x1b[1;3C') { logDebug(`[KEY] Alt+Right matched, switching to terminal`); this.focusTerminal(); key.preventDefault(); return; }
+
       // Global: F1 → toggle help popup
       if (key.name === 'f1') {
         this.helpPopup.toggle();
@@ -255,6 +262,34 @@ export class App {
         const num = parseInt(key.name.slice(1), 10);
         if (num >= 2 && num <= 12) {
           this.switchToTabIndex(num - 2);
+          key.preventDefault(); return;
+        }
+      }
+
+      // Terminal: PageUp/PageDown → scroll viewport
+      if (this.focus === 'terminal') {
+        if (key.name === 'pageup') {
+          const activeId = this.tabBar.getActiveTabId();
+          if (activeId) {
+            const tab = this.tabs.get(activeId);
+            if (tab?.vterm) {
+              tab.vterm.scrollViewport(tab.vterm.rows - 1);
+              this.terminalPanel.updateTerminalContentForTab(activeId);
+              this.renderer.requestRender();
+            }
+          }
+          key.preventDefault(); return;
+        }
+        if (key.name === 'pagedown') {
+          const activeId = this.tabBar.getActiveTabId();
+          if (activeId) {
+            const tab = this.tabs.get(activeId);
+            if (tab?.vterm) {
+              tab.vterm.scrollViewport(-tab.vterm.rows + 1);
+              this.terminalPanel.updateTerminalContentForTab(activeId);
+              this.renderer.requestRender();
+            }
+          }
           key.preventDefault(); return;
         }
       }
@@ -327,13 +362,15 @@ export class App {
 
   private focusSidebar(): void {
     this.focus = 'sidebar'; this.sidebar.setFocusable(true);
-    if (this.terminalPanel) this.terminalPanel.setFocusable(false);
+    this.sidebar.setFocused(true);
+    if (this.terminalPanel) { this.terminalPanel.setFocusable(false); this.terminalPanel.setFocused(false); }
     this.statusBar.setStatus('Sidebar focused'); this.renderer.requestRender();
   }
 
   private focusTerminal(): void {
     this.focus = 'terminal'; this.sidebar.setFocusable(false);
-    if (this.terminalPanel) { this.terminalPanel.setFocusable(true); this.terminalPanel.focus(); }
+    this.sidebar.setFocused(false);
+    if (this.terminalPanel) { this.terminalPanel.setFocusable(true); this.terminalPanel.setFocused(true); this.terminalPanel.focus(); }
     this.statusBar.setStatus('Terminal focused'); this.renderer.requestRender();
   }
 
@@ -472,7 +509,8 @@ export class App {
       return;
     }
 
-    logDebug(`[APP] switchToTab: calling terminalPanel.switchTerminal(${id})`);
+    logDebug(`[APP] switchToTab: calling tabBar.switchTo(${id}) and terminalPanel.switchTerminal(${id})`);
+    this.tabBar.switchTo(id);
     this.terminalPanel.switchTerminal(id);
     this.focusTerminal();
     this.renderer.requestRender();

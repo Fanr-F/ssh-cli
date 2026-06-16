@@ -22,6 +22,8 @@ export interface SidebarAPI {
   onAction(callback: (action: string, conn: ConnectionConfig) => void): void;
   /** Set the focusable state on the real renderable (Proxy-safe). */
   setFocusable(value: boolean): void;
+  /** Set visual focus highlight (changes border color). */
+  setFocused(value: boolean): void;
   /** Set the sidebar width (triggers re-render). */
   setWidth(value: number): void;
   /** Get the current sidebar width. */
@@ -236,6 +238,11 @@ export function createSidebar(
     setFocusable(value: boolean): void {
       const instance = getInstance();
       if (instance) instance.focusable = value;
+    },
+
+    setFocused(value: boolean): void {
+      const instance = getInstance();
+      if (instance) instance.borderColor = value ? BORDER_ACTIVE : BORDER;
     },
 
     setWidth(value: number): void {

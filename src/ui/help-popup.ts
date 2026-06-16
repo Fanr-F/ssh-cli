@@ -26,14 +26,14 @@ const SHORTCUTS: Shortcut[] = [
     category: 'General',
     keys: [
       { key: 'Ctrl+Q', action: 'Quit application' },
-      { key: 'Ctrl+Tab', action: 'Toggle focus (Sidebar ↔ Terminal)' },
+      { key: 'Alt+←/→', action: 'Switch focus (Sidebar ↔ Terminal)' },
       { key: 'F1', action: 'Show this help' },
     ],
   },
   {
     category: 'Sidebar',
     keys: [
-      { key: '↑/↓', action: 'Navigate connections' },
+      { key: 'Alt+↑/↓', action: 'Navigate connections (global)' },
       { key: 'Enter', action: 'Connect to selected server' },
       { key: 'A', action: 'Add new connection' },
       { key: 'E', action: 'Edit selected connection' },
@@ -48,6 +48,7 @@ const SHORTCUTS: Shortcut[] = [
       { key: 'Ctrl+Shift+C', action: 'Close current tab' },
       { key: 'Ctrl+Shift+Tab', action: 'Cycle to next tab' },
       { key: 'F2-F12', action: 'Switch to tab 1-11' },
+      { key: 'PageUp/PageDown', action: 'Scroll terminal output' },
     ],
   },
   {
