@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "install": "bun install",
     "start": "bun run src/index.ts"
   },
   "devDependencies": {
@@ -14,9 +15,9 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@ansi-tools/parser": "^1.0.17",
     "@opentui/core": "^0.4.0",
     "@opentui/core-win32-x64": "0.4.0",
-    "ssh2-no-cpu-features": "^2.0.0"
+    "ssh2-no-cpu-features": "^2.0.0",
+    "vterm.js": "^0.5.0"
   }
 }
