@@ -5,6 +5,8 @@
 
 A terminal-based SSH client with an interactive TUI, built with [Bun](https://bun.sh) and [OpenTUI](https://github.com/xanderjohansen/opentui).
 
+**[中文文档](README.zh.md)**
+
 ---
 
 <!-- markdownlint-disable MD025 -->

@@ -9,6 +9,7 @@
 - **Terminal Emulation**: vterm.js (via vterm-adapter.ts)
 - **SSH Library**: ssh2-no-cpu-features
 - **Language**: TypeScript (strict mode)
+- **Documentation**: [English](README.md) | [中文](README.zh.md)
 
 ## Project Structure
 
