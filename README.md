@@ -101,6 +101,7 @@ All core layers are implemented and integrated.
 src/
 ├── index.ts              # Entry point — creates renderer and initializes App
 ├── app.ts                # Main application class — layout, focus management, keyboard routing
+├── logger.ts             # Logging system (LogTape, writes to ssh-cli.log)
 ├── clipboard.ts          # Clipboard operations (copy/paste)
 ├── ssh/                  # SSH connection layer
 │   ├── auth.ts           #   Authentication config builder (key/password)
@@ -138,8 +139,33 @@ git clone <repo-url> && cd ssh-cli
 # Install dependencies
 bun install
 
-# Run
+# Run (default: info level logging to ssh-cli.log)
 bun start
+
+# Run with debug logging
+bun run start -- --log-level debug
+
+# Run with trace logging (most verbose)
+bun run start -- --log-level trace
+```
+
+### Logging
+
+All logs are written to `ssh-cli.log` in the project root. No console output (TUI safe).
+
+| Flag | Description |
+|---|---|
+| `--log-level trace` | Most verbose — all operations logged |
+| `--log-level debug` | Debug messages and above |
+| `--log-level info` | Info and above (default) |
+| `--log-level warning` | Warnings and errors only |
+| `--log-level error` | Errors only |
+
+Log format:
+```
+[2026-06-17T01:56:51.603Z] [DEBUG  ] [ssh-cli.terminal] GET_STYLED_LINES: rows=49, scrollback=0, viewportOffset=0
+[2026-06-17T01:56:51.612Z] [INFO   ] [ssh-cli.ssh] Connecting to SSH server host=192.168.1.100
+[2026-06-17T01:56:52.105Z] [ERROR  ] [ssh-cli.ssh] SSH connection error error=Connection refused
 ```
 
 ### Usage
@@ -212,6 +238,7 @@ Press `Ctrl+Q` to quit the application.
 | [`@opentui/core`](https://github.com/xanderjohansen/opentui) | Terminal UI framework (Box, Text, renderer, input) |
 | [`vterm.js`](https://github.com/nickmccurdy/vterm.js) | Full terminal emulation with ANSI support |
 | [`ssh2-no-cpu-features`](https://github.com/JAForbes/ssh2-no-cpu-features) | SSH2 client (cpu-features-free fork) |
+| [`@logtape/logtape`](https://github.com/dahlia/logtape) | Structured logging (zero deps, file output) |
 
 ### Key Design Decisions
 
@@ -221,6 +248,7 @@ Press `Ctrl+Q` to quit the application.
 - **vterm.js** — Full terminal emulation instead of custom ANSI parser for better compatibility
 - **Dirty-row rendering** — The terminal renderer only redraws rows that changed (efficient for partial updates)
 - **Dynamic import** — `ssh2-no-cpu-features` is imported via `await import()` because it ships ESM with top-level await
+- **File-only logging** — All logs write to `ssh-cli.log` (no console output to preserve TUI integrity)
 
 ---
 

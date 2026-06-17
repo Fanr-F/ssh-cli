@@ -1,11 +1,8 @@
 import { Box, Text } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
-import { appendFileSync } from 'fs';
+import { createLogger } from '../logger';
 
-const LOG_FILE = 'ssh-cli-debug.log';
-function log(msg: string) {
-  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
-}
+const log = createLogger('tab-bar');
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -83,13 +80,13 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
             const isDoubleClick = tab.id === lastClickId && (now - lastClickTime) < DOUBLE_CLICK_MS;
             lastClickId = tab.id;
             lastClickTime = now;
-            log(`[TAB BAR] MouseDown: tab=${tab.id}, isDoubleClick=${isDoubleClick}`);
+            log.debug(`[TAB BAR] MouseDown: tab=${tab.id}, isDoubleClick=${isDoubleClick}`);
 
             if (isDoubleClick) {
-              log(`[TAB BAR] Double-click detected, closing tab ${tab.id}`);
+              log.debug(`[TAB BAR] Double-click detected, closing tab ${tab.id}`);
               onCloseCb?.(tab.id);
             } else {
-              log(`[TAB BAR] Single-click, switching to tab ${tab.id}`);
+              log.debug(`[TAB BAR] Single-click, switching to tab ${tab.id}`);
               switchTo(tab.id);
             }
           },
@@ -120,14 +117,14 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
   }
 
   function switchTo(id: string): void {
-    log(`[TAB BAR] switchTo called: id=${id}, current activeTabId=${activeTabId}`);
+    log.debug(`[TAB BAR] switchTo called: id=${id}, current activeTabId=${activeTabId}`);
     if (activeTabId === id) {
-      log(`[TAB BAR] switchTo: already active, returning`);
+      log.debug(`[TAB BAR] switchTo: already active, returning`);
       return;
     }
     activeTabId = id;
     rebuild();
-    log(`[TAB BAR] switchTo: calling onSwitchCb for ${id}`);
+    log.debug(`[TAB BAR] switchTo: calling onSwitchCb for ${id}`);
     onSwitchCb?.(id);
   }
 

@@ -14,24 +14,7 @@ import { VtermAdapter } from './terminal/vterm-adapter';
 import { TerminalRenderer } from './terminal/terminal-renderer';
 import { SshConnection } from './ssh/connection';
 import { copyToClipboard, pasteFromClipboard } from './clipboard';
-import { appendFileSync, writeFileSync } from 'fs';
-
-const LOG_FILE = 'ssh-cli-debug.log';
-const IO_LOG_FILE = 'ssh-cli-io.log';
-
-function logDebug(msg: string) {
-  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
-}
-
-function logIO(direction: 'IN' | 'OUT', data: string | Buffer) {
-  try {
-    const ts = new Date().toISOString();
-    const preview = typeof data === 'string'
-      ? data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[^\x20-\x7E\n\r\t]/g, '·')
-      : data.toString('utf-8').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[^\x20-\x7E\n\r\t]/g, '·');
-    appendFileSync(IO_LOG_FILE, `[${ts}] ${direction} (${typeof data === 'string' ? data.length : data.length}B): ${preview.substring(0, 500)}\n`);
-  } catch {}
-}
+import { logDebug, logIO } from './logger';
 
 type FocusZone = 'sidebar' | 'terminal' | 'form';
 
@@ -92,8 +75,6 @@ export class App {
   }
 
   async init(): Promise<void> {
-    writeFileSync(LOG_FILE, '');
-    writeFileSync(IO_LOG_FILE, '');
     logDebug('App starting');
     this.store = new ConnectionStore();
     try {

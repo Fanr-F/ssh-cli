@@ -1,11 +1,8 @@
 import { Box, Text, StyledText } from '@opentui/core';
 import { VtermAdapter } from './vterm-adapter';
-import { appendFileSync } from 'fs';
+import { createLogger } from '../logger';
 
-const LOG_FILE = 'ssh-cli-debug.log';
-function log(msg: string) {
-  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
-}
+const log = createLogger('renderer');
 
 export class TerminalRenderer {
   private vterm: VtermAdapter | null = null;
@@ -50,7 +47,7 @@ export class TerminalRenderer {
 
   updateContent(): boolean {
     if (!this.vterm || !this.initialized || this.lineTexts.length === 0) {
-      log(`[TERMINAL RENDERER] updateContent: skipped (vterm=${!!this.vterm}, initialized=${this.initialized}, lineTexts=${this.lineTexts.length})`);
+      log.debug(`[TERMINAL RENDERER] updateContent: skipped (vterm=${!!this.vterm}, initialized=${this.initialized}, lineTexts=${this.lineTexts.length})`);
       return false;
     }
 
@@ -63,11 +60,11 @@ export class TerminalRenderer {
 
       // Log first few updates and periodically
       if (this._updateCount <= 5 || this._updateCount % 50 === 0) {
-        log(`[TERMINAL RENDERER] updateContent: count=${this._updateCount}, lines=${styledLines.length}, viewportOffset=${viewportOffset}, cursorPos=${JSON.stringify(cursorPos)}`);
+        log.debug(`[TERMINAL RENDERER] updateContent: count=${this._updateCount}, lines=${styledLines.length}, viewportOffset=${viewportOffset}, cursorPos=${JSON.stringify(cursorPos)}`);
         // Log first 3 lines content
         for (let i = 0; i < Math.min(3, styledLines.length); i++) {
           const text = this.getTextFromStyledText(styledLines[i]);
-          log(`[TERMINAL RENDERER] line ${i}: "${text.substring(0, 50)}"`);
+          log.debug(`[TERMINAL RENDERER] line ${i}: "${text.substring(0, 50)}"`);
         }
       }
 
@@ -111,7 +108,7 @@ export class TerminalRenderer {
 
       return true;
     } catch (err) {
-      log(`[TERMINAL RENDERER] updateContent ERROR: ${err}`);
+      log.error({ error: err }, 'updateContent failed');
       return false;
     }
   }

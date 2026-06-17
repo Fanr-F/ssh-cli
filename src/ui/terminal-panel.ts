@@ -1,12 +1,9 @@
 import { Box, Text, stringToStyledText } from '@opentui/core';
 import type { CliRenderer, KeyEvent, MouseEvent } from '@opentui/core';
 import { TerminalRenderer } from '../terminal/terminal-renderer';
-import { appendFileSync } from 'fs';
+import { createLogger } from '../logger';
 
-const LOG_FILE = 'ssh-cli-debug.log';
-function log(msg: string) {
-  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
-}
+const log = createLogger('terminal-panel');
 
 /**
  * Public API for the terminal panel component.
@@ -164,7 +161,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       },
       onMouseScroll: (e: MouseEvent) => {
         if (scrollCallback && e.scroll) {
-          log(`[TERMINAL PANEL] onMouseScroll: direction=${e.scroll.direction}, deltaY=${e.scroll.deltaY}`);
+          log.debug(`[TERMINAL PANEL] onMouseScroll: direction=${e.scroll.direction}, deltaY=${e.scroll.deltaY}`);
           scrollCallback(e.scroll.direction);
           e.preventDefault();
         }
@@ -246,7 +243,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     component: container,
 
     registerTerminal(tabId: string, r: TerminalRenderer, rows: number): ReturnType<typeof Box> {
-      log(`[TERMINAL PANEL] registerTerminal: tabId=${tabId}, rows=${rows}`);
+      log.debug(`[TERMINAL PANEL] registerTerminal: tabId=${tabId}, rows=${rows}`);
       // Use a unique id per tab so we can find the real renderable later
       const contentBox = r.createContentBox(rows, `tab-content-${tabId}`);
       terminals.set(tabId, { renderer: r, contentBox, resolvedChildren: [] });
@@ -257,36 +254,36 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
         resolved.connected.add(contentBox);
         // Hide by default — switchTerminal will show the active one
         contentBox.visible = false;
-        log(`[TERMINAL PANEL] registerTerminal: added contentBox to connected, hidden by default`);
+        log.debug(`[TERMINAL PANEL] registerTerminal: added contentBox to connected, hidden by default`);
       }
 
-      log(`[TERMINAL PANEL] registerTerminal: terminals count now=${terminals.size}, terminals keys=[${[...terminals.keys()].join(', ')}]`);
+      log.debug(`[TERMINAL PANEL] registerTerminal: terminals count now=${terminals.size}, terminals keys=[${[...terminals.keys()].join(', ')}]`);
       return contentBox;
     },
 
     unregisterTerminal(tabId: string): void {
-      log(`[TERMINAL PANEL] unregisterTerminal: tabId=${tabId}`);
+      log.debug(`[TERMINAL PANEL] unregisterTerminal: tabId=${tabId}`);
       const entry = terminals.get(tabId);
       if (!entry) {
-        log(`[TERMINAL PANEL] unregisterTerminal: entry not found for ${tabId}`);
+        log.debug(`[TERMINAL PANEL] unregisterTerminal: entry not found for ${tabId}`);
         return;
       }
       const r = resolve();
       if (r) {
         // Find and remove by iterating children (more reliable than findDescendantById)
         const children = r.connected.getChildren() ?? [];
-        log(`[TERMINAL PANEL] unregisterTerminal: connected has ${children.length} children`);
+        log.debug(`[TERMINAL PANEL] unregisterTerminal: connected has ${children.length} children`);
         for (let i = children.length - 1; i >= 0; i--) {
           const child = children[i];
           const childId = child?.id ?? '';
-          log(`[TERMINAL PANEL] unregisterTerminal: checking child ${i} id=${childId}`);
+          log.debug(`[TERMINAL PANEL] unregisterTerminal: checking child ${i} id=${childId}`);
           if (childId === `tab-content-${tabId}`) {
-            log(`[TERMINAL PANEL] unregisterTerminal: removing child ${i} (tab-content-${tabId})`);
+            log.debug(`[TERMINAL PANEL] unregisterTerminal: removing child ${i} (tab-content-${tabId})`);
             try { 
               r.connected.remove(childId); 
-              log(`[TERMINAL PANEL] unregisterTerminal: successfully removed`);
+              log.debug(`[TERMINAL PANEL] unregisterTerminal: successfully removed`);
             } catch (err) {
-              log(`[TERMINAL PANEL] unregisterTerminal: error removing: ${err}`);
+              log.debug(`[TERMINAL PANEL] unregisterTerminal: error removing: ${err}`);
             }
             break;
           }
@@ -294,48 +291,48 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       }
       terminals.delete(tabId);
       if (activeTabId === tabId) {
-        log(`[TERMINAL PANEL] unregisterTerminal: was active tab, setting activeTabId=null`);
+        log.debug(`[TERMINAL PANEL] unregisterTerminal: was active tab, setting activeTabId=null`);
         activeTabId = null;
       }
       // Reset terminal content tracking since we removed the content
       hasTerminalContent = false;
       lastAddedContentBox = null;
-      log(`[TERMINAL PANEL] unregisterTerminal: terminals count now=${terminals.size}`);
+      log.debug(`[TERMINAL PANEL] unregisterTerminal: terminals count now=${terminals.size}`);
       renderer.requestRender();
     },
 
     switchTerminal(tabId: string): void {
-      log(`[TERMINAL PANEL] switchTerminal: tabId=${tabId}, current activeTabId=${activeTabId}`);
+      log.debug(`[TERMINAL PANEL] switchTerminal: tabId=${tabId}, current activeTabId=${activeTabId}`);
       const r = resolve();
       if (!r) {
-        log(`[TERMINAL PANEL] switchTerminal: resolve() returned null`);
+        log.debug(`[TERMINAL PANEL] switchTerminal: resolve() returned null`);
         return;
       }
 
-      log(`[TERMINAL PANEL] switchTerminal: terminals count=${terminals.size}`);
-      log(`[TERMINAL PANEL] switchTerminal: terminals keys=[${[...terminals.keys()].join(', ')}]`);
+      log.debug(`[TERMINAL PANEL] switchTerminal: terminals count=${terminals.size}`);
+      log.debug(`[TERMINAL PANEL] switchTerminal: terminals keys=[${[...terminals.keys()].join(', ')}]`);
       
       // Log connected children
       const connectedChildren = r.connected.getChildren() ?? [];
-      log(`[TERMINAL PANEL] switchTerminal: connected has ${connectedChildren.length} children`);
+      log.debug(`[TERMINAL PANEL] switchTerminal: connected has ${connectedChildren.length} children`);
       for (let i = 0; i < connectedChildren.length; i++) {
         const child = connectedChildren[i];
-        log(`[TERMINAL PANEL] switchTerminal: child ${i} id=${child?.id ?? 'unknown'}`);
+        log.debug(`[TERMINAL PANEL] switchTerminal: child ${i} id=${child?.id ?? 'unknown'}`);
       }
 
       // Hide all terminals — must use REAL renderables, not VNode proxies
       for (const [id, entry] of terminals) {
         const shouldShow = id === tabId;
-        log(`[TERMINAL PANEL] switchTerminal: setting tab ${id} visible=${shouldShow}`);
+        log.debug(`[TERMINAL PANEL] switchTerminal: setting tab ${id} visible=${shouldShow}`);
         // Find the REAL renderable by id
         const realBox = renderer.root.findDescendantById(`tab-content-${id}`);
         if (realBox) {
-          log(`[TERMINAL PANEL] switchTerminal: found real renderable for ${id}`);
+          log.debug(`[TERMINAL PANEL] switchTerminal: found real renderable for ${id}`);
           realBox.visible = shouldShow;
         } else {
-          log(`[TERMINAL PANEL] switchTerminal: real renderable NOT found for ${id}, falling back to proxy`);
+          log.debug(`[TERMINAL PANEL] switchTerminal: real renderable NOT found for ${id}, falling back to proxy`);
           try { entry.contentBox.visible = shouldShow; } catch (err) {
-            log(`[TERMINAL PANEL] switchTerminal: error setting visible for ${id}: ${err}`);
+            log.debug(`[TERMINAL PANEL] switchTerminal: error setting visible for ${id}: ${err}`);
           }
         }
       }
@@ -346,19 +343,19 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       // Resolve children for the active terminal
       const entry = terminals.get(tabId);
       if (entry) {
-        log(`[TERMINAL PANEL] switchTerminal: found entry for ${tabId}, resolving children`);
+        log.debug(`[TERMINAL PANEL] switchTerminal: found entry for ${tabId}, resolving children`);
         // Find the content box by its unique id
         const contentBox = renderer.root.findDescendantById(`tab-content-${tabId}`);
         if (contentBox) {
           const nodeChildren = contentBox.getChildren();
           entry.resolvedChildren = nodeChildren ?? [];
-          log(`[TERMINAL PANEL] switchTerminal: resolved ${entry.resolvedChildren.length} children`);
+          log.debug(`[TERMINAL PANEL] switchTerminal: resolved ${entry.resolvedChildren.length} children`);
           entry.renderer.resolveChildren(entry.resolvedChildren);
         } else {
-          log(`[TERMINAL PANEL] switchTerminal: contentBox not found by id 'tab-content-${tabId}'`);
+          log.debug(`[TERMINAL PANEL] switchTerminal: contentBox not found by id 'tab-content-${tabId}'`);
         }
       } else {
-        log(`[TERMINAL PANEL] switchTerminal: no entry found for ${tabId}`);
+        log.debug(`[TERMINAL PANEL] switchTerminal: no entry found for ${tabId}`);
       }
 
       renderer.requestRender();
@@ -381,21 +378,21 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     setTerminalContent(node: ReturnType<typeof Box>): void {
       const r = resolve();
       if (!r) {
-        log(`[TERMINAL PANEL] setTerminalContent: resolve() returned null`);
+        log.debug(`[TERMINAL PANEL] setTerminalContent: resolve() returned null`);
         return;
       }
-      log(`[TERMINAL PANEL] setTerminalContent: hasTerminalContent=${hasTerminalContent}`);
+      log.debug(`[TERMINAL PANEL] setTerminalContent: hasTerminalContent=${hasTerminalContent}`);
       
       // If there's still old content (shouldn't happen after unregisterTerminal), remove it
       if (hasTerminalContent) {
         const children = r.connected.getChildren() ?? [];
-        log(`[TERMINAL PANEL] setTerminalContent: clearing ${children.length} old children`);
+        log.debug(`[TERMINAL PANEL] setTerminalContent: clearing ${children.length} old children`);
         for (let i = children.length - 1; i >= 0; i--) {
           try { r.connected.remove(children[i]?.id ?? ''); } catch {}
         }
       }
       
-      log(`[TERMINAL PANEL] setTerminalContent: adding new node`);
+      log.debug(`[TERMINAL PANEL] setTerminalContent: adding new node`);
       r.connected.add(node);
       lastAddedContentBox = node;
       hasTerminalContent = true;
@@ -404,7 +401,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       if (terminalRenderer) {
         const nodeChildren = node.getChildren?.() ?? [];
         terminalRenderer.resolveChildren(nodeChildren);
-        log(`[TERMINAL PANEL] setTerminalContent: resolved ${nodeChildren.length} children`);
+        log.debug(`[TERMINAL PANEL] setTerminalContent: resolved ${nodeChildren.length} children`);
       }
       renderer.requestRender();
     },

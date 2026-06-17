@@ -96,6 +96,7 @@
 src/
 ├── index.ts              # 入口文件 — 创建渲染器并初始化 App
 ├── app.ts                # 主应用类 — 布局、焦点管理、键盘路由
+├── logger.ts             # 日志系统（LogTape，写入 ssh-cli.log）
 ├── clipboard.ts          # 剪贴板操作（复制/粘贴）
 ├── ssh/                  # SSH 连接层
 │   ├── auth.ts           #   认证配置构建器（密钥/密码）
@@ -133,8 +134,33 @@ git clone <仓库地址> && cd ssh-cli
 # 安装依赖
 bun install
 
-# 运行
+# 运行（默认 info 级别日志写入 ssh-cli.log）
 bun start
+
+# 以 debug 级别运行
+bun run start -- --log-level debug
+
+# 以 trace 级别运行（最详细）
+bun run start -- --log-level trace
+```
+
+### 日志
+
+所有日志写入项目根目录的 `ssh-cli.log` 文件，控制台无输出（TUI 安全）。
+
+| 参数 | 说明 |
+|---|---|
+| `--log-level trace` | 最详细 — 记录所有操作 |
+| `--log-level debug` | 调试信息及以上 |
+| `--log-level info` | 信息及以上（默认） |
+| `--log-level warning` | 仅警告和错误 |
+| `--log-level error` | 仅错误 |
+
+日志格式：
+```
+[2026-06-17T01:56:51.603Z] [DEBUG  ] [ssh-cli.terminal] GET_STYLED_LINES: rows=49, scrollback=0
+[2026-06-17T01:56:51.612Z] [INFO   ] [ssh-cli.ssh] Connecting to SSH server host=192.168.1.100
+[2026-06-17T01:56:52.105Z] [ERROR  ] [ssh-cli.ssh] SSH connection error error=Connection refused
 ```
 
 ### 使用指南
@@ -207,6 +233,7 @@ bun start
 | [`@opentui/core`](https://github.com/xanderjohansen/opentui) | 终端 UI 框架（Box、Text、渲染器、输入） |
 | [`vterm.js`](https://github.com/nickmccurdy/vterm.js) | 完整的终端模拟，支持 ANSI 颜色 |
 | [`ssh2-no-cpu-features`](https://github.com/JAForbes/ssh2-no-cpu-features) | SSH2 客户端（移除 cpu-features 的分支） |
+| [`@logtape/logtape`](https://github.com/dahlia/logtape) | 结构化日志（零依赖，文件输出） |
 
 ### 关键设计决策
 
@@ -216,6 +243,7 @@ bun start
 - **vterm.js** — 使用完整终端模拟替代自定义 ANSI 解析器，以获得更好的兼容性
 - **脏行渲染** — 终端渲染器只重绘发生变化的行，对局部更新高效
 - **动态导入** — 通过 `await import()` 导入 `ssh2-no-cpu-features`，因其以含顶层 await 的 ESM 格式发布
+- **仅文件日志** — 所有日志写入 `ssh-cli.log`（控制台无输出，保护 TUI 完整性）
 
 ---
 

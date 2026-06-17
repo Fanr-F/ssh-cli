@@ -3,6 +3,9 @@ import { EventEmitter } from 'node:events';
 import { ShellOptions, SshConnectionState, AuthenticationError, ConnectionTimeoutError, HostKeyError } from './types';
 import { ConnectionConfig } from '../types/connection';
 import { buildConnectConfig } from './auth';
+import { createLogger } from '../logger';
+
+const log = createLogger('ssh');
 
 interface SshConnectionEvents {
   ready: [];
@@ -38,23 +41,27 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
 
   private setupClientHandlers(): void {
     this.client.on('ready', () => {
+      log.info('SSH connection ready');
       this.setState(SshConnectionState.Connected);
       this._lastError = null; // Clear error on successful connection
       this.emit('ready');
     });
 
     this.client.on('close', () => {
+      log.info('SSH connection closed');
       this.setState(SshConnectionState.Disconnected);
       this.shellChannel = null;
       this.emit('close');
     });
 
     this.client.on('error', (err: Error) => {
+      log.error({ error: err.message }, 'SSH connection error');
       this._lastError = err; // Track the error
       this.emit('error', err);
     });
 
     this.client.on('end', () => {
+      log.debug('SSH connection ended');
       this.setState(SshConnectionState.Disconnected);
       this.shellChannel = null;
     });
@@ -67,6 +74,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
         return;
       }
 
+      log.info({ host: config.host, port: config.port, username: config.username }, 'Connecting to SSH server');
       this.setState(SshConnectionState.Connecting);
 
       // Build config using auth.ts (handles both key and password auth)

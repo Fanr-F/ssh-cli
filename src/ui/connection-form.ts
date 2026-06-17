@@ -1,12 +1,9 @@
 import { BoxRenderable, TextRenderable, StyledText } from "@opentui/core";
 import type { CliRenderer, KeyEvent, MouseEvent, RenderContext } from "@opentui/core";
 import type { ConnectionConfig } from "../types/connection.js";
-import { appendFileSync } from "fs";
+import { createLogger } from "../logger";
 
-const LOG_FILE = 'ssh-cli-debug.log';
-function logForm(msg: string) {
-  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] [FORM] ${msg}\n`); } catch {}
-}
+const logForm = createLogger('form');
 
 /** Create a StyledText from a plain string with optional per-char styling */
 function makeStyledText(text: string, fg?: string): StyledText {
@@ -115,7 +112,7 @@ export function createConnectionForm(
   renderer: CliRenderer,
   existing?: ConnectionConfig,
 ): BoxRenderable & FormAPI {
-  logForm(`createConnectionForm called, existing=${existing ? 'yes' : 'no'}`);
+  logForm.debug(`createConnectionForm called, existing=${existing ? 'yes' : 'no'}`);
   const ctx = renderer as unknown as RenderContext;
 
   // ── State ──────────────────────────────────────────────
@@ -172,7 +169,7 @@ export function createConnectionForm(
   // ── Key handler ────────────────────────────────────────
   function handleKeyDown(key: KeyEvent) {
     if (!hasFocus) return;
-    logForm(`handleKeyDown: name=${key.name}, ctrl=${key.ctrl}, shift=${key.shift}`);
+    logForm.debug(`handleKeyDown: name=${key.name}, ctrl=${key.ctrl}, shift=${key.shift}`);
 
     if (key.name === "escape") {
       key.preventDefault();
@@ -698,7 +695,7 @@ export function createConnectionForm(
         fieldTexts[idx].textBuffer.setStyledText(makeStyledText(text, C.fieldText));
       }
     } catch (err) {
-      logForm(`refreshTextField error: ${err}`);
+      logForm.debug(`refreshTextField error: ${err}`);
     }
   }
 
@@ -743,7 +740,7 @@ export function createConnectionForm(
       // Show/hide eye icon based on auth type
       eyeIcon.visible = !isKey;
     } catch (err) {
-      logForm(`refreshConditional error: ${err}`);
+      logForm.debug(`refreshConditional error: ${err}`);
     }
   }
 

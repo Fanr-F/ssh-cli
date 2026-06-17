@@ -1,11 +1,8 @@
 import { StyledText } from '@opentui/core';
 import { createVtermScreen, type VtermScreen, type ScreenCell } from 'vterm.js';
-import { appendFileSync } from 'fs';
+import { createLogger } from '../logger';
 
-const IO_LOG = 'ssh-cli-io.log';
-function logIo(msg: string) {
-  try { appendFileSync(IO_LOG, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
-}
+const log = createLogger('terminal');
 
 /** Convert vterm { r, g, b } to "#RRGGBB" hex string for OpenTUI parseColor. */
 function colorToHex(c: { r: number; g: number; b: number } | null): string | undefined {
@@ -103,7 +100,7 @@ export class VtermAdapter {
       // Detect scrolled lines and add to our scrollback buffer
       this.detectScrolledLines();
     } catch (err) {
-      logIo(`FEED ERROR: ${err}`);
+      log.error({ error: err }, 'Failed to feed data to vterm');
     }
   }
 
@@ -145,7 +142,7 @@ export class VtermAdapter {
       }
       
       if (scrolledCount > 0) {
-        logIo(`SCROLLBACK: captured ${scrolledCount} lines, buffer size=${this._scrollbackBuffer.length}`);
+        log.debug({ scrolledCount, bufferSize: this._scrollbackBuffer.length }, 'Scrollback captured lines');
       }
     }
     
@@ -204,7 +201,7 @@ export class VtermAdapter {
   scrollViewport(delta: number): void {
     const before = this.screen.getViewportOffset();
     const scrollback = this._scrollbackBuffer.length;
-    logIo(`SCROLL_VIEWPORT: delta=${delta}, before=${before}, scrollback=${scrollback}`);
+    log.debug(`SCROLL_VIEWPORT: delta=${delta}, before=${before}, scrollback=${scrollback}`);
     
     // Clamp delta to valid range
     const maxOffset = this._scrollbackBuffer.length;
@@ -215,7 +212,7 @@ export class VtermAdapter {
     this.screen.scrollViewport(actualDelta);
     
     const after = this.screen.getViewportOffset();
-    logIo(`SCROLL_VIEWPORT: after=${after}, actualDelta=${actualDelta}`);
+    log.debug(`SCROLL_VIEWPORT: after=${after}, actualDelta=${actualDelta}`);
   }
 
   /** Scroll to bottom (viewport offset = 0). */
@@ -223,7 +220,7 @@ export class VtermAdapter {
     const offset = this.screen.getViewportOffset();
     if (offset > 0) {
       this.screen.scrollViewport(-offset);
-      logIo(`SCROLL_TO_BOTTOM: was at offset=${offset}`);
+      log.debug(`SCROLL_TO_BOTTOM: was at offset=${offset}`);
     }
   }
 
@@ -245,7 +242,7 @@ export class VtermAdapter {
     const lines: StyledText[] = [];
     const viewportOffset = this.screen.getViewportOffset();
     const scrollbackSize = this._scrollbackBuffer.length;
-    logIo(`GET_STYLED_LINES: rows=${this._rows}, scrollback=${scrollbackSize}, viewportOffset=${viewportOffset}`);
+    log.debug(`GET_STYLED_LINES: rows=${this._rows}, scrollback=${scrollbackSize}, viewportOffset=${viewportOffset}`);
     
     for (let row = 0; row < this._rows; row++) {
       // Calculate which line to show at this display row
@@ -260,7 +257,7 @@ export class VtermAdapter {
         cells = this._scrollbackBuffer[scrollbackIndex];
         if (row < 3) {
           const firstChars = cells.slice(0, 20).map(c => c.char).join('');
-          logIo(`GET_STYLED_LINES row=${row}: from scrollback[${scrollbackIndex}], content="${firstChars}"`);
+          log.debug(`GET_STYLED_LINES row=${row}: from scrollback[${scrollbackIndex}], content="${firstChars}"`);
         }
       } else {
         // Read from vterm.js visible grid
@@ -268,7 +265,7 @@ export class VtermAdapter {
         cells = this.screen.getLine(gridRow);
         if (row < 3) {
           const firstChars = cells.slice(0, 20).map(c => c.char).join('');
-          logIo(`GET_STYLED_LINES row=${row}: from grid[${gridRow}], content="${firstChars}"`);
+          log.debug(`GET_STYLED_LINES row=${row}: from grid[${gridRow}], content="${firstChars}"`);
         }
       }
       
@@ -297,7 +294,7 @@ export class VtermAdapter {
     // Log first few calls for debugging
     if (row < 3) {
       const firstChars = cells.slice(0, 20).map(c => c.char).join('');
-      logIo(`GET_LINE row=${row}: scrollbackIdx=${scrollbackIndex}, first20="${firstChars}"`);
+      log.debug(`GET_LINE row=${row}: scrollbackIdx=${scrollbackIndex}, first20="${firstChars}"`);
     }
     return this.cellsToStyledText(cells);
   }
@@ -382,7 +379,7 @@ export class VtermAdapter {
 
     // Log unique color pairs for this row (only if non-default colors present)
     if (colorPairs.size > 0) {
-      logIo(`COLORS: ${[...colorPairs].join(' | ')}`);
+      log.debug(`COLORS: ${[...colorPairs].join(' | ')}`);
     }
 
     return new StyledText(chunks);
