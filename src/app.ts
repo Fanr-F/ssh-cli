@@ -357,12 +357,29 @@ export class App {
         if (oldActiveRows !== rows) {
           logDebug(`[RESIZE] rows changed ${oldActiveRows} -> ${rows}, rebuilding content box`);
           this.terminalPanel.resizeTerminal(activeId, rows);
+          // Immediately populate the new content box with reflowed grid content
+          const ok = this.terminalPanel.updateTerminalContentForTab(activeId);
+          logDebug(`[RESIZE] post-resize updateContent result: ${ok}`);
         } else {
           logDebug(`[RESIZE] rows unchanged, updating content only`);
           this.terminalPanel.updateTerminalContentForTab(activeId);
         }
       }
       this.renderer.requestRender();
+
+      // Post-resize verification: dump grid content after 200ms (after all updates settle)
+      if (activeId && activeTab) {
+        setTimeout(() => {
+          const lines = activeTab.vterm.getStyledLines();
+          const rows = activeTab.vterm.rows;
+          logDebug(`[RESIZE] VERIFY: ${lines.length} styled lines, vterm.rows=${rows}`);
+          for (let i = 0; i < Math.min(rows, 5); i++) {
+            const rawChunks = (lines[i] as any).chunks ?? [];
+            const txt = rawChunks.map((c: any) => c.text ?? '').join('');
+            logDebug(`[RESIZE] VERIFY row=${i}: "${txt.substring(0, 60)}"`);
+          }
+        }, 200);
+      }
     }, 100);
   }
 

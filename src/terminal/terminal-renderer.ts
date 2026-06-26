@@ -22,7 +22,7 @@ export class TerminalRenderer {
     this.lineTexts = [];
 
     const textChildren = Array.from({ length: rows }, () =>
-      Text({ content: '', fg: '#CCCCCC' }),
+      Text({ content: '', fg: '#CCCCCC', wrapMode: 'none' }),
     );
 
     this.contentBox = Box(
@@ -54,7 +54,7 @@ export class TerminalRenderer {
     this.lineTexts = [];
 
     const textChildren = Array.from({ length: rows }, () =>
-      Text({ content: '', fg: '#CCCCCC' }),
+      Text({ content: '', fg: '#CCCCCC', wrapMode: 'none' }),
     );
 
     this.contentBox = Box(

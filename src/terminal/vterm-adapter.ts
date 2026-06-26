@@ -57,6 +57,7 @@ export class VtermAdapter {
   private _scrollbackLimit: number;
   private _prevTopLine: ScreenCell[] = [];
   private _prevScreen: ScreenCell[][] = [];
+  private _updateCount = 0;
 
   constructor(cols: number, rows: number, onResponse?: (data: string) => void) {
     this._cols = cols;
@@ -161,11 +162,61 @@ export class VtermAdapter {
 
   /** Resize the terminal. */
   resize(cols: number, rows: number): void {
-    log.debug(`[VTERM] resize: ${this._cols}x${this._rows} -> ${cols}x${rows}`);
+    log.debug(`[RESIZE] before: cols=${this._cols} rows=${this._rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this.screen.getViewportOffset()}`);
+    // Log grid content before resize
+    const firstRows = Math.min(3, this._rows);
+    for (let i = 0; i < firstRows; i++) {
+      const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');
+      log.debug(`[RESIZE] grid[${i}]="${txt}"`);
+    }
+    if (this._rows > 6) {
+      for (let i = this._rows - 3; i < this._rows; i++) {
+        const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');
+        log.debug(`[RESIZE] grid[${i}]="${txt}"`);
+      }
+    }
+
     this._cols = cols;
     this._rows = rows;
     this.screen.resize(cols, rows);
-    log.debug(`[VTERM] resize: screen resized, scrollback=${this._scrollbackBuffer.length}`);
+    // Clear stale scrollback (old column width) and reset baseline
+    this._scrollbackBuffer = [];
+    this.captureScreen();
+
+    log.debug(`[RESIZE] after: cols=${cols} rows=${rows} scrollback=0 viewportOffset=${this.screen.getViewportOffset()}`);
+    const firstRows2 = Math.min(3, rows);
+    for (let i = 0; i < firstRows2; i++) {
+      const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');
+      log.debug(`[RESIZE] post-resize grid[${i}]="${txt}"`);
+    }
+    if (rows > 6) {
+      for (let i = rows - 3; i < rows; i++) {
+        const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');
+        log.debug(`[RESIZE] post-resize grid[${i}]="${txt}"`);
+      }
+    }
+
+    // Fix: eliminate blank rows between last content line and cursor
+    // These blank rows are created by vterm.js reflow when old grid had blank lines
+    // between content and the prompt at the bottom.
+    const cursorY = this.screen.getCursorPosition().y;
+    let blankRowsAboveCursor = 0;
+    for (let row = cursorY - 1; row >= 0; row--) {
+      const cells = this.screen.getLine(row);
+      if (cells.every(c => c.char === ' ' || c.char === '\0' || c.char === '')) {
+        blankRowsAboveCursor++;
+      } else break;
+    }
+    if (blankRowsAboveCursor > 0) {
+      const firstBlankRow = cursorY - blankRowsAboveCursor;
+      const seq = `\x1b[${firstBlankRow + 1};1H${'\x1b[M'.repeat(blankRowsAboveCursor)}`;
+      this.screen.process(new TextEncoder().encode(seq));
+      // Re-capture after fix
+      this.captureScreen();
+      log.debug(`[RESIZE] fix: deleted ${blankRowsAboveCursor} blank line(s) above cursor (cursorY=${cursorY}, firstBlankRow=${firstBlankRow})`);
+    } else {
+      log.debug(`[RESIZE] fix: no blank rows above cursor (cursorY=${cursorY})`);
+    }
   }
 
   /** Get terminal dimensions. */
@@ -236,7 +287,7 @@ export class VtermAdapter {
   /**
    * Get all visible lines as StyledText arrays.
    * Returns an array of StyledText, one per row.
-   * 
+   *
    * When viewport is offset (scrolled up), reads from our custom scrollback buffer
    * for older content, and from vterm.js grid for newer content.
    */
@@ -245,34 +296,36 @@ export class VtermAdapter {
     const viewportOffset = this.screen.getViewportOffset();
     const scrollbackSize = this._scrollbackBuffer.length;
     log.debug(`GET_STYLED_LINES: rows=${this._rows}, scrollback=${scrollbackSize}, viewportOffset=${viewportOffset}`);
-    
+
     for (let row = 0; row < this._rows; row++) {
-      // Calculate which line to show at this display row
-      // viewportOffset=0 means bottom of scrollback (newest)
-      // Higher viewportOffset means further back in history
-      
       const scrollbackIndex = scrollbackSize - viewportOffset + row;
-      
+
       let cells: ScreenCell[];
+      let source: string;
       if (scrollbackIndex >= 0 && scrollbackIndex < scrollbackSize) {
-        // Read from our custom scrollback buffer
         cells = this._scrollbackBuffer[scrollbackIndex];
-        if (row < 3) {
-          const firstChars = cells.slice(0, 20).map(c => c.char).join('');
-          log.debug(`GET_STYLED_LINES row=${row}: from scrollback[${scrollbackIndex}], content="${firstChars}"`);
-        }
+        source = `SCROLLBACK[${scrollbackIndex}]`;
       } else {
-        // Read from vterm.js visible grid
         const gridRow = scrollbackIndex - scrollbackSize;
         cells = this.screen.getLine(gridRow);
-        if (row < 3) {
-          const firstChars = cells.slice(0, 20).map(c => c.char).join('');
-          log.debug(`GET_STYLED_LINES row=${row}: from grid[${gridRow}], content="${firstChars}"`);
-        }
+        source = `GRID[${gridRow}]`;
       }
-      
+
+      // Detect blank: all cells are space
+      const content = cells.map(c => c.char).join('');
+      const trimmed = content.trimEnd();
+      const isBlank = trimmed.length === 0;
+
+      // Log all rows on first call, then only blank rows
+      if (this._updateCount === 0 || isBlank) {
+        const first60 = trimmed.substring(0, 60);
+        log.debug(`[RENDER] row=${row}: ${source} blank=${isBlank} "${first60}"`);
+      }
+
       lines.push(this.cellsToStyledText(cells));
     }
+
+    this._updateCount++;
     return lines;
   }
 
