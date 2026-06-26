@@ -161,9 +161,11 @@ export class VtermAdapter {
 
   /** Resize the terminal. */
   resize(cols: number, rows: number): void {
+    log.debug(`[VTERM] resize: ${this._cols}x${this._rows} -> ${cols}x${rows}`);
     this._cols = cols;
     this._rows = rows;
     this.screen.resize(cols, rows);
+    log.debug(`[VTERM] resize: screen resized, scrollback=${this._scrollbackBuffer.length}`);
   }
 
   /** Get terminal dimensions. */

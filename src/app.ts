@@ -323,22 +323,47 @@ export class App {
   }
 
   private setupResizeHandler(): void {
-    process.stdout.on('resize', () => {
-      if (this.resizeTimer) clearTimeout(this.resizeTimer);
-      this.resizeTimer = setTimeout(() => {
-        const width = Math.max(20, this.renderer.width ?? 80);
-        const height = Math.max(5, this.renderer.height ?? 24);
-        const sidebarW = this.sidebar?.getWidth() ?? 30;
-        const cols = Math.max(40, width - sidebarW - 1 - 2); // -1 divider, -2 borders
-        const rows = Math.max(10, height - 2);
-
-        // Resize all active tabs
-        for (const [, tab] of this.tabs) {
-          if (tab.vterm) tab.vterm.resize(cols, rows);
-          if (tab.ssh?.isConnected()) tab.ssh.resizePty(cols, rows);
-        }
-      }, 100);
+    this.renderer.on('resize', () => {
+      logDebug(`[RESIZE] renderer.resize event fired`);
+      this.handleResize();
     });
+  }
+
+  private handleResize(): void {
+    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    this.resizeTimer = setTimeout(() => {
+      const width = Math.max(20, this.renderer.width ?? 80);
+      const height = Math.max(5, this.renderer.height ?? 24);
+      const sidebarW = this.sidebar?.getWidth() ?? 30;
+      const cols = Math.max(40, width - sidebarW - 1 - 2); // -1 divider, -2 borders
+      const rows = Math.max(10, height - 2);
+
+      logDebug(`[RESIZE] handleResize: renderer=${width}x${height}, sidebarW=${sidebarW}, cols=${cols}, rows=${rows}`);
+
+      // Capture active tab's old rows BEFORE any resize
+      const activeId = this.tabBar.getActiveTabId();
+      const activeTab = activeId ? this.tabs.get(activeId) : undefined;
+      const oldActiveRows = activeTab?.vterm?.rows ?? 0;
+      logDebug(`[RESIZE] active tab oldRows=${oldActiveRows}, newRows=${rows}`);
+
+      // Resize all active tabs
+      for (const [tabId, tab] of this.tabs) {
+        if (tab.vterm) tab.vterm.resize(cols, rows);
+        if (tab.ssh?.isConnected()) tab.ssh.resizePty(cols, rows);
+      }
+
+      // Rebuild content box if row count changed, otherwise just update content
+      if (activeId) {
+        if (oldActiveRows !== rows) {
+          logDebug(`[RESIZE] rows changed ${oldActiveRows} -> ${rows}, rebuilding content box`);
+          this.terminalPanel.resizeTerminal(activeId, rows);
+        } else {
+          logDebug(`[RESIZE] rows unchanged, updating content only`);
+          this.terminalPanel.updateTerminalContentForTab(activeId);
+        }
+      }
+      this.renderer.requestRender();
+    }, 100);
   }
 
   private focusSidebar(): void {
@@ -376,6 +401,7 @@ export class App {
     this.renderer.requestRender();
     const cols = Math.max(40, this.renderer.width - 32);
     const rows = Math.max(10, this.renderer.height - 2);
+    logDebug(`[CONNECT] initial terminal size: renderer=${this.renderer.width}x${this.renderer.height}, cols=${cols}, rows=${rows}`);
 
     // Create tab ID
     const tabId = `tab-${Date.now()}`;
@@ -657,7 +683,7 @@ export class App {
         logDebug(`[COPY] sidebar: copied connection info="${text}"`);
       }
     } else if (this.focus === 'terminal') {
-      // Copy selected text using OpenTUI's built-in selection, otherwise copy last line
+      // Copy selected text using OpenTUI's built-in selection, otherwise send SIGINT
       if (this.renderer.hasSelection) {
         const selection = this.renderer.getSelection();
         text = selection?.getSelectedText() ?? '';
@@ -668,15 +694,13 @@ export class App {
         logDebug(`[COPY] terminal: activeId=${activeId}`);
         if (activeId) {
           const tab = this.tabs.get(activeId);
-          if (tab) {
-            const lines = tab.renderer.getVisibleLines() ?? [];
-            logDebug(`[COPY] terminal: ${lines.length} visible lines`);
-            for (let i = lines.length - 1; i >= 0; i--) {
-              const line = lines[i].trim();
-              if (line) { text = line; logDebug(`[COPY] terminal: last non-empty line[${i}]="${line.substring(0, 50)}"`); break; }
-            }
+          if (tab?.ssh.isConnected()) {
+            tab.ssh.writeToShell('\x03');
+            this.statusBar.setStatus('Sent interrupt (Ctrl+C)');
           }
         }
+        this.renderer.requestRender();
+        return; // Skip clipboard copy
       }
     } else if (this.focus === 'form' && this.form) {
       // Copy the content of the currently focused form field

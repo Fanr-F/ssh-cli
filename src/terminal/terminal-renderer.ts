@@ -45,6 +45,33 @@ export class TerminalRenderer {
     this.initialized = true;
   }
 
+  /**
+   * Rebuild the content box with a new row count.
+   * Returns a new content Box (the old one should be removed from the tree first).
+   */
+  rebuildContentBox(rows: number, id: string = 'terminal-content'): ReturnType<typeof Box> {
+    this.initialized = false;
+    this.lineTexts = [];
+
+    const textChildren = Array.from({ length: rows }, () =>
+      Text({ content: '', fg: '#CCCCCC' }),
+    );
+
+    this.contentBox = Box(
+      {
+        id,
+        width: '100%',
+        height: '100%',
+        backgroundColor: '#0d1117',
+        flexDirection: 'column',
+        padding: 0,
+      },
+      ...textChildren,
+    );
+
+    return this.contentBox;
+  }
+
   updateContent(): boolean {
     if (!this.vterm || !this.initialized || this.lineTexts.length === 0) {
       log.debug(`[TERMINAL RENDERER] updateContent: skipped (vterm=${!!this.vterm}, initialized=${this.initialized}, lineTexts=${this.lineTexts.length})`);

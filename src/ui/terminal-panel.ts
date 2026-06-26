@@ -43,6 +43,9 @@ export interface TerminalPanelAPI {
   /** Update terminal content for a specific tab. */
   updateTerminalContentForTab(tabId: string): boolean;
 
+  /** Rebuild a tab's content box when terminal rows change (e.g. window resize). */
+  resizeTerminal(tabId: string, newRows: number): void;
+
   // ── State management ───────────────────────────────────────────────
 
   /** Give keyboard focus to this panel. */
@@ -369,6 +372,46 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       const ok = entry.renderer.updateContent();
       if (ok) renderer.requestRender();
       return ok;
+    },
+
+    resizeTerminal(tabId: string, newRows: number): void {
+      const r = resolve();
+      const entry = terminals.get(tabId);
+      if (!r || !entry) return;
+
+      log.debug(`[TERMINAL PANEL] resizeTerminal: tabId=${tabId}, newRows=${newRows}`);
+
+      // 1. Remove old content box from connected
+      const children = r.connected.getChildren() ?? [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        const child = children[i];
+        if (child?.id === `tab-content-${tabId}`) {
+          log.debug(`[TERMINAL PANEL] resizeTerminal: removing old content box at index ${i}`);
+          try { r.connected.remove(child.id); } catch {}
+          break;
+        }
+      }
+
+      // 2. Create new content box with new row count
+      const contentBox = entry.renderer.rebuildContentBox(newRows, `tab-content-${tabId}`);
+      entry.contentBox = contentBox;
+
+      // 3. Add new content box to connected
+      r.connected.add(contentBox);
+      contentBox.visible = (activeTabId === tabId);
+
+      // 4. Resolve children — must use REAL renderable via findDescendantById, not Proxy
+      const realBox = renderer.root.findDescendantById(`tab-content-${tabId}`);
+      if (realBox) {
+        const nodeChildren = realBox.getChildren();
+        entry.resolvedChildren = nodeChildren ?? [];
+        entry.renderer.resolveChildren(entry.resolvedChildren);
+        log.debug(`[TERMINAL PANEL] resizeTerminal: resolved ${entry.resolvedChildren.length} children via findDescendantById`);
+      } else {
+        log.debug(`[TERMINAL PANEL] resizeTerminal: findDescendantById returned null for tab-content-${tabId}`);
+      }
+
+      renderer.requestRender();
     },
 
     setTerminalRenderer(r: TerminalRenderer): void {
