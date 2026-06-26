@@ -163,41 +163,62 @@ export class VtermAdapter {
   /** Resize the terminal. */
   resize(cols: number, rows: number): void {
     log.debug(`[RESIZE] before: cols=${this._cols} rows=${this._rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this.screen.getViewportOffset()}`);
-    // Log grid content before resize
-    const firstRows = Math.min(3, this._rows);
-    for (let i = 0; i < firstRows; i++) {
-      const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');
-      log.debug(`[RESIZE] grid[${i}]="${txt}"`);
-    }
-    if (this._rows > 6) {
-      for (let i = this._rows - 3; i < this._rows; i++) {
-        const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');
-        log.debug(`[RESIZE] grid[${i}]="${txt}"`);
+
+    // When shrinking width, snapshot old grid to capture rows that may be
+    // discarded during reflow (wrapped lines produce more rows, top ones truncated)
+    const isShrinking = cols < this._cols;
+    let oldGridRows: ScreenCell[][] | null = null;
+    let oldGridTexts: string[] | null = null;
+
+    if (isShrinking) {
+      oldGridRows = [];
+      oldGridTexts = [];
+      for (let i = 0; i < this._rows; i++) {
+        const row = this.screen.getLine(i).map(c => ({ ...c }));
+        oldGridRows.push(row);
+        oldGridTexts.push(row.map(c => c.char || ' ').join('').trimEnd());
       }
     }
 
     this._cols = cols;
     this._rows = rows;
     this.screen.resize(cols, rows);
-    // Keep scrollback buffer — ScreenCell data is dimension-independent
-    this.captureScreen();
 
-    log.debug(`[RESIZE] after: cols=${cols} rows=${rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this.screen.getViewportOffset()}`);
-    const firstRows2 = Math.min(3, rows);
-    for (let i = 0; i < firstRows2; i++) {
-      const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');
-      log.debug(`[RESIZE] post-resize grid[${i}]="${txt}"`);
-    }
-    if (rows > 6) {
-      for (let i = rows - 3; i < rows; i++) {
-        const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');
-        log.debug(`[RESIZE] post-resize grid[${i}]="${txt}"`);
+    // After shrinking: capture rows that were lost from the grid
+    if (isShrinking && oldGridRows && oldGridTexts) {
+      const newGridTexts = new Set<string>();
+      for (let i = 0; i < this._rows; i++) {
+        const text = this.screen.getLine(i).map(c => c.char || ' ').join('').trimEnd();
+        if (text.length > 0) newGridTexts.add(text);
+      }
+
+      let capturedCount = 0;
+      for (let i = 0; i < oldGridRows.length; i++) {
+        if (oldGridTexts[i].length > 0 && !newGridTexts.has(oldGridTexts[i])) {
+          this._scrollbackBuffer.push(oldGridRows[i]);
+          capturedCount++;
+        }
+      }
+
+      while (this._scrollbackBuffer.length > this._scrollbackLimit) {
+        this._scrollbackBuffer.shift();
+      }
+
+      if (capturedCount > 0) {
+        log.debug(`[RESIZE] captured ${capturedCount} lost rows into scrollback`);
       }
     }
 
+    // Reset viewport to bottom
+    const viewportOffset = this.screen.getViewportOffset();
+    if (viewportOffset > 0) {
+      this.screen.scrollViewport(-viewportOffset);
+    }
+    this.captureScreen();
+
+    log.debug(`[RESIZE] after: cols=${cols} rows=${rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this.screen.getViewportOffset()}`);
+
     // Fix: eliminate blank rows between last content line and cursor
-    // These blank rows are created by vterm.js reflow when old grid had blank lines
-    // between content and the prompt at the bottom.
     const cursorY = this.screen.getCursorPosition().y;
     let blankRowsAboveCursor = 0;
     for (let row = cursorY - 1; row >= 0; row--) {
@@ -210,11 +231,8 @@ export class VtermAdapter {
       const firstBlankRow = cursorY - blankRowsAboveCursor;
       const seq = `\x1b[${firstBlankRow + 1};1H${'\x1b[M'.repeat(blankRowsAboveCursor)}`;
       this.screen.process(new TextEncoder().encode(seq));
-      // Re-capture after fix
       this.captureScreen();
-      log.debug(`[RESIZE] fix: deleted ${blankRowsAboveCursor} blank line(s) above cursor (cursorY=${cursorY}, firstBlankRow=${firstBlankRow})`);
-    } else {
-      log.debug(`[RESIZE] fix: no blank rows above cursor (cursorY=${cursorY})`);
+      log.debug(`[RESIZE] fix: deleted ${blankRowsAboveCursor} blank line(s) above cursor`);
     }
   }
 
