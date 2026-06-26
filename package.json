@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run src/index.ts"
+    "start": "bun run src/index.ts",
+    "build:win": "bun build --compile --target=bun-windows-x64 src/index.ts --outfile ssh-cli.exe"
   },
   "devDependencies": {
     "@types/bun": "latest",
