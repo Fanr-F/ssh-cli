@@ -179,11 +179,10 @@ export class VtermAdapter {
     this._cols = cols;
     this._rows = rows;
     this.screen.resize(cols, rows);
-    // Clear stale scrollback (old column width) and reset baseline
-    this._scrollbackBuffer = [];
+    // Keep scrollback buffer — ScreenCell data is dimension-independent
     this.captureScreen();
 
-    log.debug(`[RESIZE] after: cols=${cols} rows=${rows} scrollback=0 viewportOffset=${this.screen.getViewportOffset()}`);
+    log.debug(`[RESIZE] after: cols=${cols} rows=${rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this.screen.getViewportOffset()}`);
     const firstRows2 = Math.min(3, rows);
     for (let i = 0; i < firstRows2; i++) {
       const txt = this.screen.getLine(i).slice(0, 60).map(c => c.char).join('');

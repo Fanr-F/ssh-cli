@@ -408,7 +408,20 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
         entry.renderer.resolveChildren(entry.resolvedChildren);
         log.debug(`[TERMINAL PANEL] resizeTerminal: resolved ${entry.resolvedChildren.length} children via findDescendantById`);
       } else {
-        log.debug(`[TERMINAL PANEL] resizeTerminal: findDescendantById returned null for tab-content-${tabId}`);
+        // Fallback: retry resolution after next render tick (real renderable may not be materialized yet)
+        log.debug(`[TERMINAL PANEL] resizeTerminal: findDescendantById returned null for tab-content-${tabId}, scheduling retry`);
+        setTimeout(() => {
+          const retryBox = renderer.root.findDescendantById(`tab-content-${tabId}`);
+          if (retryBox) {
+            const nodeChildren = retryBox.getChildren();
+            entry.resolvedChildren = nodeChildren ?? [];
+            entry.renderer.resolveChildren(entry.resolvedChildren);
+            log.debug(`[TERMINAL PANEL] resizeTerminal retry: resolved ${entry.resolvedChildren.length} children`);
+            renderer.requestRender();
+          } else {
+            log.debug(`[TERMINAL PANEL] resizeTerminal retry: still null for tab-content-${tabId}`);
+          }
+        }, 0);
       }
 
       renderer.requestRender();
