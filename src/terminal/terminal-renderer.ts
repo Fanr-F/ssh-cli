@@ -127,9 +127,15 @@ export class TerminalRenderer {
             styledText = this.injectCursor(styledText, cursorPos.x);
           }
 
-          textRenderable.textBuffer.setStyledText(styledText);
+          textRenderable.content = styledText;
+          // Clear selection after content update to prevent stale coordinates
+          // from being re-applied to the new buffer (causes wrong text display)
+          if (textRenderable.lastLocalSelection) {
+            textRenderable.textBufferView.resetLocalSelection();
+            textRenderable.lastLocalSelection = null;
+          }
         } else {
-          textRenderable.textBuffer.setStyledText(new StyledText([]));
+          textRenderable.content = new StyledText([]);
         }
       }
 

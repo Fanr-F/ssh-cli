@@ -59,6 +59,13 @@ export class VtermAdapter {
   private _prevScreen: ScreenCell[][] = [];
   private _updateCount = 0;
 
+  // ── Viewport offset tracking ────────────────────────────────────
+  // We track viewport offset ourselves because vterm.js's scrollback length
+  // can diverge from our _scrollbackBuffer.length after resize captures.
+  // vterm.js clamps scrollViewport to its own scrollback, making old entries
+  // in our buffer unreachable if we rely on vterm.js's offset.
+  private _viewportOffset: number = 0;
+
   constructor(cols: number, rows: number, onResponse?: (data: string) => void) {
     this._cols = cols;
     this._rows = rows;
@@ -107,34 +114,40 @@ export class VtermAdapter {
 
   /**
    * Detect lines that scrolled off the top and add them to scrollback buffer.
-   * Compares the screen state before and after feed to find scrolled lines.
+   * Finds the first old screen line that still exists in the new screen.
+   * Blank lines are skipped to avoid false matches (blank lines appear everywhere).
    */
   private detectScrolledLines(): void {
     const newTopLine = this.screen.getLine(0).map(c => ({ ...c }));
     
     // If top line changed, lines have scrolled
     if (!cellsEqual(this._prevTopLine, newTopLine)) {
-      // Find how many lines scrolled by comparing old screen with new screen
-      let scrolledCount = 0;
-      
-      // Simple heuristic: check how many of the old screen's top lines are gone
-      // The old line 0 is definitely gone if it's not in the new screen
-      if (!this.lineExistsInScreen(this._prevTopLine)) {
-        scrolledCount = 1;
-        
-        // Check if more lines scrolled (old line 1 is now gone, etc.)
-        for (let i = 1; i < this._prevScreen.length; i++) {
-          if (!this.lineExistsInScreen(this._prevScreen[i])) {
-            scrolledCount = i + 1;
-          } else {
-            break;
-          }
+      // Find the first old screen line that still exists in the new screen.
+      // Lines before this position have scrolled off and should be captured.
+      // Blank lines are skipped — they match anywhere and cause false positives.
+      let firstRemaining = -1;
+      for (let i = 0; i < this._prevScreen.length; i++) {
+        if (!this.isBlankLine(this._prevScreen[i]) && this.lineExistsInScreen(this._prevScreen[i])) {
+          firstRemaining = i;
+          break;
         }
       }
       
+      const scrolledCount = firstRemaining === -1
+        ? this._prevScreen.length
+        : firstRemaining;
+      
       // Add scrolled lines to our buffer (oldest first)
+      // Skip leading blank lines (from initial empty screen), but preserve
+      // blank lines between content (MOTD section separators, etc.)
+      let seenContent = false;
       for (let i = 0; i < scrolledCount && i < this._prevScreen.length; i++) {
-        this._scrollbackBuffer.push(this._prevScreen[i]);
+        if (!this.isBlankLine(this._prevScreen[i])) {
+          seenContent = true;
+          this._scrollbackBuffer.push(this._prevScreen[i]);
+        } else if (seenContent) {
+          this._scrollbackBuffer.push(this._prevScreen[i]);
+        }
       }
       
       // Trim buffer if too large
@@ -154,15 +167,19 @@ export class VtermAdapter {
   /** Check if a line exists anywhere in the current visible screen. */
   private lineExistsInScreen(line: ScreenCell[]): boolean {
     for (let i = 0; i < this._rows; i++) {
-      const screenLine = this.screen.getLine(i);
-      if (cellsEqual(line, screenLine)) return true;
+      if (cellsEqual(line, this.screen.getLine(i))) return true;
     }
     return false;
   }
 
+  /** Check if a line is blank (all spaces/nulls/empty). */
+  private isBlankLine(line: ScreenCell[]): boolean {
+    return line.every(c => c.char === ' ' || c.char === '\0' || c.char === '');
+  }
+
   /** Resize the terminal. */
   resize(cols: number, rows: number): void {
-    log.debug(`[RESIZE] before: cols=${this._cols} rows=${this._rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this.screen.getViewportOffset()}`);
+    log.debug(`[RESIZE] before: cols=${this._cols} rows=${this._rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this._viewportOffset}`);
 
     // When shrinking width, snapshot old grid to capture rows that may be
     // discarded during reflow (wrapped lines produce more rows, top ones truncated)
@@ -210,13 +227,14 @@ export class VtermAdapter {
     }
 
     // Reset viewport to bottom
-    const viewportOffset = this.screen.getViewportOffset();
-    if (viewportOffset > 0) {
-      this.screen.scrollViewport(-viewportOffset);
+    this._viewportOffset = 0;
+    const vtermOffset = this.screen.getViewportOffset();
+    if (vtermOffset > 0) {
+      this.screen.scrollViewport(-vtermOffset);
     }
     this.captureScreen();
 
-    log.debug(`[RESIZE] after: cols=${cols} rows=${rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this.screen.getViewportOffset()}`);
+    log.debug(`[RESIZE] after: cols=${cols} rows=${rows} scrollback=${this._scrollbackBuffer.length} viewportOffset=${this._viewportOffset}`);
 
     // Fix: eliminate blank rows between last content line and cursor
     const cursorY = this.screen.getCursorPosition().y;
@@ -264,39 +282,39 @@ export class VtermAdapter {
 
   /** Current viewport scroll offset (0 = at bottom). */
   getViewportOffset(): number {
-    return this.screen.getViewportOffset();
+    return this._viewportOffset;
   }
 
   /** Scroll the viewport. Positive = up (older), negative = down (newer). */
   scrollViewport(delta: number): void {
-    const before = this.screen.getViewportOffset();
-    const scrollback = this._scrollbackBuffer.length;
-    log.debug(`SCROLL_VIEWPORT: delta=${delta}, before=${before}, scrollback=${scrollback}`);
-    
-    // Clamp delta to valid range
+    const before = this._viewportOffset;
     const maxOffset = this._scrollbackBuffer.length;
     const newOffset = Math.max(0, Math.min(maxOffset, before + delta));
     const actualDelta = newOffset - before;
-    
-    // Use vterm.js scrollViewport (even though getLine doesn't use it, we track offset ourselves)
-    this.screen.scrollViewport(actualDelta);
-    
-    const after = this.screen.getViewportOffset();
-    log.debug(`SCROLL_VIEWPORT: after=${after}, actualDelta=${actualDelta}`);
+
+    this._viewportOffset = newOffset;
+
+    // Keep vterm.js in sync so its internal state stays consistent,
+    // but we don't rely on its scrollback length for offset tracking.
+    if (actualDelta !== 0) {
+      this.screen.scrollViewport(actualDelta);
+    }
+
+    log.debug(`SCROLL_VIEWPORT: delta=${delta}, before=${before}, after=${this._viewportOffset}, scrollback=${maxOffset}`);
   }
 
   /** Scroll to bottom (viewport offset = 0). */
   scrollToBottom(): void {
-    const offset = this.screen.getViewportOffset();
-    if (offset > 0) {
-      this.screen.scrollViewport(-offset);
-      log.debug(`SCROLL_TO_BOTTOM: was at offset=${offset}`);
+    if (this._viewportOffset > 0) {
+      this.screen.scrollViewport(-this._viewportOffset);
+      log.debug(`SCROLL_TO_BOTTOM: was at offset=${this._viewportOffset}`);
+      this._viewportOffset = 0;
     }
   }
 
   /** Check if viewport is at the bottom. */
   isAtBottom(): boolean {
-    return this.screen.getViewportOffset() === 0;
+    return this._viewportOffset === 0;
   }
 
 
@@ -310,7 +328,7 @@ export class VtermAdapter {
    */
   getStyledLines(): StyledText[] {
     const lines: StyledText[] = [];
-    const viewportOffset = this.screen.getViewportOffset();
+    const viewportOffset = this._viewportOffset;
     const scrollbackSize = this._scrollbackBuffer.length;
     log.debug(`GET_STYLED_LINES: rows=${this._rows}, scrollback=${scrollbackSize}, viewportOffset=${viewportOffset}`);
 
@@ -351,7 +369,7 @@ export class VtermAdapter {
    * Note: row is viewport-relative (0 = top of visible area)
    */
   getStyledLine(row: number): StyledText {
-    const viewportOffset = this.screen.getViewportOffset();
+    const viewportOffset = this._viewportOffset;
     const scrollbackSize = this._scrollbackBuffer.length;
     const scrollbackIndex = scrollbackSize - viewportOffset + row;
     
@@ -416,6 +434,14 @@ export class VtermAdapter {
         continue;
       }
 
+      // Skip the right half (continuation cell) of a wide character.
+      // In vterm.js, a wide char (CJK/emoji) occupies Cell[i] with wide=true
+      // and Cell[i+1] with char='' as a spacer. Without this check, the spacer
+      // becomes a visible space, inflating the text width and causing line merging.
+      if (i > 0 && cells[i - 1].wide && cell.char === '') {
+        continue;
+      }
+
       // Convert { r, g, b } to "#RRGGBB" hex string
       let fgHex = colorToHex(cell.fg);
       let bgHex = colorToHex(cell.bg);
@@ -462,7 +488,7 @@ export class VtermAdapter {
    * Note: row is viewport-relative
    */
   getLineText(row: number): string {
-    const viewportOffset = this.screen.getViewportOffset();
+    const viewportOffset = this._viewportOffset;
     const scrollbackSize = this._scrollbackBuffer.length;
     const scrollbackIndex = scrollbackSize - viewportOffset + row;
     
