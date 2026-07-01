@@ -140,6 +140,7 @@ export class App {
       if (activeId) {
         const tab = this.tabs.get(activeId);
         if (tab?.vterm) {
+          tab.renderer.clearSelection();
           const beforeOffset = tab.vterm.getViewportOffset();
           const scrollback = tab.vterm.getScrollbackLength();
           logDebug(`[SCROLL] direction=${direction}, scrollback=${scrollback}, viewportOffset=${beforeOffset}`);
@@ -336,7 +337,7 @@ export class App {
       const height = Math.max(5, this.renderer.height ?? 24);
       const sidebarW = this.sidebar?.getWidth() ?? 30;
       const cols = Math.max(40, width - sidebarW - 1 - 2); // -1 divider, -2 borders
-      const rows = Math.max(10, height - 2);
+      const rows = Math.max(10, height - 4); // -2 borders, -1 toolbar, -1 tabBar
 
       logDebug(`[RESIZE] handleResize: renderer=${width}x${height}, sidebarW=${sidebarW}, cols=${cols}, rows=${rows}`);
 
@@ -417,7 +418,7 @@ export class App {
     this.statusBar.setStatus('Connecting to ' + config.host + '...');
     this.renderer.requestRender();
     const cols = Math.max(40, this.renderer.width - 32);
-    const rows = Math.max(10, this.renderer.height - 2);
+    const rows = Math.max(10, this.renderer.height - 4); // -2 borders, -1 toolbar, -1 tabBar
     logDebug(`[CONNECT] initial terminal size: renderer=${this.renderer.width}x${this.renderer.height}, cols=${cols}, rows=${rows}`);
 
     // Create tab ID
@@ -700,15 +701,48 @@ export class App {
         logDebug(`[COPY] sidebar: copied connection info="${text}"`);
       }
     } else if (this.focus === 'terminal') {
-      // Copy selected text using OpenTUI's built-in selection, otherwise send SIGINT
-      if (this.renderer.hasSelection) {
-        const selection = this.renderer.getSelection();
-        text = selection?.getSelectedText() ?? '';
-        logDebug(`[COPY] terminal: copied OpenTUI selection="${text.substring(0, 100)}"`);
-        this.renderer.clearSelection();
-      } else {
-        const activeId = this.tabBar.getActiveTabId();
-        logDebug(`[COPY] terminal: activeId=${activeId}`);
+      // Check our custom TerminalRenderer selection first, then OpenTUI's, then fallback
+      const activeId = this.tabBar.getActiveTabId();
+      if (activeId) {
+        const entry = this.tabs.get(activeId);
+        if (entry?.renderer) {
+          // 1. Our custom selection on TerminalRenderer (monkey-patched Generic)
+          if (entry.renderer.hasSelection()) {
+            text = entry.renderer.getSelectedText();
+            logDebug(`[COPY] terminal: copied custom selection="${text.substring(0, 100)}"`);
+            entry.renderer.clearSelection();
+          }
+          // 2. OpenTUI's built-in selection (in case it somehow works)
+          else if (this.renderer.hasSelection) {
+            const selection = this.renderer.getSelection();
+            text = selection?.getSelectedText() ?? '';
+            logDebug(`[COPY] terminal: copied OpenTUI selection="${text.substring(0, 100)}"`);
+            this.renderer.clearSelection();
+          }
+        }
+      }
+
+      // 3. No selection — copy the last non-empty visible line
+      if (!text) {
+        logDebug(`[COPY] terminal: no selection, using getVisibleLines fallback`);
+        if (activeId) {
+          const entry = this.tabs.get(activeId);
+          if (entry?.renderer) {
+            const lines = entry.renderer.getVisibleLines();
+            for (let i = lines.length - 1; i >= 0; i--) {
+              const line = lines[i].trim();
+              if (line.length > 0) {
+                text = line;
+                logDebug(`[COPY] terminal: fallback copied line ${i}="${text.substring(0, 100)}"`);
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // 4. Still no text — send SIGINT
+      if (!text) {
         if (activeId) {
           const tab = this.tabs.get(activeId);
           if (tab?.ssh.isConnected()) {
@@ -717,7 +751,7 @@ export class App {
           }
         }
         this.renderer.requestRender();
-        return; // Skip clipboard copy
+        return;
       }
     } else if (this.focus === 'form' && this.form) {
       // Copy the content of the currently focused form field

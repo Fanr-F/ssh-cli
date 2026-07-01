@@ -1,15 +1,25 @@
-import { Box, Text, StyledText } from '@opentui/core';
+import { Generic, parseColor, type OptimizedBuffer } from '@opentui/core';
 import { VtermAdapter } from './vterm-adapter';
 import { createLogger } from '../logger';
+import type { ScreenCell } from 'vterm.js';
 
 const log = createLogger('renderer');
 
+const DEFAULT_FG = parseColor('#CCCCCC');
+const DEFAULT_BG = parseColor('#0d1117');
+
 export class TerminalRenderer {
   private vterm: VtermAdapter | null = null;
-  private contentBox: ReturnType<typeof Box> | null = null;
-  private lineTexts: any[] = [];
-  private initialized = false;
+  private contentBox: any = null;
   private _updateCount = 0;
+  private _lastGeneration = -1;
+  private _lastStyledLines: any[] = [];
+  private _lastCursorPos: { x: number; y: number } = { x: 0, y: 0 };
+  private _lastCursorVisible = false;
+  private _lastViewportOffset = 0;
+  private _selectionAnchor: { row: number; col: number } | null = null;
+  private _selectionFocus: { row: number; col: number } | null = null;
+  private _selectionSetup = false;
 
   constructor() {}
 
@@ -17,197 +27,251 @@ export class TerminalRenderer {
     this.vterm = vterm;
   }
 
-  createContentBox(rows: number, id: string = 'terminal-content'): ReturnType<typeof Box> {
-    this.initialized = false;
-    this.lineTexts = [];
+  clearSelection(): void {
+    this._selectionAnchor = null;
+    this._selectionFocus = null;
+  }
 
-    const textChildren = Array.from({ length: rows }, () =>
-      Text({ content: '', fg: '#CCCCCC', wrapMode: 'none' }),
-    );
+  hasSelection(): boolean {
+    return this._selectionAnchor !== null && this._selectionFocus !== null;
+  }
 
-    this.contentBox = Box(
-      {
-        id,
-        width: '100%',
-        height: '100%',
-        backgroundColor: '#0d1117',
-        flexDirection: 'column',
-        padding: 0,
+  getSelectedText(): string {
+    if (!this._selectionAnchor || !this._selectionFocus || !this.vterm) return '';
+
+    const startRow = Math.min(this._selectionAnchor.row, this._selectionFocus.row);
+    const endRow = Math.max(this._selectionAnchor.row, this._selectionFocus.row);
+    const startCol = this._selectionAnchor.row < this._selectionFocus.row
+      ? this._selectionAnchor.col
+      : this._selectionAnchor.row > this._selectionFocus.row
+        ? this._selectionFocus.col
+        : Math.min(this._selectionAnchor.col, this._selectionFocus.col);
+    const endCol = this._selectionAnchor.row < this._selectionFocus.row
+      ? this._selectionFocus.col
+      : this._selectionAnchor.row > this._selectionFocus.row
+        ? this._selectionAnchor.col
+        : Math.max(this._selectionAnchor.col, this._selectionFocus.col);
+
+    const lines: string[] = [];
+    for (let row = startRow; row <= endRow; row++) {
+      const lineText = this.vterm.getLineText(row);
+      const cells = this.vterm.getLineCells(row);
+      const startIdx = this.cellToCharIndex(cells, row === startRow ? startCol : 0);
+      const endIdx = this.cellToCharIndex(cells, row === endRow ? endCol : cells.length - 1);
+      lines.push(lineText.substring(startIdx, endIdx + 1));
+    }
+    return lines.join('\n');
+  }
+
+  private cellToCharIndex(cells: ScreenCell[], cellPos: number): number {
+    let count = 0;
+    for (let i = 0; i < cellPos && i < cells.length; i++) {
+      if (!(cells[i].wide && cells[i].char === '')) count++;
+    }
+    return count;
+  }
+
+  private setupSelection(renderable: any): void {
+    renderable.selectable = true;
+
+    renderable.shouldStartSelection = (x: number, y: number): boolean => {
+      const sx = Number(renderable._screenX) || 0;
+      const sy = Number(renderable._screenY) || 0;
+      const w = Number(renderable.width) || 0;
+      const h = Number(renderable.height) || 0;
+      const localX = x - sx;
+      const localY = y - sy;
+      return localX >= 0 && localX < w && localY >= 0 && localY < h;
+    };
+
+    renderable.onSelectionChanged = (selection: any): boolean => {
+      if (!selection?.isActive) {
+        this._selectionAnchor = null;
+        this._selectionFocus = null;
+        return false;
+      }
+
+      const sx = Number(renderable._screenX) || 0;
+      const sy = Number(renderable._screenY) || 0;
+
+      // Convert global screen coords to terminal row/col
+      const anchorRow = Math.max(0, Math.min((selection.anchor.y - sy), (this.vterm?.rows ?? 1) - 1));
+      const anchorCol = Math.max(0, Math.min((selection.anchor.x - sx), (this.vterm?.cols ?? 1) - 1));
+      const focusRow = Math.max(0, Math.min((selection.focus.y - sy), (this.vterm?.rows ?? 1) - 1));
+      const focusCol = Math.max(0, Math.min((selection.focus.x - sx), (this.vterm?.cols ?? 1) - 1));
+
+      this._selectionAnchor = { row: anchorRow, col: anchorCol };
+      this._selectionFocus = { row: focusRow, col: focusCol };
+      return this.hasSelection();
+    };
+
+    renderable.hasSelection = (): boolean => {
+      return this._selectionAnchor !== null && this._selectionFocus !== null;
+    };
+
+    renderable.getSelectedText = (): string => {
+      if (!this._selectionAnchor || !this._selectionFocus || !this.vterm) return '';
+
+      const startRow = Math.min(this._selectionAnchor.row, this._selectionFocus.row);
+      const endRow = Math.max(this._selectionAnchor.row, this._selectionFocus.row);
+      const startCol = this._selectionAnchor.row < this._selectionFocus.row
+        ? this._selectionAnchor.col
+        : this._selectionAnchor.row > this._selectionFocus.row
+          ? this._selectionFocus.col
+          : Math.min(this._selectionAnchor.col, this._selectionFocus.col);
+      const endCol = this._selectionAnchor.row < this._selectionFocus.row
+        ? this._selectionFocus.col
+        : this._selectionAnchor.row > this._selectionFocus.row
+          ? this._selectionAnchor.col
+          : Math.max(this._selectionAnchor.col, this._selectionFocus.col);
+
+      const lines: string[] = [];
+      for (let row = startRow; row <= endRow; row++) {
+        const lineText = this.vterm.getLineText(row);
+        const cells = this.vterm.getLineCells(row);
+        const startIdx = this.cellToCharIndex(cells, row === startRow ? startCol : 0);
+        const endIdx = this.cellToCharIndex(cells, row === endRow ? endCol : cells.length - 1);
+        lines.push(lineText.substring(startIdx, endIdx + 1));
+      }
+      return lines.join('\n');
+    };
+  }
+
+  createContentBox(_rows: number, id: string = 'terminal-content'): any {
+    this._updateCount = 0;
+
+    this.contentBox = Generic({
+      id,
+      width: '100%',
+      height: '100%',
+      render: (buffer: OptimizedBuffer, _deltaTime: number, renderable: any) => {
+        const w = Number(renderable.width) || 0;
+        const h = Number(renderable.height) || 0;
+        if (w === 0 || h === 0) return;
+        const sx = Number(renderable._screenX) || 0;
+        const sy = Number(renderable._screenY) || 0;
+
+        // Monkey-patch selection methods on first frame
+        if (!this._selectionSetup) {
+          this._selectionSetup = true;
+          this.setupSelection(renderable);
+        }
+
+        buffer.fillRect(sx, sy, w, h, DEFAULT_BG);
+        this.renderTerminal(buffer, w, h, sx, sy);
       },
-      ...textChildren,
-    );
+    });
 
     return this.contentBox;
   }
 
-  resolveChildren(children: any[]): void {
-    this.lineTexts = children;
-    this.initialized = true;
+  resolveChildren(_children: any[]): void {
+    // No-op: Generic renders directly to buffer
   }
 
-  /**
-   * Rebuild the content box with a new row count.
-   * Returns a new content Box (the old one should be removed from the tree first).
-   */
-  rebuildContentBox(rows: number, id: string = 'terminal-content'): ReturnType<typeof Box> {
-    this.initialized = false;
-    this.lineTexts = [];
-
-    const textChildren = Array.from({ length: rows }, () =>
-      Text({ content: '', fg: '#CCCCCC', wrapMode: 'none' }),
-    );
-
-    this.contentBox = Box(
-      {
-        id,
-        width: '100%',
-        height: '100%',
-        backgroundColor: '#0d1117',
-        flexDirection: 'column',
-        padding: 0,
-      },
-      ...textChildren,
-    );
-
-    return this.contentBox;
+  rebuildContentBox(rows: number, id: string = 'terminal-content'): any {
+    return this.createContentBox(rows, id);
   }
 
   updateContent(): boolean {
-    if (!this.vterm || !this.initialized || this.lineTexts.length === 0) {
-      log.debug(`[TERMINAL RENDERER] updateContent: skipped (vterm=${!!this.vterm}, initialized=${this.initialized}, lineTexts=${this.lineTexts.length})`);
-      return false;
-    }
-
+    if (!this.vterm) return false;
     this._updateCount++;
-    try {
-      const styledLines = this.vterm.getStyledLines();
-      const cursorPos = this.vterm.getCursorPosition();
-      const cursorVisible = this.vterm.isCursorVisible();
-      const viewportOffset = this.vterm.getViewportOffset();
-
-      // Log first few updates and periodically
-      if (this._updateCount <= 5 || this._updateCount % 50 === 0) {
-        log.debug(`[TERMINAL RENDERER] updateContent: count=${this._updateCount}, lines=${styledLines.length}, viewportOffset=${viewportOffset}, cursorPos=${JSON.stringify(cursorPos)}`);
-        // Log first 3 lines content
-        for (let i = 0; i < Math.min(3, styledLines.length); i++) {
-          const text = this.getTextFromStyledText(styledLines[i]);
-          log.debug(`[TERMINAL RENDERER] line ${i}: "${text.substring(0, 50)}"`);
-        }
-      }
-
-      // Calculate total scrollback + screen lines
-      const totalLines = this.vterm.getScrollbackLength() + this.vterm.rows;
-      
-      for (let i = 0; i < this.lineTexts.length; i++) {
-        const textRenderable = this.lineTexts[i];
-        if (i < styledLines.length) {
-          let styledText = styledLines[i];
-
-          // Draw cursor on the line that has it, but only if cursor is in visible viewport
-          // cursorPos.y is absolute buffer position from vterm.js (0 = top of screen)
-          // When viewportOffset > 0, the cursor is at absolute position cursorPos.y
-          // We need to check if it's visible in our viewport
-          
-          // The visible range in absolute terms:
-          // - Top of visible = scrollbackSize - viewportOffset (oldest visible line index in our buffer)
-          // - Bottom of visible = scrollbackSize - viewportOffset + rows - 1
-          
-          // But cursorPos.y is from vterm.js grid (0 = top of visible screen)
-          // So cursor is at absolute position: scrollbackSize + cursorPos.y
-          
-          // For now, only show cursor when at bottom (viewportOffset = 0)
-          // TODO: properly calculate cursor position when scrolled up
-          const cursorInViewport = cursorVisible && 
-            viewportOffset === 0 &&
-            cursorPos.y >= 0 && 
-            cursorPos.y < this.vterm.rows &&
-            cursorPos.x < this.vterm.cols;
-          
-          if (cursorInViewport && i === cursorPos.y) {
-            styledText = this.injectCursor(styledText, cursorPos.x);
-          }
-
-          textRenderable.content = styledText;
-          // Clear selection after content update to prevent stale coordinates
-          // from being re-applied to the new buffer (causes wrong text display)
-          if (textRenderable.lastLocalSelection) {
-            textRenderable.textBufferView.resetLocalSelection();
-            textRenderable.lastLocalSelection = null;
-          }
-        } else {
-          textRenderable.content = new StyledText([]);
-        }
-      }
-
-      return true;
-    } catch (err) {
-      log.error({ error: err }, 'updateContent failed');
-      return false;
-    }
+    this._lastGeneration = -1; // invalidate cache on new SSH data
+    return true;
   }
 
-  /**
-   * Extract plain text from StyledText for logging.
-   */
-  private getTextFromStyledText(styledText: StyledText): string {
-    const rawChunks = (styledText as any).chunks ?? [];
-    return rawChunks.map((c: any) => c.text ?? '').join('');
-  }
+  private renderTerminal(buffer: OptimizedBuffer, width: number, height: number, sx: number, sy: number): void {
+    if (!this.vterm) return;
 
-  /**
-   * Inject a block cursor at the given column position in a StyledText.
-   * Replaces the character at cursorX with an inverse-styled version.
-   */
-  private injectCursor(styledText: StyledText, cursorX: number): StyledText {
-    const chunks: Array<{
-      __isChunk: true;
-      text: string;
-      fg?: string;
-      bg?: string;
-      attributes: number;
-    }> = [];
+    const gen = this.vterm.generation;
+    const cursorPos = this.vterm.getCursorPosition();
+    const cursorVisible = this.vterm.isCursorVisible();
+    const viewportOffset = this.vterm.getViewportOffset();
 
-    let col = 0;
-    const rawChunks = (styledText as any).chunks ?? [];
+    // Only recompute styled lines when content actually changed
+    if (gen !== this._lastGeneration) {
+      this._lastStyledLines = this.vterm.getStyledLines();
+      this._lastGeneration = gen;
+      this._lastCursorPos = cursorPos;
+      this._lastCursorVisible = cursorVisible;
+      this._lastViewportOffset = viewportOffset;
+    }
 
-    for (const chunk of rawChunks) {
-      const text = chunk.text ?? '';
-      for (let j = 0; j < text.length; j++) {
-        const char = text[j];
-        if (col === cursorX) {
-          // Cursor: inverse the colors (swap fg/bg)
-          chunks.push({
-            __isChunk: true,
-            text: char === ' ' ? ' ' : char,
-            fg: chunk.bg ?? '#0d1117',
-            bg: chunk.fg ?? '#CCCCCC',
-            attributes: 0,
-          });
+    const styledLines = this._lastStyledLines;
+    const lastCursorPos = this._lastCursorPos;
+    const lastCursorVisible = this._lastCursorVisible;
+    const lastViewportOffset = this._lastViewportOffset;
+
+    const cursorInViewport = lastCursorVisible &&
+      lastViewportOffset === 0 &&
+      lastCursorPos.y >= 0 &&
+      lastCursorPos.y < this.vterm.rows &&
+      lastCursorPos.x < this.vterm.cols;
+
+    for (let i = 0; i < styledLines.length && i < height; i++) {
+      const lineChunks = (styledLines[i] as any).chunks ?? [];
+      let x = 0;
+
+      for (const chunk of lineChunks) {
+        const text: string = chunk.text ?? '';
+        if (text.length === 0) continue;
+
+        const fg = chunk.fg ? parseColor(chunk.fg) : DEFAULT_FG;
+        const bg = chunk.bg ? parseColor(chunk.bg) : DEFAULT_BG;
+
+        const isCursorLine = cursorInViewport && i === lastCursorPos.y;
+        const textWidth = this.vterm.getDisplayWidth(text);
+        const cursorInChunk = isCursorLine && lastCursorPos.x >= x && lastCursorPos.x < x + textWidth;
+
+        if (cursorInChunk) {
+          const cursorOffset = lastCursorPos.x - x;
+          if (cursorOffset > 0) {
+            buffer.drawText(text.substring(0, cursorOffset), sx + x, sy + i, fg, bg);
+          }
+          buffer.drawText(text[cursorOffset], sx + x + cursorOffset, sy + i, bg, fg);
+          const afterStart = cursorOffset + 1;
+          if (afterStart < text.length) {
+            buffer.drawText(text.substring(afterStart), sx + x + afterStart, sy + i, fg, bg);
+          }
         } else {
-          chunks.push({
-            __isChunk: true,
-            text: char,
-            fg: chunk.fg,
-            bg: chunk.bg,
-            attributes: chunk.attributes ?? 0,
-          });
+          buffer.drawText(text, sx + x, sy + i, fg, bg);
         }
-        col++;
+        x += textWidth;
       }
     }
 
-    // If cursor is past all content, append a block cursor
-    if (cursorX >= col) {
-      chunks.push({
-        __isChunk: true,
-        text: ' ',
-        fg: '#0d1117',
-        bg: '#CCCCCC',
-        attributes: 0,
-      });
-    }
+    // Draw selection highlights
+    if (this._selectionAnchor && this._selectionFocus) {
+      const startRow = Math.min(this._selectionAnchor.row, this._selectionFocus.row);
+      const endRow = Math.max(this._selectionAnchor.row, this._selectionFocus.row);
+      const startCol = this._selectionAnchor.row < this._selectionFocus.row
+        ? this._selectionAnchor.col
+        : this._selectionAnchor.row > this._selectionFocus.row
+          ? this._selectionFocus.col
+          : Math.min(this._selectionAnchor.col, this._selectionFocus.col);
+      const endCol = this._selectionAnchor.row < this._selectionFocus.row
+        ? this._selectionFocus.col
+        : this._selectionAnchor.row > this._selectionFocus.row
+          ? this._selectionAnchor.col
+          : Math.max(this._selectionAnchor.col, this._selectionFocus.col);
 
-    return new StyledText(chunks);
+      const selBg = parseColor('#4a90d9');
+      const selFg = parseColor('#ffffff');
+
+      for (let row = startRow; row <= endRow && row < height; row++) {
+        const lineStart = row === startRow ? startCol : 0;
+        const lineEnd = row === endRow ? endCol : (this.vterm?.cols ?? 1) - 1;
+        const lineText = this.vterm?.getLineText(row) ?? '';
+
+        let x = 0;
+        for (let charIdx = 0; charIdx < lineText.length && x <= lineEnd; charIdx++) {
+          if (x >= lineStart) {
+            buffer.drawText(lineText[charIdx] || ' ', sx + x, sy + row, selFg, selBg);
+          }
+          x += this.vterm?.getDisplayWidth(lineText[charIdx]) ?? 1;
+        }
+      }
+    }
   }
 
   getVisibleLines(): string[] {

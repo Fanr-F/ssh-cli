@@ -45,6 +45,18 @@ function cellsEqual(a: ScreenCell[], b: ScreenCell[]): boolean {
   return true;
 }
 
+/**
+ * Helper: compare two ScreenCell arrays by character only (ignore fg/bg).
+ * Used for scrollback matching where color changes shouldn't prevent line matching.
+ */
+function cellsCharEqual(a: ScreenCell[], b: ScreenCell[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].char !== b[i].char) return false;
+  }
+  return true;
+}
+
 export class VtermAdapter {
   private screen: VtermScreen;
   private _cols: number;
@@ -57,7 +69,9 @@ export class VtermAdapter {
   private _scrollbackLimit: number;
   private _prevTopLine: ScreenCell[] = [];
   private _prevScreen: ScreenCell[][] = [];
+  private _prevCursorY: number = 0;
   private _updateCount = 0;
+  private _generation = 0;
 
   // ── Viewport offset tracking ────────────────────────────────────
   // We track viewport offset ourselves because vterm.js's scrollback length
@@ -76,9 +90,12 @@ export class VtermAdapter {
     this.captureScreen();
   }
 
+  get generation(): number { return this._generation; }
+
   /** Capture the current screen state for scrollback tracking. */
   private captureScreen(): void {
     this._prevTopLine = this.screen.getLine(0).map(c => ({ ...c }));
+    this._prevCursorY = this.screen.getCursorPosition().y;
     this._prevScreen = [];
     for (let i = 0; i < this._rows; i++) {
       this._prevScreen.push(this.screen.getLine(i).map(c => ({ ...c })));
@@ -105,8 +122,18 @@ export class VtermAdapter {
         this.screen.process(data);
       }
 
+      // Log raw data when debug enabled — helps diagnose scrollback false positives
+      const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+      if (text.length <= 200) {
+        const topText = this.screen.getLine(0).map(c => c.char).join('').trimEnd();
+        const bottomText = this.screen.getLine(this._rows - 1).map(c => c.char).join('').trimEnd();
+        const cursor = this.screen.getCursorPosition();
+        log.debug({ data: text.replace(/\x1b/g, '\\e').replace(/\r/g, '\\r').replace(/\n/g, '\\n'), top: topText, bottom: bottomText, cursorY: cursor.y, sb: this._scrollbackBuffer.length }, 'FEED');
+      }
+
       // Detect scrolled lines and add to our scrollback buffer
       this.detectScrolledLines();
+      this._generation++;
     } catch (err) {
       log.error({ error: err }, 'Failed to feed data to vterm');
     }
@@ -114,60 +141,107 @@ export class VtermAdapter {
 
   /**
    * Detect lines that scrolled off the top and add them to scrollback buffer.
-   * Finds the first old screen line that still exists in the new screen.
-   * Blank lines are skipped to avoid false matches (blank lines appear everywhere).
+   *
+   * Scroll detection algorithm:
+   * 1. Verify the old bottom line no longer exists at the bottom position (confirms shift, not in-place edit)
+   * 2. Verify the top line changed by TEXT content (not just color changes)
+   * 3. Find the first old line that still exists in the new screen (lines above it scrolled off)
+   *
+   * This prevents false positives from:
+   * - Typing at prompt (top line text unchanged → Guard 2 filters)
+   * - Arrow key / tab completion (top line text unchanged → Guard 2 filters)
+   * - Shell redraws with color changes (top line text unchanged → Guard 2 filters)
+   * - In-place edits on the bottom row (old bottom still exists → Guard 1 filters)
    */
   private detectScrolledLines(): void {
+    // Guard 0: skip detection on first connection (no previous screen to compare)
+    if (this._prevScreen.length === 0) {
+      return;
+    }
+
+    // Guard 1: scrolling can ONLY happen when the cursor is at the last row.
+    // Use CURRENT cursor position (post-processing) to catch large data chunks
+    // that fill remaining rows and scroll in one feed() call.
+    // Typing at prompt leaves cursor at same row → still blocked.
+    if (this.screen.getCursorPosition().y < this._rows - 1) {
+      return;
+    }
+
+    // Guard 2: the old bottom line must NOT still be at the bottom position.
+    // If it is, content changed in-place (typing on last row, color redraw) — no scroll happened.
+    const oldBottomLine = this._prevScreen[this._rows - 1];
+    const newBottomLine = this.screen.getLine(this._rows - 1);
+    const bottomStillSame = !this.isBlankLine(oldBottomLine) && cellsCharEqual(oldBottomLine, newBottomLine);
+
+    // Guard 3: the top line must have changed by TEXT content.
+    // If text is the same (only colors changed), no scroll happened.
     const newTopLine = this.screen.getLine(0).map(c => ({ ...c }));
+    const topStillSame = cellsCharEqual(this._prevTopLine, newTopLine);
+
+    // Debug: log guard results when top changed (potential scroll)
+    if (!topStillSame) {
+      const oldTopText = this._prevTopLine.map(c => c.char).join('').trimEnd();
+      const newTopText = newTopLine.map(c => c.char).join('').trimEnd();
+      const oldBottomText = oldBottomLine.map(c => c.char).join('').trimEnd();
+      const newBottomText = newBottomLine.map(c => c.char).join('').trimEnd();
+      log.debug({
+        topChanged: true,
+        bottomSame: bottomStillSame,
+        oldTop: oldTopText,
+        newTop: newTopText,
+        oldBottom: oldBottomText,
+        newBottom: newBottomText,
+        cursorY: this._prevCursorY,
+        rows: this._rows,
+      }, 'SCROLL_DETECT: top line changed');
+    }
+
+    if (bottomStillSame) {
+      return;
+    }
+
+    if (topStillSame) {
+      return;
+    }
     
-    // If top line changed, lines have scrolled
-    if (!cellsEqual(this._prevTopLine, newTopLine)) {
-      // Find the first old screen line that still exists in the new screen.
-      // Lines before this position have scrolled off and should be captured.
-      // Blank lines are skipped — they match anywhere and cause false positives.
-      let firstRemaining = -1;
-      for (let i = 0; i < this._prevScreen.length; i++) {
-        if (!this.isBlankLine(this._prevScreen[i]) && this.lineExistsInScreen(this._prevScreen[i])) {
-          firstRemaining = i;
-          break;
-        }
+    // Top line changed and old bottom line shifted — this is a real scroll.
+    // Find the first old screen line that still exists in the new screen.
+    // Lines before this position have scrolled off and should be captured.
+    // Blank lines are skipped — they match anywhere and cause false positives.
+    let firstRemaining = -1;
+    for (let i = 0; i < this._prevScreen.length; i++) {
+      if (!this.isBlankLine(this._prevScreen[i]) && this.lineExistsInScreen(this._prevScreen[i])) {
+        firstRemaining = i;
+        break;
       }
-      
-      const scrolledCount = firstRemaining === -1
-        ? this._prevScreen.length
-        : firstRemaining;
-      
-      // Add scrolled lines to our buffer (oldest first)
-      // Skip leading blank lines (from initial empty screen), but preserve
-      // blank lines between content (MOTD section separators, etc.)
-      let seenContent = false;
-      for (let i = 0; i < scrolledCount && i < this._prevScreen.length; i++) {
-        if (!this.isBlankLine(this._prevScreen[i])) {
-          seenContent = true;
-          this._scrollbackBuffer.push(this._prevScreen[i]);
-        } else if (seenContent) {
-          this._scrollbackBuffer.push(this._prevScreen[i]);
-        }
-      }
-      
-      // Trim buffer if too large
-      while (this._scrollbackBuffer.length > this._scrollbackLimit) {
-        this._scrollbackBuffer.shift();
-      }
-      
-      if (scrolledCount > 0) {
-        log.debug({ scrolledCount, bufferSize: this._scrollbackBuffer.length }, 'Scrollback captured lines');
-      }
+    }
+    
+    const scrolledCount = firstRemaining === -1
+      ? this._prevScreen.length
+      : firstRemaining;
+    
+    // Add scrolled lines to our buffer (oldest first)
+    for (let i = 0; i < scrolledCount && i < this._prevScreen.length; i++) {
+      this._scrollbackBuffer.push(this._prevScreen[i]);
+    }
+    
+    // Trim buffer if too large
+    while (this._scrollbackBuffer.length > this._scrollbackLimit) {
+      this._scrollbackBuffer.shift();
+    }
+    
+    if (scrolledCount > 0) {
+      log.debug({ scrolledCount, bufferSize: this._scrollbackBuffer.length }, 'Scrollback captured lines');
     }
     
     // Update prev screen state
     this.captureScreen();
   }
 
-  /** Check if a line exists anywhere in the current visible screen. */
+  /** Check if a line exists anywhere in the current visible screen (char-only comparison). */
   private lineExistsInScreen(line: ScreenCell[]): boolean {
     for (let i = 0; i < this._rows; i++) {
-      if (cellsEqual(line, this.screen.getLine(i))) return true;
+      if (cellsCharEqual(line, this.screen.getLine(i))) return true;
     }
     return false;
   }
@@ -252,6 +326,7 @@ export class VtermAdapter {
       this.captureScreen();
       log.debug(`[RESIZE] fix: deleted ${blankRowsAboveCursor} blank line(s) above cursor`);
     }
+    this._generation++;
   }
 
   /** Get terminal dimensions. */
@@ -330,7 +405,7 @@ export class VtermAdapter {
     const lines: StyledText[] = [];
     const viewportOffset = this._viewportOffset;
     const scrollbackSize = this._scrollbackBuffer.length;
-    log.debug(`GET_STYLED_LINES: rows=${this._rows}, scrollback=${scrollbackSize}, viewportOffset=${viewportOffset}`);
+    log.trace(`GET_STYLED_LINES: rows=${this._rows}, scrollback=${scrollbackSize}, viewportOffset=${viewportOffset}`);
 
     for (let row = 0; row < this._rows; row++) {
       const scrollbackIndex = scrollbackSize - viewportOffset + row;
@@ -351,11 +426,7 @@ export class VtermAdapter {
       const trimmed = content.trimEnd();
       const isBlank = trimmed.length === 0;
 
-      // Log all rows on first call, then only blank rows
-      if (this._updateCount === 0 || isBlank) {
-        const first60 = trimmed.substring(0, 60);
-        log.debug(`[RENDER] row=${row}: ${source} blank=${isBlank} "${first60}"`);
-      }
+      // Per-row render logs removed — too verbose for continuous render loop
 
       lines.push(this.cellsToStyledText(cells));
     }
@@ -381,11 +452,7 @@ export class VtermAdapter {
       cells = this.screen.getLine(gridRow);
     }
     
-    // Log first few calls for debugging
-    if (row < 3) {
-      const firstChars = cells.slice(0, 20).map(c => c.char).join('');
-      log.debug(`GET_LINE row=${row}: scrollbackIdx=${scrollbackIndex}, first20="${firstChars}"`);
-    }
+    // Per-line debug logs removed — too verbose for continuous render loop
     return this.cellsToStyledText(cells);
   }
 
@@ -476,9 +543,9 @@ export class VtermAdapter {
     flushChunk();
 
     // Log unique color pairs for this row (only if non-default colors present)
-    if (colorPairs.size > 0) {
-      log.debug(`COLORS: ${[...colorPairs].join(' | ')}`);
-    }
+    // if (colorPairs.size > 0) {
+    //   log.debug(`COLORS: ${[...colorPairs].join(' | ')}`);
+    // }
 
     return new StyledText(chunks);
   }
@@ -501,6 +568,42 @@ export class VtermAdapter {
     }
     
     return cells.map(c => c.char).join('');
+  }
+
+  /** Get raw screen cells for a row (handles scrollback/viewport). */
+  getLineCells(row: number): ScreenCell[] {
+    const viewportOffset = this._viewportOffset;
+    const scrollbackSize = this._scrollbackBuffer.length;
+    const scrollbackIndex = scrollbackSize - viewportOffset + row;
+
+    if (scrollbackIndex >= 0 && scrollbackIndex < scrollbackSize) {
+      return this._scrollbackBuffer[scrollbackIndex];
+    }
+    return this.screen.getLine(scrollbackIndex - scrollbackSize);
+  }
+
+  /** Get display width of a string (CJK/emoji=2, others=1). */
+  getDisplayWidth(text: string): number {
+    let width = 0;
+    for (const char of text) {
+      const code = char.codePointAt(0)!;
+      if (
+        (code >= 0x1100 && code <= 0x115F) ||
+        (code >= 0x2E80 && code <= 0xA4CF && code !== 0x303F) ||
+        (code >= 0xAC00 && code <= 0xD7A3) ||
+        (code >= 0xF900 && code <= 0xFAFF) ||
+        (code >= 0xFE10 && code <= 0xFE6F) ||
+        (code >= 0xFF01 && code <= 0xFF60) ||
+        (code >= 0xFFE0 && code <= 0xFFE6) ||
+        (code >= 0x1F000 && code <= 0x1FAFF) ||
+        (code >= 0x20000 && code <= 0x2FA1F)
+      ) {
+        width += 2;
+      } else {
+        width += 1;
+      }
+    }
+    return width;
   }
 
   /** Reset the terminal. */
