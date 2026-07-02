@@ -113,17 +113,23 @@ export class VtermAdapter {
 
   feed(data: Uint8Array | string): void {
     try {
-      // Save screen state before feed for scrollback detection
-      this.captureScreen();
+      const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
 
-      if (typeof data === 'string') {
-        this.screen.process(new TextEncoder().encode(data));
-      } else {
-        this.screen.process(data);
+      // Split on newlines so each line triggers its own scroll detection.
+      // Without this, a single large screen.process() call can cause vterm to
+      // scroll multiple times internally, but we only see the final state —
+      // losing intermediate lines that scrolled off.
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const segment = i < lines.length - 1 ? lines[i] + '\n' : lines[i];
+        if (segment.length === 0) continue;
+
+        this.captureScreen();
+        this.screen.process(new TextEncoder().encode(segment));
+        this.detectScrolledLines();
       }
 
       // Log raw data when debug enabled — helps diagnose scrollback false positives
-      const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
       if (text.length <= 200) {
         const topText = this.screen.getLine(0).map(c => c.char).join('').trimEnd();
         const bottomText = this.screen.getLine(this._rows - 1).map(c => c.char).join('').trimEnd();
@@ -131,8 +137,6 @@ export class VtermAdapter {
         log.debug({ data: text.replace(/\x1b/g, '\\e').replace(/\r/g, '\\r').replace(/\n/g, '\\n'), top: topText, bottom: bottomText, cursorY: cursor.y, sb: this._scrollbackBuffer.length }, 'FEED');
       }
 
-      // Detect scrolled lines and add to our scrollback buffer
-      this.detectScrolledLines();
       this._generation++;
     } catch (err) {
       log.error({ error: err }, 'Failed to feed data to vterm');
@@ -207,10 +211,26 @@ export class VtermAdapter {
     // Top line changed and old bottom line shifted — this is a real scroll.
     // Find the first old screen line that still exists in the new screen.
     // Lines before this position have scrolled off and should be captured.
-    // Blank lines are skipped — they match anywhere and cause false positives.
+    //
+    // Blank lines need special handling: they are all identical by content,
+    // so lineExistsInScreen() falsely matches a scrolled-off blank with ANY
+    // blank row on screen. Use positional matching instead:
+    // - After one scroll-up, old row i shifts to new row i-1
+    // - A blank "remains" only if new row i-1 is also blank
+    // - For i===0, blank always scrolled off (would need row -1)
     let firstRemaining = -1;
     for (let i = 0; i < this._prevScreen.length; i++) {
-      if (!this.isBlankLine(this._prevScreen[i]) && this.lineExistsInScreen(this._prevScreen[i])) {
+      if (this.isBlankLine(this._prevScreen[i])) {
+        if (i > 0) {
+          const shiftedLine = this.screen.getLine(i - 1);
+          if (this.isBlankLine(shiftedLine)) {
+            firstRemaining = i;
+            break;
+          }
+        }
+        continue;
+      }
+      if (this.lineExistsInScreen(this._prevScreen[i])) {
         firstRemaining = i;
         break;
       }
@@ -238,9 +258,12 @@ export class VtermAdapter {
     this.captureScreen();
   }
 
-  /** Check if a line exists anywhere in the current visible screen (char-only comparison). */
+  /** Check if a line exists anywhere in the current visible screen (char-only comparison).
+   *  Excludes the last row — after scrollUp(), the bottom row is always a fresh
+   *  blank row from makeRow(). Without this exclusion, blank lines would always
+   *  match the bottom row, causing false positives in firstRemaining detection. */
   private lineExistsInScreen(line: ScreenCell[]): boolean {
-    for (let i = 0; i < this._rows; i++) {
+    for (let i = 0; i < this._rows - 1; i++) {
       if (cellsCharEqual(line, this.screen.getLine(i))) return true;
     }
     return false;
