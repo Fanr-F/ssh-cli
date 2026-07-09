@@ -84,6 +84,9 @@ export interface TerminalPanelAPI {
 
   /** Set visual focus highlight (changes border color). */
   setFocused(value: boolean): void;
+
+  /** Show or hide the terminal panel. */
+  setVisible(visible: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +530,11 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     setFocused(value: boolean): void {
       const r = resolve();
       if (r) r.container.borderColor = value ? '#7aa2f7' : '#3b4261';
+    },
+
+    setVisible(visible: boolean): void {
+      const r = resolve();
+      if (r) r.container.visible = visible;
     },
   };
 }

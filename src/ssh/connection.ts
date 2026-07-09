@@ -1,4 +1,4 @@
-import { Client, ClientChannel, ConnectConfig } from 'ssh2-no-cpu-features';
+import { Client, ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2-no-cpu-features';
 import { EventEmitter } from 'node:events';
 import { ShellOptions, SshConnectionState, AuthenticationError, ConnectionTimeoutError, HostKeyError } from './types';
 import { ConnectionConfig } from '../types/connection';
@@ -190,6 +190,43 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     if (this.shellChannel) {
       this.shellChannel.write(data);
     }
+  }
+
+  /** Open an SFTP session over the existing SSH connection. */
+  startSftp(): Promise<SFTPWrapper> {
+    return new Promise((resolve, reject) => {
+      if (this._state !== SshConnectionState.Connected) {
+        reject(new Error('Not connected'));
+        return;
+      }
+
+      this.client.sftp((err: Error | undefined, sftp: SFTPWrapper) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(sftp);
+      });
+    });
+  }
+
+  /** Get the remote working directory by executing `echo $PWD`. */
+  async getRemotePwd(): Promise<string> {
+    const channel = await this.startShell({ cols: 80, rows: 1 });
+    return new Promise<string>((resolve, reject) => {
+      let output = '';
+      const onData = (data: Buffer) => {
+        output += data.toString();
+      };
+      const onClose = () => {
+        channel.removeListener('data', onData);
+        const match = output.match(/\/[^\s]*/);
+        resolve(match ? match[0] : '/');
+      };
+      channel.on('data', onData);
+      channel.once('close', onClose);
+      channel.write('echo $PWD\n');
+    });
   }
 
   private cleanup(): void {

@@ -13,10 +13,13 @@ import { createHelpPopup, type HelpPopupAPI } from './ui/help-popup';
 import { VtermAdapter } from './terminal/vterm-adapter';
 import { TerminalRenderer } from './terminal/terminal-renderer';
 import { SshConnection } from './ssh/connection';
+import { SftpClient } from './sftp/sftp-client';
+import { createInputDialog } from './sftp/sftp-input-dialog';
+import { createSftpTab, type SftpTabAPI } from './sftp/sftp-tab';
 import { copyToClipboard, pasteFromClipboard } from './clipboard';
 import { logDebug, logIO } from './logger';
 
-type FocusZone = 'sidebar' | 'terminal' | 'form';
+type FocusZone = 'sidebar' | 'terminal' | 'form' | 'sftp';
 
 /** Create a minimal KeyEvent-like object for injecting characters into forms. */
 function createFakeKeyEvent(ch: string) {
@@ -68,6 +71,8 @@ export class App {
     renderer: TerminalRenderer;
     ssh: SshConnection;
     config: ConnectionConfig;
+    sftpClient?: SftpClient;
+    sftpTab?: SftpTabAPI;
   }>();
 
   constructor(renderer: CliRenderer) {
@@ -160,7 +165,6 @@ export class App {
       }
     });
     this.statusBar = createStatusBar(this.renderer);
-    this.statusBar.setKeybindings(['Ctrl+Q: Quit', 'Ctrl+Tab: Focus', 'Enter: Connect', 'A: Add', 'E: Edit', 'Del: Delete']);
 
     // Draggable divider between sidebar and terminal
     const divider = createDivider(
@@ -175,8 +179,8 @@ export class App {
       this.toolbar,
       Box(
         { flexDirection: 'row', width: '100%', height: '100%' },
-        this.sidebar, divider, Box(
-          { flexDirection: 'column', flexGrow: 1 },
+        this.sidebar, divider,         Box(
+          { id: 'right-panel', flexDirection: 'column', flexGrow: 1 },
           this.tabBar.component,
           this.terminalPanel.component,
         ),
@@ -243,9 +247,33 @@ export class App {
       if (key.name.startsWith('f') && !key.ctrl && !key.shift) {
         const num = parseInt(key.name.slice(1), 10);
         if (num >= 2 && num <= 12) {
+          logDebug(`[KEY] F${num} intercepted globally, focus=${this.focus}`);
           this.switchToTabIndex(num - 2);
           key.preventDefault(); return;
         }
+      }
+
+      // Global: Ctrl+U → upload file
+      if (key.ctrl && key.name === 'u' && this.focus === 'terminal') {
+        logDebug(`[KEY] Ctrl+U upload, focus=${this.focus}`);
+        key.preventDefault();
+        this.openUploadDialog();
+        return;
+      }
+
+      // Global: Ctrl+D → download file
+      if (key.ctrl && key.name === 'd' && this.focus === 'terminal') {
+        logDebug(`[KEY] Ctrl+D download, focus=${this.focus}`);
+        key.preventDefault();
+        this.openDownloadDialog();
+        return;
+      }
+
+      // Global: Ctrl+E → open SFTP tab
+      if (key.ctrl && key.name === 'e') {
+        key.preventDefault();
+        this.openSftpTab();
+        return;
       }
 
       // Terminal: PageUp/PageDown → scroll viewport
@@ -276,8 +304,16 @@ export class App {
         }
       }
 
-      // Help popup: any key closes it
+      // Help popup: Up/Down scroll, other keys close it
       if (this.helpPopup.isVisible()) {
+        if (key.name === 'up' || key.name === 'pageup') {
+          this.helpPopup.scrollUp();
+          key.preventDefault(); return;
+        }
+        if (key.name === 'down' || key.name === 'pagedown') {
+          this.helpPopup.scrollDown();
+          key.preventDefault(); return;
+        }
         this.helpPopup.hide();
         key.preventDefault(); return;
       }
@@ -293,6 +329,17 @@ export class App {
         else if (key.name === 'a' && !key.ctrl) { this.openForm(null); key.preventDefault(); }
         else if (key.name === 'e' && !key.ctrl) { const c = this.sidebar.getSelectedConnection(); if (c) this.openForm(c); key.preventDefault(); }
         else if (key.name === 'delete' || key.name === 'backspace') { const c = this.sidebar.getSelectedConnection(); if (c) this.deleteConnection(c); key.preventDefault(); }
+      }
+      if (this.focus === 'sftp') {
+        logDebug(`[KEY] SFTP focus, forwarding key=${key.name} ctrl=${key.ctrl} to sftpTab`);
+        const activeId = this.tabBar.getActiveTabId();
+        if (activeId) {
+          const tab = this.tabs.get(activeId);
+          if (tab?.sftpTab) {
+            tab.sftpTab.handleKey(key);
+            key.preventDefault();
+          }
+        }
       }
     });
 
@@ -403,6 +450,15 @@ export class App {
     if (this.terminalPanel) this.terminalPanel.setFocusable(false);
   }
 
+  private focusSftp(): void {
+    this.focus = 'sftp';
+    this.sidebar.setFocusable(false);
+    this.sidebar.setFocused(false);
+    if (this.terminalPanel) { this.terminalPanel.setFocusable(false); this.terminalPanel.setFocused(false); }
+    this.statusBar.setStatus('SFTP focused');
+    this.renderer.requestRender();
+  }
+
   private async connectTo(config: ConnectionConfig): Promise<void> {
     logDebug(`[CONNECT] host=${config.host}, username=${config.username}, current tabs=${this.tabs.size}`);
     
@@ -448,7 +504,7 @@ export class App {
 
     // Add tab to tab bar
     logDebug(`[CONNECT] adding tab ${tabId} to tab bar`);
-    this.tabBar.addTab(tabId, tabTitle);
+    this.tabBar.addTab(tabId, tabTitle, 'terminal');
 
     // Track whether the SSH session was ever established
     let wasConnected = false;
@@ -456,7 +512,7 @@ export class App {
     ssh.on('ready', async () => {
       wasConnected = true;
       // Update tab title with connected status
-      this.tabBar.updateTabTitle(tabId, `${config.username}@${config.host}`);
+      this.tabBar.updateTabTitle(tabId, `SSH: ${config.username}@${config.host}`);
 
       // Switch to this tab
       this.tabBar.switchTo(tabId);
@@ -542,10 +598,31 @@ export class App {
       return;
     }
 
-    logDebug(`[APP] switchToTab: calling tabBar.switchTo(${id}) and terminalPanel.switchTerminal(${id})`);
+    const tabType = this.tabBar.getTabType(id);
+    logDebug(`[APP] switchToTab: type=${tabType}, calling tabBar.switchTo(${id})`);
+
     this.tabBar.switchTo(id);
-    this.terminalPanel.switchTerminal(id);
-    this.focusTerminal();
+
+    if (tabType === 'sftp' && tab.sftpTab) {
+      // SFTP tab: hide terminal panel, show SFTP
+      this.terminalPanel.setVisible(false);
+      const rightPanel = this.renderer.root.findDescendantById('right-panel');
+      if (rightPanel && !rightPanel.findDescendantById('sftp-tab')) {
+        rightPanel.add(tab.sftpTab.component);
+      }
+      // Set SFTP visible via real renderable
+      const sftpReal = this.renderer.root.findDescendantById('sftp-tab');
+      if (sftpReal) sftpReal.visible = true;
+      this.focusSftp();
+    } else {
+      // Terminal tab: hide SFTP, show terminal panel
+      const sftpReal = this.renderer.root.findDescendantById('sftp-tab');
+      if (sftpReal) sftpReal.visible = false;
+      this.terminalPanel.setVisible(true);
+      this.terminalPanel.switchTerminal(id);
+      this.focusTerminal();
+    }
+
     this.renderer.requestRender();
     logDebug(`[APP] switchToTab: done`);
   }
@@ -578,6 +655,16 @@ export class App {
 
     // Remember if this was the active tab before removing
     const wasActive = this.tabBar.getActiveTabId() === id;
+
+    // Destroy SFTP tab if it exists
+    if (tab.sftpTab) {
+      logDebug(`[CLOSE TAB] destroying SFTP tab ${id}`);
+      tab.sftpTab.destroy();
+      // Remove from parent if mounted
+      if (tab.sftpTab.component?.parent) {
+        tab.sftpTab.component.parent.remove(tab.sftpTab.component.id);
+      }
+    }
 
     // Disconnect SSH
     if (tab.ssh.isConnected()) {
@@ -800,6 +887,140 @@ export class App {
       this.statusBar.setStatus('Pasted to form');
     } else {
       this.statusBar.setStatus('Nothing to paste to');
+    }
+    this.renderer.requestRender();
+  }
+
+  // ── SFTP handlers ─────────────────────────────────────────────
+
+  private openUploadDialog(): void {
+    const activeId = this.tabBar.getActiveTabId();
+    if (!activeId) {
+      this.statusBar.setStatus('No active connection');
+      this.renderer.requestRender();
+      return;
+    }
+    const tab = this.tabs.get(activeId);
+    if (!tab?.ssh.isConnected()) {
+      this.statusBar.setStatus('Not connected');
+      this.renderer.requestRender();
+      return;
+    }
+
+    const dialog = createInputDialog(
+      this.renderer,
+      'Upload File',
+      'Local path:',
+      '/path/to/local/file',
+      async (localPath: string) => {
+        this.statusBar.setStatus(`Uploading ${localPath}...`);
+        this.renderer.requestRender();
+        try {
+          const sftp = await tab.ssh.startSftp();
+          const client = new SftpClient(sftp);
+          const remotePath = localPath.split(/[/\\]/).pop() || 'file';
+          await client.upload(localPath, remotePath);
+          this.statusBar.setStatus(`Uploaded: ${remotePath}`);
+          client.close();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Upload failed';
+          this.statusBar.setStatus(`Upload failed: ${msg}`);
+        }
+        this.renderer.requestRender();
+      },
+      () => {},
+    );
+    this.form = dialog;
+    this.focusForm();
+    dialog.focus();
+    this.renderer.requestRender();
+  }
+
+  private openDownloadDialog(): void {
+    const activeId = this.tabBar.getActiveTabId();
+    if (!activeId) {
+      this.statusBar.setStatus('No active connection');
+      this.renderer.requestRender();
+      return;
+    }
+    const tab = this.tabs.get(activeId);
+    if (!tab?.ssh.isConnected()) {
+      this.statusBar.setStatus('Not connected');
+      this.renderer.requestRender();
+      return;
+    }
+
+    const dialog = createInputDialog(
+      this.renderer,
+      'Download File',
+      'Remote path:',
+      '/path/to/remote/file',
+      async (remotePath: string) => {
+        this.statusBar.setStatus(`Downloading ${remotePath}...`);
+        this.renderer.requestRender();
+        try {
+          const sftp = await tab.ssh.startSftp();
+          const client = new SftpClient(sftp);
+          const localPath = remotePath.split('/').pop() || 'file';
+          await client.download(remotePath, localPath);
+          this.statusBar.setStatus(`Downloaded: ${localPath}`);
+          client.close();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Download failed';
+          this.statusBar.setStatus(`Download failed: ${msg}`);
+        }
+        this.renderer.requestRender();
+      },
+      () => {},
+    );
+    this.form = dialog;
+    this.focusForm();
+    dialog.focus();
+    this.renderer.requestRender();
+  }
+
+  private async openSftpTab(): Promise<void> {
+    const activeId = this.tabBar.getActiveTabId();
+    if (!activeId) {
+      this.statusBar.setStatus('No active connection');
+      this.renderer.requestRender();
+      return;
+    }
+    const tab = this.tabs.get(activeId);
+    if (!tab?.ssh.isConnected()) {
+      this.statusBar.setStatus('Not connected');
+      this.renderer.requestRender();
+      return;
+    }
+
+    try {
+      const sftp = await tab.ssh.startSftp();
+      const sftpClient = new SftpClient(sftp);
+
+      const remotePwd = '~';
+      const localPwd = process.env.HOME || process.env.USERPROFILE || '/';
+
+      const tabId = `sftp-${Date.now()}`;
+      const config = tab.config;
+      const tabTitle = `SFTP: ${config.username}@${config.host}`;
+
+      const sftpTabComponent = createSftpTab(this.renderer, sftpClient, remotePwd, localPwd);
+
+      this.tabs.set(tabId, {
+        vterm: tab.vterm,
+        renderer: tab.renderer,
+        ssh: tab.ssh,
+        config,
+        sftpClient,
+        sftpTab: sftpTabComponent,
+      });
+
+      this.tabBar.addTab(tabId, tabTitle, 'sftp');
+      this.switchToTab(tabId);
+      this.statusBar.setStatus('SFTP connected');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to open SFTP';
+      this.statusBar.setStatus(`SFTP error: ${msg}`);
     }
     this.renderer.requestRender();
   }

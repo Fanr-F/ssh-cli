@@ -1,4 +1,4 @@
-import { Box, Text } from '@opentui/core';
+import { Box, Text, ScrollBox } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 
 // ── Tokyo Night palette ───────────────────────────────────────
@@ -53,6 +53,34 @@ const SHORTCUTS: Shortcut[] = [
     ],
   },
   {
+    category: 'SFTP',
+    keys: [
+      { key: 'Ctrl+E', action: 'Open SFTP tab' },
+      { key: 'Tab', action: 'Switch panel (local ↔ remote)' },
+      { key: '↑/↓', action: 'Select file' },
+      { key: 'Enter', action: 'Enter directory' },
+      { key: 'Backspace', action: 'Go to parent directory' },
+      { key: ':', action: 'Open command line' },
+      { key: 'Ctrl+U', action: 'Upload (pre-fill command)' },
+      { key: 'Ctrl+D', action: 'Download (pre-fill command)' },
+      { key: 'F7/N', action: 'New directory (remote)' },
+      { key: 'F8/Delete', action: 'Delete file/directory' },
+      { key: 'F2', action: 'Rename' },
+      { key: 'R', action: 'Refresh' },
+    ],
+  },
+  {
+    category: 'SFTP Commands',
+    keys: [
+      { key: 'upload <src> [dest]', action: 'Upload local → remote' },
+      { key: 'download <src> [dest]', action: 'Download remote → local' },
+      { key: 'mkdir <name>', action: 'Create directory (active panel)' },
+      { key: 'rm <name>', action: 'Delete file/directory (active panel)' },
+      { key: 'rename <old> <new>', action: 'Rename (active panel)' },
+      { key: 'cd <path>', action: 'Change directory + refresh both' },
+    ],
+  },
+  {
     category: 'Tab Bar',
     keys: [
       { key: 'Double-click', action: 'Close tab' },
@@ -80,10 +108,16 @@ export interface HelpPopupAPI {
   toggle(): void;
   /** Check if visible */
   isVisible(): boolean;
+  /** Scroll content up */
+  scrollUp(): void;
+  /** Scroll content down */
+  scrollDown(): void;
 }
 
 export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
   let visible = false;
+  let scrollOffset = 0;
+  const maxScroll = 200; // Max scroll offset
 
   // Resolve real renderable
   let _instance: any = null;
@@ -92,6 +126,18 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
       _instance = renderer.root.findDescendantById('help-popup');
     }
     return _instance;
+  }
+
+  // Resolve scroll box
+  let _scrollInstance: any = null;
+  function getScrollInstance(): any {
+    if (!_scrollInstance) {
+      const popup = getInstance();
+      if (popup) {
+        _scrollInstance = popup.findDescendantById('help-scroll');
+      }
+    }
+    return _scrollInstance;
   }
 
   // ── Drag state ──────────────────────────────────────────────────
@@ -142,7 +188,7 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
 
     // Footer
     const footBox = Box({ paddingX: 1, paddingY: 1 });
-    footBox.add(Text({ content: '\nPress F1 or Esc to close', fg: C.textDim }));
+    footBox.add(Text({ content: '\nPress F1 or Esc to close  |  Up/Down to scroll', fg: C.textDim }));
     lines.push(footBox);
 
     return lines;
@@ -150,9 +196,15 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
 
   function show(): void {
     visible = true;
+    scrollOffset = 0;
     const instance = getInstance();
     if (instance) {
       instance.visible = true;
+      // Reset scroll position
+      const scrollBox = getScrollInstance();
+      if (scrollBox) {
+        scrollBox.scrollTop = 0;
+      }
       renderer.requestRender();
     }
   }
@@ -166,15 +218,31 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
     }
   }
 
+  function scrollUp(): void {
+    const scrollBox = getScrollInstance();
+    if (scrollBox) {
+      scrollBox.scrollTop = Math.max(0, scrollBox.scrollTop - 2);
+      renderer.requestRender();
+    }
+  }
+
+  function scrollDown(): void {
+    const scrollBox = getScrollInstance();
+    if (scrollBox) {
+      scrollBox.scrollTop = Math.min(maxScroll, scrollBox.scrollTop + 2);
+      renderer.requestRender();
+    }
+  }
+
   // Build the popup container
   const contentLines = buildContent();
   const popup = Box(
     {
       id: 'help-popup',
       position: 'absolute',
-      top: '20%',
+      top: '10%',
       left: '25%',
-      width: '30%',
+      width: '50%',
       height: '80%',
       backgroundColor: C.bgOverlay,
       borderColor: C.border,
@@ -210,7 +278,17 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
         }
       },
     },
-    ...contentLines,
+    ScrollBox(
+      {
+        id: 'help-scroll',
+        flex: 1,
+        scrollY: true,
+        scrollX: false,
+        stickyScroll: false,
+        contentOptions: { flexDirection: 'column' },
+      },
+      ...contentLines,
+    ),
   );
 
   return {
@@ -218,6 +296,9 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
 
     show,
     hide,
+
+    scrollUp,
+    scrollDown,
 
     toggle: () => {
       if (visible) hide();
