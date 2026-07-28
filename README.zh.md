@@ -20,6 +20,8 @@
 - **多标签页支持** — 在标签页中打开多个 SSH 会话，自由切换
 - **键盘转发** — 在远程 shell 中直接输入，窗口大小变化自动调整 PTY
 - **终端历史回滚** — 向上/向下滚动查看之前的输出
+- **SFTP 文件管理器** — 双面板文件浏览器，支持命令行界面
+- **独立 SFTP 连接** — 每个 SFTP 标签页创建独立的 SSH 连接
 - **鼠标支持** — 点击选择连接，双击连接，可点击的工具栏按钮
 - **可拖动 UI** — 调整侧边栏分隔线，拖动帮助弹窗
 - **帮助系统** — 按 F1 查看所有键盘快捷键
@@ -34,6 +36,7 @@
 | `Alt+←/→` | 切换焦点（侧边栏 ↔ 终端） |
 | `F1` | 显示帮助弹窗 |
 | `F2-F12` | 切换到标签页 1-11 |
+| `Ctrl+E` | 打开 SFTP 标签页（终端模式：弹出路径输入；SFTP 模式：无操作） |
 
 #### 侧边栏
 
@@ -55,6 +58,32 @@
 | `Ctrl+Shift+C` | 关闭当前标签页 |
 | `Ctrl+Shift+Tab` | 循环切换到下一个标签页 |
 | `PageUp/PageDown` | 滚动终端输出 |
+
+#### SFTP 文件管理器
+
+| 按键 | 操作 |
+|---|---|
+| `Tab` | 在本地和远程面板间切换焦点 |
+| `↑` / `↓` | 在当前面板中导航文件列表 |
+| `Enter` | 打开目录 / 执行命令（命令模式下） |
+| `Backspace` | 返回上级目录 |
+| `:` | 进入命令模式 |
+| `Ctrl+R` | 刷新当前面板 |
+| `F7` | 创建新目录 |
+| `F8` | 删除选中文件 |
+| `F2` | 重命名选中文件 |
+| `Esc` | 关闭 SFTP 标签页 / 退出命令模式 |
+
+#### SFTP 命令行
+
+| 命令 | 说明 |
+|---|---|
+| `:upload <本地路径> <远程路径>` | 上传本地文件到远程 |
+| `:download <远程路径> <本地路径>` | 下载远程文件到本地 |
+| `:mkdir <路径>` | 在远程创建目录 |
+| `:rm <路径>` | 删除远程文件 |
+| `:rename <旧名> <新名>` | 重命名远程文件 |
+| `:cd <路径>` | 切换远程目录 |
 
 #### 表单
 
@@ -102,6 +131,11 @@ src/
 │   ├── auth.ts           #   认证配置构建器（密钥/密码）
 │   ├── connection.ts     #   SSH 会话生命周期（SshConnection 类）
 │   └── types.ts          #   SSH 类型（SshConnectionState、错误）
+├── sftp/                 # SFTP 文件管理器模块
+│   ├── sftp-client.ts    #   SFTP 客户端封装（readdir、mkdir、upload、download）
+│   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、键盘、scrollY 滚动）
+│   ├── sftp-input-dialog.ts # 路径输入弹窗（用于 Ctrl+U/D）
+│   └── types.ts          #   SFTP 类型（FileEntry、TransferTask、PanelSide）
 ├── storage/              # 持久化层
 │   ├── config.ts         #   配置文件路径（~/.ssh-cli/）
 │   └── connections.ts    #   ConnectionStore CRUD（纯 JSON）
@@ -114,12 +148,12 @@ src/
 └── ui/                   # OpenTUI UI 组件
     ├── sidebar.ts        #   连接列表侧边栏
     ├── connection-form.ts #   添加/编辑连接模态表单
-    ├── status-bar.ts     #   状态栏（已连接/已断开/快捷键提示）
-    ├── terminal-panel.ts #   终端显示面板
-    ├── tab-bar.ts        #   多标签栏
+    ├── status-bar.ts     #   状态栏（已完全禁用 - 空操作 API）
+    ├── terminal-panel.ts #   终端显示面板（带 setVisible()）
+    ├── tab-bar.ts        #   多标签栏（F2-F12，类型：terminal|sftp）
     ├── toolbar.ts        #   可点击的快捷键工具栏
     ├── divider.ts        #   可拖动的侧边栏分隔线
-    └── help-popup.ts     #   可拖动的帮助弹窗（F1）
+    └── help-popup.ts     #   可拖动的帮助弹窗（F1）含 SFTP 快捷键
 ```
 
 ### 快速开始
@@ -211,7 +245,18 @@ bun run start -- --log-level trace
 - 使用 `Ctrl+Shift+C` 或双击标签页关闭
 - 每个标签页维护自己的终端状态和历史回滚
 
-#### 5. 断开连接 / 切换会话
+#### 5. SFTP 文件管理器
+在终端标签页按 `Ctrl+E` 打开 SFTP 文件管理器：
+
+- **双面板布局**：左侧本地文件，右侧远程文件
+- **独立 SSH 连接**：每个 SFTP 标签页创建独立的 SSH 连接
+- **导航**：用 `↑`/`↓` 选择文件，`Enter` 打开目录，`Backspace` 返回上级
+- **切换面板**：按 `Tab` 在本地和远程面板间切换
+- **命令行**：按 `:` 进入命令模式，输入 `upload`、`download`、`cd`、`mkdir`、`rm`、`rename` 等命令
+- **快捷键**：`Ctrl+U` 上传，`Ctrl+D` 下载，`F7` 创建目录，`F8` 删除，`F2` 重命名
+- **关闭**：按 `Esc` 关闭 SFTP 标签页
+
+#### 6. 断开连接 / 切换会话
 - 在远程 shell 中输入 `exit` 或关闭 shell 来断开连接
 - 按 `Alt+←/→` 切换侧边栏和终端之间的焦点
 - 状态栏显示连接状态：**Connected**（已连接）、**Disconnected**（已断开）或 **Error**（错误）

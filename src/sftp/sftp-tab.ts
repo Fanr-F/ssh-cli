@@ -521,13 +521,19 @@ export function createSftpTab(
           renderStatus('Usage: cd <path>', C.red);
           return;
         }
-        const path = args[0];
-        renderStatus(`Changing directory: ${path}...`, C.yellow);
+        let targetPath = args[0];
+        // Resolve relative path for remote side
+        if (activeSide === 'remote' && !targetPath.startsWith('/')) {
+          const sep = remoteState.currentPath.endsWith('/') ? '' : '/';
+          targetPath = `${remoteState.currentPath}${sep}${targetPath}`;
+        }
+        log.debug(`[SFTP CD] raw:${args[0]} resolved:${targetPath}`);
+        renderStatus(`Changing directory: ${targetPath}...`, C.yellow);
         try {
           if (activeSide === 'local') {
-            await loadLocalDir(path);
+            await loadLocalDir(targetPath);
           } else {
-            await loadRemoteDir(path);
+            await loadRemoteDir(targetPath);
           }
           // Also refresh the other side
           if (activeSide === 'local') {
@@ -585,8 +591,7 @@ export function createSftpTab(
     // If we're in command mode, handle that
     if (cmdMode) {
       if (key.name === 'enter' || key.name === 'return') {
-        const cmd = cmdBuffer;
-        cmdMode = false;
+        const cmd = cmdBuffer.trim();
         cmdBuffer = '';
         cmdCursorPos = 0;
         if (cmd) {
@@ -594,6 +599,8 @@ export function createSftpTab(
           cmdHistoryIdx = cmdHistory.length;
           await executeCommand(cmd);
         }
+        renderStatus('> ');
+        renderer.requestRender();
         return;
       }
       if (key.name === 'escape') {

@@ -20,11 +20,12 @@ const C = {
 
 export interface TabBarAPI {
   readonly component: ReturnType<typeof Box>;
-  addTab(id: string, title: string): void;
+  addTab(id: string, title: string, type: 'terminal' | 'sftp'): void;
   removeTab(id: string): void;
   switchTo(id: string): void;
   getActiveTabId(): string | null;
   getTabIds(): string[];
+  getTabType(id: string): 'terminal' | 'sftp' | null;
   updateTabTitle(id: string, title: string): void;
   onTabSwitch(callback: (id: string) => void): void;
   onTabClose(callback: (id: string) => void): void;
@@ -32,7 +33,7 @@ export interface TabBarAPI {
 }
 
 export function createTabBar(renderer: CliRenderer): TabBarAPI {
-  let tabs: Array<{ id: string; title: string }> = [];
+  let tabs: Array<{ id: string; title: string; type: 'terminal' | 'sftp' }> = [];
   let activeTabId: string | null = null;
   let onSwitchCb: ((id: string) => void) | null = null;
   let onCloseCb: ((id: string) => void) | null = null;
@@ -132,9 +133,9 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
   const api: TabBarAPI = {
     component: tabBar,
 
-    addTab(id: string, title: string): void {
+    addTab(id: string, title: string, type: 'terminal' | 'sftp'): void {
       if (tabs.find((t) => t.id === id)) return;
-      tabs.push({ id, title });
+      tabs.push({ id, title, type });
       activeTabId = id;
       rebuild();
       onSwitchCb?.(id);
@@ -164,6 +165,11 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
     getActiveTabId: () => activeTabId,
 
     getTabIds: () => tabs.map((t) => t.id),
+
+    getTabType(id: string): 'terminal' | 'sftp' | null {
+      const tab = tabs.find((t) => t.id === id);
+      return tab ? tab.type : null;
+    },
 
     updateTabTitle(id: string, title: string): void {
       const tab = tabs.find((t) => t.id === id);

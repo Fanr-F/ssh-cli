@@ -651,53 +651,39 @@ export class App {
       return;
     }
 
-    logDebug(`[CLOSE TAB] id=${id}, ssh connected=${tab.ssh.isConnected()}`);
+    logDebug(`[CLOSE TAB] id=${id}, isSftp=${!!tab.sftpTab}, ssh=${tab.ssh.isConnected()}`);
 
-    // Remember if this was the active tab before removing
     const wasActive = this.tabBar.getActiveTabId() === id;
 
-    // Destroy SFTP tab if it exists
+    // SFTP component cleanup
     if (tab.sftpTab) {
-      logDebug(`[CLOSE TAB] destroying SFTP tab ${id}`);
       tab.sftpTab.destroy();
-      // Remove from parent if mounted
-      if (tab.sftpTab.component?.parent) {
-        tab.sftpTab.component.parent.remove(tab.sftpTab.component.id);
+      const rightPanel = this.renderer.root.findDescendantById('right-panel');
+      if (rightPanel) {
+        const sftpInPanel = rightPanel.findDescendantById('sftp-tab');
+        if (sftpInPanel) rightPanel.remove('sftp-tab');
       }
     }
 
-    // Disconnect SSH
+    // Disconnect own SSH connection
     if (tab.ssh.isConnected()) {
-      logDebug(`[CLOSE TAB] disconnecting SSH for ${id}`);
       await tab.ssh.disconnect();
       logDebug(`[CLOSE TAB] SSH disconnected for ${id}`);
     }
 
-    // Remove from terminal panel
-    logDebug(`[CLOSE TAB] unregistering terminal ${id}`);
-    this.terminalPanel.unregisterTerminal(id);
+    // Unregister terminal (only terminal tabs register in terminal panel)
+    if (!tab.sftpTab) {
+      this.terminalPanel.unregisterTerminal(id);
+    }
 
-    // Remove from tab bar
-    logDebug(`[CLOSE TAB] removing tab ${id} from tab bar`);
     this.tabBar.removeTab(id);
-
-    // Remove from tabs map
     this.tabs.delete(id);
-    logDebug(`[CLOSE TAB] tabs map size now=${this.tabs.size}`);
+    logDebug(`[CLOSE TAB] removed ${id}, tabs remaining=${this.tabs.size}`);
 
-    // If there are remaining tabs and we closed the active one, switch to another
     if (this.tabs.size > 0 && wasActive) {
       const remainingIds = this.tabBar.getTabIds();
-      if (remainingIds.length > 0) {
-        const switchToId = remainingIds[0];
-        logDebug(`[CLOSE TAB] switching to remaining tab: ${switchToId}`);
-        // Log current state before switching
-        logDebug(`[CLOSE TAB] tabs map keys: ${[...this.tabs.keys()].join(', ')}`);
-        logDebug(`[CLOSE TAB] tab bar ids: ${remainingIds.join(', ')}`);
-        this.switchToTab(switchToId);
-      }
+      if (remainingIds.length > 0) this.switchToTab(remainingIds[0]);
     } else if (this.tabs.size === 0) {
-      logDebug(`[CLOSE TAB] no tabs left, showing idle`);
       this.terminalPanel.showIdle();
     }
 
@@ -994,14 +980,16 @@ export class App {
     }
 
     try {
-      const sftp = await tab.ssh.startSftp();
+      const config = tab.config;
+      const sftpSsh = new SshConnection();
+      await sftpSsh.connect(config);
+      const sftp = await sftpSsh.startSftp();
       const sftpClient = new SftpClient(sftp);
 
       const remotePwd = '~';
       const localPwd = process.env.HOME || process.env.USERPROFILE || '/';
 
       const tabId = `sftp-${Date.now()}`;
-      const config = tab.config;
       const tabTitle = `SFTP: ${config.username}@${config.host}`;
 
       const sftpTabComponent = createSftpTab(this.renderer, sftpClient, remotePwd, localPwd);
@@ -1009,7 +997,7 @@ export class App {
       this.tabs.set(tabId, {
         vterm: tab.vterm,
         renderer: tab.renderer,
-        ssh: tab.ssh,
+        ssh: sftpSsh,
         config,
         sftpClient,
         sftpTab: sftpTabComponent,
