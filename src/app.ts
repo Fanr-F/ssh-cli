@@ -363,6 +363,15 @@ export class App {
           this.form.handleKey(fakeKey);
         }
         this.statusBar.setStatus('Pasted to form');
+      } else if (this.focus === 'sftp') {
+        const activeId = this.tabBar.getActiveTabId();
+        if (activeId) {
+          const tab = this.tabs.get(activeId);
+          if (tab?.sftpTab) {
+            tab.sftpTab.pasteText(text);
+            this.statusBar.setStatus('Pasted to SFTP');
+          }
+        }
       } else {
         this.statusBar.setStatus('Nothing to paste to');
       }
@@ -607,17 +616,30 @@ export class App {
       // SFTP tab: hide terminal panel, show SFTP
       this.terminalPanel.setVisible(false);
       const rightPanel = this.renderer.root.findDescendantById('right-panel');
-      if (rightPanel && !rightPanel.findDescendantById('sftp-tab')) {
-        rightPanel.add(tab.sftpTab.component);
+      if (rightPanel) {
+        // Mount each SFTP tab's component once; only the active one is visible
+        for (const [, t] of this.tabs) {
+          if (!t.sftpTab) continue;
+          const rootId = t.sftpTab.id;
+          if (!rightPanel.findDescendantById(rootId)) {
+            rightPanel.add(t.sftpTab.component);
+          }
+          const sftpReal = rightPanel.findDescendantById(rootId);
+          if (sftpReal) sftpReal.visible = (rootId === tab.sftpTab.id);
+        }
       }
-      // Set SFTP visible via real renderable
-      const sftpReal = this.renderer.root.findDescendantById('sftp-tab');
-      if (sftpReal) sftpReal.visible = true;
       this.focusSftp();
+      tab.sftpTab.refresh();
     } else {
       // Terminal tab: hide SFTP, show terminal panel
-      const sftpReal = this.renderer.root.findDescendantById('sftp-tab');
-      if (sftpReal) sftpReal.visible = false;
+      const rightPanel = this.renderer.root.findDescendantById('right-panel');
+      if (rightPanel) {
+        for (const [, t] of this.tabs) {
+          if (!t.sftpTab) continue;
+          const sftpReal = rightPanel.findDescendantById(t.sftpTab.id);
+          if (sftpReal) sftpReal.visible = false;
+        }
+      }
       this.terminalPanel.setVisible(true);
       this.terminalPanel.switchTerminal(id);
       this.focusTerminal();
@@ -659,10 +681,7 @@ export class App {
     if (tab.sftpTab) {
       tab.sftpTab.destroy();
       const rightPanel = this.renderer.root.findDescendantById('right-panel');
-      if (rightPanel) {
-        const sftpInPanel = rightPanel.findDescendantById('sftp-tab');
-        if (sftpInPanel) rightPanel.remove('sftp-tab');
-      }
+      if (rightPanel) rightPanel.remove(tab.sftpTab.id);
     }
 
     // Disconnect own SSH connection
@@ -830,6 +849,19 @@ export class App {
       // Copy the content of the currently focused form field
       text = this.form.getFocusedFieldContent();
       logDebug(`[COPY] form: copied field content="${text?.substring(0, 50)}"`);
+    } else if (this.focus === 'sftp') {
+      // Copy selected file path in SFTP
+      const activeId = this.tabBar.getActiveTabId();
+      if (activeId) {
+        const tab = this.tabs.get(activeId);
+        if (tab?.sftpTab) {
+          const filePath = tab.sftpTab.getSelectedFilePath();
+          if (filePath) {
+            text = filePath;
+            logDebug(`[COPY] sftp: copied file path="${text}"`);
+          }
+        }
+      }
     }
 
     if (text) {
@@ -871,6 +903,16 @@ export class App {
         this.form.handleKey(fakeKey);
       }
       this.statusBar.setStatus('Pasted to form');
+    } else if (this.focus === 'sftp') {
+      // Paste to SFTP command/input buffer
+      const activeId = this.tabBar.getActiveTabId();
+      if (activeId) {
+        const tab = this.tabs.get(activeId);
+        if (tab?.sftpTab) {
+          tab.sftpTab.pasteText(text);
+          this.statusBar.setStatus('Pasted to SFTP');
+        }
+      }
     } else {
       this.statusBar.setStatus('Nothing to paste to');
     }
@@ -992,7 +1034,7 @@ export class App {
       const tabId = `sftp-${Date.now()}`;
       const tabTitle = `SFTP: ${config.username}@${config.host}`;
 
-      const sftpTabComponent = createSftpTab(this.renderer, sftpClient, remotePwd, localPwd);
+      const sftpTabComponent = createSftpTab(tabId, this.renderer, sftpClient, remotePwd, localPwd);
 
       this.tabs.set(tabId, {
         vterm: tab.vterm,
@@ -1004,7 +1046,6 @@ export class App {
       });
 
       this.tabBar.addTab(tabId, tabTitle, 'sftp');
-      this.switchToTab(tabId);
       this.statusBar.setStatus('SFTP connected');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to open SFTP';

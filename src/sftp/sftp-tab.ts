@@ -3,8 +3,11 @@ import type { CliRenderer, KeyEvent } from '@opentui/core';
 import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
+import { basename, isAbsolute, resolve } from 'node:path';
 
 const log = createLogger('sftp-tab');
+
+const KNOWN_COMMANDS = ['upload', 'download', 'mkdir', 'rm', 'rename', 'cd'];
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -29,7 +32,10 @@ const C = {
 
 export interface SftpTabAPI {
   readonly component: ReturnType<typeof Box>;
+  readonly id: string;
   handleKey(key: KeyEvent): void;
+  pasteText(text: string): void;
+  getSelectedFilePath(): string | null;
   focus(): void;
   destroy(): void;
   refresh(): void;
@@ -46,16 +52,50 @@ function getHomeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || '/';
 }
 
+/**
+ * Collect names of Windows system-protected files (System attribute) in a
+ * directory. Node's fs.stat does not expose DOS attributes, so we shell out to
+ * `attrib` once per directory. Returns an empty set on non-Windows platforms or
+ * if `attrib` fails (graceful degradation: show everything).
+ */
+async function getWindowsSystemNames(dir: string): Promise<Set<string>> {
+  const names = new Set<string>();
+  if (process.platform !== 'win32') return names;
+  try {
+    const { execFile } = await import('node:child_process');
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile('attrib', [`${dir}\\*`], { windowsHide: true }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      });
+    });
+    const { basename } = await import('node:path');
+    for (const line of output.split(/\r?\n/)) {
+      const sep = line.indexOf(':');
+      if (sep < 0) continue;
+      const flags = line.slice(0, sep);
+      if (flags.includes('S')) {
+        names.add(basename(line.slice(sep - 1)));
+      }
+    }
+  } catch {
+    // attrib unavailable — fall back to showing everything
+  }
+  return names;
+}
+
 /** Read local directory contents. */
-async function readLocalDir(path: string): Promise<FileItem[]> {
+async function readLocalDir(path: string, hideSystem = true): Promise<FileItem[]> {
   const { readdir, stat } = await import('node:fs/promises');
   const { join } = await import('node:path');
 
   const entries = await readdir(path, { withFileTypes: true });
+  const systemNames = hideSystem ? await getWindowsSystemNames(path) : new Set<string>();
   const items: FileItem[] = [];
 
   for (const entry of entries) {
     if (entry.name === '.' || entry.name === '..') continue;
+    if (systemNames.has(entry.name)) continue;
     try {
       const fullPath = join(path, entry.name);
       const stats = await stat(fullPath);
@@ -102,6 +142,7 @@ function formatTime(ts: number): string {
 
 /** Create the SFTP dual-panel tab. */
 export function createSftpTab(
+  tabId: string,
   renderer: CliRenderer,
   sftpClient: SftpClient,
   remote初始Path: string,
@@ -121,6 +162,7 @@ export function createSftpTab(
 
   let activeSide: PanelSide = 'remote';
   let destroyed = false;
+  let showSystemFiles = false;
 
   // ── Command mode state ──────────────────────────────────────────
   let cmdMode = false;
@@ -174,7 +216,7 @@ export function createSftpTab(
 
   // Main container
   const mainBox = Box(
-    { id: 'sftp-tab', flexDirection: 'column', width: '100%', flexGrow: 1 },
+    { id: tabId, flexDirection: 'column', width: '100%', flexGrow: 1 },
     headerBox,
     Box(
       { flexDirection: 'row', width: '100%', flexGrow: 1 },
@@ -195,14 +237,15 @@ export function createSftpTab(
   let _resolvedRemotePanel: any = null;
 
   function resolveAll(): void {
-    _resolvedLocalPath = renderer.root.findDescendantById('sftp-local-path');
-    _resolvedLocalList = renderer.root.findDescendantById('sftp-local-list');
-    _resolvedRemotePath = renderer.root.findDescendantById('sftp-remote-path');
-    _resolvedRemoteList = renderer.root.findDescendantById('sftp-remote-list');
-    _resolvedStatus = renderer.root.findDescendantById('sftp-status');
-    _resolvedLocalPanel = renderer.root.findDescendantById('sftp-local-panel');
-    _resolvedRemotePanel = renderer.root.findDescendantById('sftp-remote-panel');
-    log.debug(`[SFTP RESOLVE] localPath:${!!_resolvedLocalPath} localList:${!!_resolvedLocalList} remotePath:${!!_resolvedRemotePath} remoteList:${!!_resolvedRemoteList} status:${!!_resolvedStatus} localPanel:${!!_resolvedLocalPanel} remotePanel:${!!_resolvedRemotePanel}`);
+    const root = renderer.root.findDescendantById(tabId);
+    _resolvedLocalPath = root?.findDescendantById('sftp-local-path') ?? null;
+    _resolvedLocalList = root?.findDescendantById('sftp-local-list') ?? null;
+    _resolvedRemotePath = root?.findDescendantById('sftp-remote-path') ?? null;
+    _resolvedRemoteList = root?.findDescendantById('sftp-remote-list') ?? null;
+    _resolvedStatus = root?.findDescendantById('sftp-status') ?? null;
+    _resolvedLocalPanel = root?.findDescendantById('sftp-local-panel') ?? null;
+    _resolvedRemotePanel = root?.findDescendantById('sftp-remote-panel') ?? null;
+    log.debug(`[SFTP RESOLVE] root:${!!root} localPath:${!!_resolvedLocalPath} localList:${!!_resolvedLocalList} remotePath:${!!_resolvedRemotePath} remoteList:${!!_resolvedRemoteList} status:${!!_resolvedStatus} localPanel:${!!_resolvedLocalPanel} remotePanel:${!!_resolvedRemotePanel}`);
   }
 
   // ── Render functions ──────────────────────────────────────────
@@ -265,6 +308,12 @@ export function createSftpTab(
   async function loadRemoteDir(path: string): Promise<void> {
     log.debug(`[SFTP LOAD REMOTE] path:${path}`);
     try {
+      if (path === '~') {
+        path = await sftpClient.realpath('.');
+      } else if (path.startsWith('~/')) {
+        const home = await sftpClient.realpath('.');
+        path = home + path.slice(1);
+      }
       const items = await sftpClient.readdir(path);
       log.debug(`[SFTP LOAD REMOTE] items count:${items.length}`);
       remoteState.items = items;
@@ -289,7 +338,7 @@ export function createSftpTab(
       const actualPath = isAbsolute(path) ? path : resolve(localState.currentPath, path);
       
       log.debug(`[SFTP LOAD LOCAL] input:${path} resolved:${actualPath}`);
-      const items = await readLocalDir(actualPath);
+      const items = await readLocalDir(actualPath, !showSystemFiles);
       localState.items = items;
       localState.currentPath = actualPath;
       localState.selectedIndex = 0;
@@ -371,10 +420,11 @@ export function createSftpTab(
     renderer.requestRender();
   }
 
-  async function executeCommand(input: string): Promise<void> {
+  async function executeCommand(input: string): Promise<boolean> {
     const parts = input.trim().split(/\s+/);
     const cmd = parts[0];
     const args = parts.slice(1);
+    let ok = true;
 
     log.debug(`[SFTP CMD] cmd:${cmd} args:${JSON.stringify(args)} activeSide:${activeSide}`);
 
@@ -383,44 +433,58 @@ export function createSftpTab(
         // upload <source> [dest]
         if (args.length < 1) {
           renderStatus('Usage: upload <local_path> [remote_path]', C.red);
-          return;
+          return false;
         }
-        const localPath = args[0];
-        const remotePath = args[1] || `${remoteState.currentPath}/${localPath.split(/[/\\]/).pop()}`;
+        const src = args[0];
+        const localPath = isAbsolute(src) ? src : resolve(localState.currentPath, src);
+        const fileBase = basename(src);
+        const rawDest = args[1];
+        const remotePath = !rawDest || rawDest === '.' || rawDest === './'
+          ? `${remoteState.currentPath}/${fileBase}`
+          : (rawDest.startsWith('/') ? rawDest : `${remoteState.currentPath}/${rawDest}`);
         renderStatus(`Uploading ${localPath} → ${remotePath}...`, C.yellow);
         try {
           await sftpClient.upload(localPath, remotePath);
-          renderStatus(`Uploaded: ${args[0].split(/[/\\]/).pop()}`, C.green);
+          renderStatus(`Uploaded: ${fileBase}`, C.green);
           await loadRemoteDir(remoteState.currentPath);
+          return true;
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Upload failed';
+          log.error(`[SFTP UPLOAD] ${localPath} → ${remotePath}: ${msg}`);
           renderStatus(`Upload failed: ${msg}`, C.red);
+          return false;
         }
-        break;
       }
       case 'download': {
         // download <source> [dest]
         if (args.length < 1) {
           renderStatus('Usage: download <remote_path> [local_path]', C.red);
-          return;
+          return false;
         }
-        const remotePath = args[0];
-        const localPath = args[1] || `${localState.currentPath}/${remotePath.split('/').pop()}`;
+        const src = args[0];
+        const remotePath = src.startsWith('/') ? src : `${remoteState.currentPath}/${src}`;
+        const fileBase = basename(src);
+        const rawDest = args[1];
+        const localPath = !rawDest || rawDest === '.' || rawDest === '.\\' || rawDest === './'
+          ? resolve(localState.currentPath, fileBase)
+          : (isAbsolute(rawDest) ? rawDest : resolve(localState.currentPath, rawDest));
         renderStatus(`Downloading ${remotePath} → ${localPath}...`, C.yellow);
         try {
           await sftpClient.download(remotePath, localPath);
-          renderStatus(`Downloaded: ${remotePath.split('/').pop()}`, C.green);
+          renderStatus(`Downloaded: ${fileBase}`, C.green);
           await loadLocalDir(localState.currentPath);
+          return true;
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Download failed';
+          log.error(`[SFTP DOWNLOAD] ${remotePath} → ${localPath}: ${msg}`);
           renderStatus(`Download failed: ${msg}`, C.red);
+          return false;
         }
-        break;
       }
       case 'mkdir': {
         if (args.length < 1) {
           renderStatus('Usage: mkdir <name>', C.red);
-          return;
+          return false;
         }
         const name = args[0];
         const state = activeSide === 'local' ? localState : remoteState;
@@ -441,21 +505,23 @@ export function createSftpTab(
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Mkdir failed';
+          log.error(`[SFTP MKDIR] ${fullPath}: ${msg}`);
           renderStatus(`Mkdir failed: ${msg}`, C.red);
+          ok = false;
         }
         break;
       }
       case 'rm': {
         if (args.length < 1) {
           renderStatus('Usage: rm <name>', C.red);
-          return;
+          return false;
         }
         const name = args[0];
         const state = activeSide === 'local' ? localState : remoteState;
         const item = state.items.find(i => i.name === name);
         if (!item) {
           renderStatus(`Not found: ${name}`, C.red);
-          return;
+          return false;
         }
         const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
         const fullPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${name}`;
@@ -482,14 +548,16 @@ export function createSftpTab(
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Delete failed';
+          log.error(`[SFTP RM] ${fullPath}: ${msg}`);
           renderStatus(`Delete failed: ${msg}`, C.red);
+          ok = false;
         }
         break;
       }
       case 'rename': {
         if (args.length < 2) {
           renderStatus('Usage: rename <old> <new>', C.red);
-          return;
+          return false;
         }
         const oldName = args[0];
         const newName = args[1];
@@ -512,14 +580,16 @@ export function createSftpTab(
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Rename failed';
+          log.error(`[SFTP RENAME] ${oldPath} → ${newPath}: ${msg}`);
           renderStatus(`Rename failed: ${msg}`, C.red);
+          ok = false;
         }
         break;
       }
       case 'cd': {
         if (args.length < 1) {
           renderStatus('Usage: cd <path>', C.red);
-          return;
+          return false;
         }
         let targetPath = args[0];
         // Resolve relative path for remote side
@@ -544,12 +614,129 @@ export function createSftpTab(
           renderStatus(`Changed to: ${activeSide === 'local' ? localState.currentPath : remoteState.currentPath}`, C.green);
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'cd failed';
+          log.error(`[SFTP CD] ${targetPath}: ${msg}`);
           renderStatus(`cd failed: ${msg}`, C.red);
+          ok = false;
         }
         break;
       }
       default:
         renderStatus(`Unknown command: ${cmd} (type help for commands)`, C.red);
+        ok = false;
+    }
+    return ok;
+  }
+
+  // ── Tab completion in command mode ─────────────────────────────
+  async function handleCommandTabCompletion(): Promise<void> {
+    const before = cmdBuffer.slice(0, cmdCursorPos);
+    const after = cmdBuffer.slice(cmdCursorPos);
+    const parts = before.split(/\s+/);
+    const isFirstToken = parts.length <= 1;
+    const currentToken = parts[parts.length - 1] || '';
+
+    if (isFirstToken) {
+      // Complete command name
+      const matches = KNOWN_COMMANDS.filter(c => c.startsWith(currentToken));
+      if (matches.length === 1) {
+        parts[parts.length - 1] = matches[0];
+        cmdBuffer = parts.join(' ') + ' ' + after;
+        cmdCursorPos = cmdBuffer.length - after.length;
+      } else if (matches.length > 1) {
+        renderStatus(`Candidates: ${matches.join(', ')}`, C.cyan);
+      }
+    } else {
+      // Complete file path
+      const cmd = parts[0];
+      const state = activeSide === 'local' ? localState : remoteState;
+      const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
+
+      // Resolve directory and prefix from currentToken
+      let dir = state.currentPath;
+      let prefix = currentToken;
+      const lastSep = Math.max(currentToken.lastIndexOf('/'), currentToken.lastIndexOf('\\'));
+      if (lastSep >= 0) {
+        const tokenDir = currentToken.slice(0, lastSep);
+        prefix = currentToken.slice(lastSep + 1);
+        if (activeSide === 'remote' && !tokenDir.startsWith('/')) {
+          dir = `${state.currentPath}/${tokenDir}`;
+        } else if (activeSide === 'local') {
+          const { join } = await import('node:path');
+          dir = join(state.currentPath, tokenDir);
+        } else {
+          dir = tokenDir;
+        }
+      }
+
+      // Get file list for completion
+      let items: FileItem[] = [];
+      try {
+        if (activeSide === 'remote') {
+          items = await sftpClient.readdir(dir);
+        } else {
+          const { readdir } = await import('node:fs/promises');
+          const systemNames = await getWindowsSystemNames(dir);
+          const entries = await readdir(dir, { withFileTypes: true });
+          items = entries
+            .filter(e => e.name !== '.' && e.name !== '..' && !systemNames.has(e.name))
+            .map(e => ({
+              name: e.name,
+              isDirectory: e.isDirectory(),
+              isFile: e.isFile(),
+              isSymlink: e.isSymbolicLink?.() ?? false,
+              size: 0,
+              mode: 0,
+              mtime: 0,
+              longname: '',
+            }));
+        }
+      } catch {
+        // If directory read fails, just return
+        return;
+      }
+
+      const matches = items.filter(i => i.name.startsWith(prefix));
+      if (matches.length === 1) {
+        const match = matches[0];
+        const completedName = currentToken.slice(0, lastSep + 1) + match.name;
+        const suffix = match.isDirectory ? sep : ' ';
+        parts[parts.length - 1] = completedName + suffix;
+        cmdBuffer = parts.join(' ') + after;
+        cmdCursorPos = cmdBuffer.length - after.length;
+      } else if (matches.length > 1) {
+        // Complete common prefix
+        let common = matches[0].name;
+        for (const m of matches) {
+          while (!m.name.startsWith(common)) {
+            common = common.slice(0, -1);
+          }
+        }
+        if (common.length > prefix.length) {
+          const completedName = currentToken.slice(0, lastSep + 1) + common;
+          parts[parts.length - 1] = completedName;
+          cmdBuffer = parts.join(' ') + after;
+          cmdCursorPos = cmdBuffer.length - after.length;
+        }
+        const dirMarker = matches.some(m => m.isDirectory) ? '/ ' : ' ';
+        renderStatus(`Candidates: ${matches.slice(0, 8).map(m => m.name + (m.isDirectory ? '/' : '')).join('  ')}${matches.length > 8 ? '  ...' : ''}`, C.cyan);
+      }
+    }
+
+    renderStatus(`> ${cmdBuffer}_`);
+    renderer.requestRender();
+  }
+
+  // ── Paste text into active input ──────────────────────────────
+  function pasteText(text: string): void {
+    if (cmdMode) {
+      cmdBuffer = cmdBuffer.slice(0, cmdCursorPos) + text + cmdBuffer.slice(cmdCursorPos);
+      cmdCursorPos += text.length;
+      renderStatus(`> ${cmdBuffer}_`);
+      renderer.requestRender();
+    } else if (inputResolve) {
+      inputBuffer += text;
+      renderStatus(`Input: ${inputBuffer}_`);
+      renderer.requestRender();
     }
   }
 
@@ -594,13 +781,16 @@ export function createSftpTab(
         const cmd = cmdBuffer.trim();
         cmdBuffer = '';
         cmdCursorPos = 0;
+        let ok = true;
         if (cmd) {
           cmdHistory.push(cmd);
           cmdHistoryIdx = cmdHistory.length;
-          await executeCommand(cmd);
+          ok = await executeCommand(cmd);
         }
-        renderStatus('> ');
-        renderer.requestRender();
+        if (ok) {
+          renderStatus('> ');
+          renderer.requestRender();
+        }
         return;
       }
       if (key.name === 'escape') {
@@ -664,6 +854,11 @@ export function createSftpTab(
       if (key.name === 'end') {
         cmdCursorPos = cmdBuffer.length;
         renderer.requestRender();
+        return;
+      }
+      // Tab — autocompletion
+      if (key.name === 'tab') {
+        await handleCommandTabCompletion();
         return;
       }
       // Regular character input
@@ -764,6 +959,14 @@ export function createSftpTab(
       } else {
         renderStatus('Select a file in Remote panel first', C.yellow);
       }
+      return;
+    }
+
+    // Ctrl+H — toggle showing Windows system-protected files
+    if (key.ctrl && key.name === 'h') {
+      showSystemFiles = !showSystemFiles;
+      renderStatus(showSystemFiles ? 'Show system files (Ctrl+H to hide)' : 'Hide system files (Ctrl+H to show)', C.yellow);
+      await loadLocalDir(localState.currentPath);
       return;
     }
 
@@ -900,8 +1103,19 @@ export function createSftpTab(
 
   return {
     component: mainBox,
+    id: tabId,
 
     handleKey,
+
+    pasteText,
+
+    getSelectedFilePath(): string | null {
+      const state = activeSide === 'local' ? localState : remoteState;
+      const item = state.items[state.selectedIndex];
+      if (!item) return null;
+      const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
+      return `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${item.name}`;
+    },
 
     focus(): void {
       resolveAll();
