@@ -36,7 +36,7 @@
 | `Alt+←/→` | 切换焦点（侧边栏 ↔ 终端） |
 | `F1` | 显示帮助弹窗 |
 | `F2-F12` | 切换到标签页 1-11 |
-| `Ctrl+E` | 打开 SFTP 标签页（终端模式：弹出路径输入；SFTP 模式：无操作） |
+| `Ctrl+E` | 为当前活动连接打开 SFTP 标签页 |
 
 #### 侧边栏
 
@@ -53,8 +53,8 @@
 
 | 按键 | 操作 |
 |---|---|
-| `Ctrl+C` | 复制（侧边栏：连接信息，终端：选中文本或最后一行） |
-| `Ctrl+V` | 粘贴（剪贴板内容粘贴到终端/表单） |
+| `Ctrl+C` | 复制（侧边栏：连接信息；终端：选中文本或最后一行；无内容可复制时向 shell 发送 SIGINT） |
+| `Ctrl+V` | 粘贴（剪贴板内容粘贴到终端/表单/SFTP 输入） |
 | `Ctrl+Shift+C` | 关闭当前标签页 |
 | `Ctrl+Shift+Tab` | 循环切换到下一个标签页 |
 | `PageUp/PageDown` | 滚动终端输出 |
@@ -68,22 +68,29 @@
 | `Enter` | 打开目录 / 执行命令（命令模式下） |
 | `Backspace` | 返回上级目录 |
 | `:` | 进入命令模式 |
-| `Ctrl+R` | 刷新当前面板 |
-| `F7` | 创建新目录 |
-| `F8` | 删除选中文件 |
+| `Ctrl+R` / `R` | 刷新两个面板 |
+| `Ctrl+H` | 切换显示 Windows 系统保护文件 |
+| `F7` / `N` | 新建目录（远程面板） |
+| `F8` / `Delete` | 删除选中的文件/目录 |
 | `F2` | 重命名选中文件 |
-| `Esc` | 关闭 SFTP 标签页 / 退出命令模式 |
+| `Ctrl+U` | 为选中的本地文件预填 `upload` 命令 |
+| `Ctrl+D` | 为选中的远程文件预填 `download` 命令 |
+| `Esc` | 退出命令模式 / 取消输入 |
 
 #### SFTP 命令行
 
+命令模式为持续模式 — 按 `Enter` 执行命令后仍停留在输入行，按 `Esc` 退出。
+
 | 命令 | 说明 |
 |---|---|
-| `:upload <本地路径> <远程路径>` | 上传本地文件到远程 |
-| `:download <远程路径> <本地路径>` | 下载远程文件到本地 |
-| `:mkdir <路径>` | 在远程创建目录 |
-| `:rm <路径>` | 删除远程文件 |
-| `:rename <旧名> <新名>` | 重命名远程文件 |
-| `:cd <路径>` | 切换远程目录 |
+| `:upload <本地路径> [远程路径]` | 上传本地文件到远程（默认使用文件名） |
+| `:download <远程路径> [本地路径]` | 下载远程文件到本地（默认使用文件名） |
+| `:mkdir <名称>` | 在活动面板创建目录 |
+| `:rm <名称>` | 在活动面板删除文件/目录 |
+| `:rename <旧名> <新名>` | 在活动面板重命名 |
+| `:cd <路径>` | 切换目录并刷新两个面板 |
+
+> 提示：`Tab` 自动补全命令与文件路径，`↑/↓` 浏览命令历史。
 
 #### 表单
 
@@ -176,6 +183,9 @@ bun run start -- --log-level debug
 
 # 以 trace 级别运行（最详细）
 bun run start -- --log-level trace
+
+# 编译为独立的 Windows 可执行文件
+bun run build:win
 ```
 
 ### 日志
@@ -238,6 +248,7 @@ bun run start -- --log-level trace
 - 终端支持 ANSI 转义序列渲染（颜色、光标移动等）
 - 调整终端窗口大小 — PTY 大小会自动同步更新
 - 使用 `PageUp`/`PageDown` 滚动终端输出
+- `Ctrl+C` 复制终端选中文本（或最后一行）；无内容可复制时向 shell 发送中断（SIGINT）
 
 #### 4. 多标签页支持
 - 在 separate 标签页中打开多个 SSH 会话
@@ -252,23 +263,23 @@ bun run start -- --log-level trace
 - **独立 SSH 连接**：每个 SFTP 标签页创建独立的 SSH 连接
 - **导航**：用 `↑`/`↓` 选择文件，`Enter` 打开目录，`Backspace` 返回上级
 - **切换面板**：按 `Tab` 在本地和远程面板间切换
-- **命令行**：按 `:` 进入命令模式，输入 `upload`、`download`、`cd`、`mkdir`、`rm`、`rename` 等命令
-- **快捷键**：`Ctrl+U` 上传，`Ctrl+D` 下载，`F7` 创建目录，`F8` 删除，`F2` 重命名
-- **关闭**：按 `Esc` 关闭 SFTP 标签页
+- **命令行**：按 `:` 进入命令模式，输入 `upload`、`download`、`cd`、`mkdir`、`rm`、`rename` 等命令（`Tab` 自动补全，`↑/↓` 浏览历史）
+- **快捷键**：`Ctrl+U` 预填上传命令，`Ctrl+D` 预填下载命令，`F7`/`N` 创建目录，`F8`/`Delete` 删除，`F2` 重命名，`R`/`Ctrl+R` 刷新，`Ctrl+H` 切换系统文件
+- **关闭**：在命令模式下按 `Esc` 退出；关闭标签页用 `Ctrl+Shift+C` 或双击
 
 #### 6. 断开连接 / 切换会话
-- 在远程 shell 中输入 `exit` 或关闭 shell 来断开连接
+- 在远程 shell 中输入 `exit` 或关闭 shell 来断开连接 — 标签页会自动关闭
 - 按 `Alt+←/→` 切换侧边栏和终端之间的焦点
-- 状态栏显示连接状态：**Connected**（已连接）、**Disconnected**（已断开）或 **Error**（错误）
+- 终端面板显示连接状态：**Connecting**（连接中）、**Connected**（已连接）、**Error**（错误）或 **Disconnected**（已断开）
 
-#### 6. 编辑 / 删除连接
+#### 7. 编辑 / 删除连接
 - 选中连接后按 `e` **编辑**连接详情
 - 选中连接后按 `Delete` **删除**连接
 
-#### 7. 帮助
+#### 8. 帮助
 按 `F1` 打开帮助弹窗。弹窗可拖动 — 点击并拖动以重新定位。
 
-#### 8. 退出
+#### 9. 退出
 按 `Ctrl+Q` 退出应用。
 
 ### 依赖项
@@ -276,6 +287,7 @@ bun run start -- --log-level trace
 | 包名 | 用途 |
 |---|---|
 | [`@opentui/core`](https://github.com/xanderjohansen/opentui) | 终端 UI 框架（Box、Text、渲染器、输入） |
+| [`@opentui/core-win32-x64`](https://github.com/xanderjohansen/opentui) | Windows x64 平台的 OpenTUI 原生依赖 |
 | [`vterm.js`](https://github.com/nickmccurdy/vterm.js) | 完整的终端模拟，支持 ANSI 颜色 |
 | [`ssh2-no-cpu-features`](https://github.com/JAForbes/ssh2-no-cpu-features) | SSH2 客户端（移除 cpu-features 的分支） |
 | [`@logtape/logtape`](https://github.com/dahlia/logtape) | 结构化日志（零依赖，文件输出） |
