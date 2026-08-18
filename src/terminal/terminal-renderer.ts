@@ -20,6 +20,8 @@ export class TerminalRenderer {
   private _selectionAnchor: { row: number; col: number } | null = null;
   private _selectionFocus: { row: number; col: number } | null = null;
   private _selectionSetup = false;
+  private _selectionRenderable: any = null;
+  private _lastSelectionLogKey = '';
 
   constructor() {}
 
@@ -80,6 +82,7 @@ export class TerminalRenderer {
   }
 
   private setupSelection(renderable: any): void {
+    log.debug(`[SELECT SETUP] setupSelection called for renderable id=${renderable?.id} num=${renderable?.num} _selectionSetup=${this._selectionSetup}`);
     renderable.selectable = true;
 
     renderable.shouldStartSelection = (x: number, y: number): boolean => {
@@ -161,8 +164,15 @@ export class TerminalRenderer {
         const sx = Number(renderable._screenX) || 0;
         const sy = Number(renderable._screenY) || 0;
 
-        // Monkey-patch selection methods on first frame
-        if (!this._selectionSetup) {
+        // Monkey-patch selection methods on each new renderable (content box is
+        // rebuilt on window resize, and each new renderable needs the patch).
+        const selLogKey = `${renderable?.num}-${this._selectionSetup}-${renderable?.selectable}-${typeof renderable?.shouldStartSelection}`;
+        if (selLogKey !== this._lastSelectionLogKey) {
+          this._lastSelectionLogKey = selLogKey;
+          log.debug(`[SELECT RENDER] render pass: id=${renderable?.id} num=${renderable?.num} _selectionSetup=${this._selectionSetup} selectable=${renderable?.selectable} hasShouldStartSelection=${typeof renderable?.shouldStartSelection}`);
+        }
+        if (this._selectionRenderable !== renderable) {
+          this._selectionRenderable = renderable;
           this._selectionSetup = true;
           this.setupSelection(renderable);
         }
@@ -180,6 +190,10 @@ export class TerminalRenderer {
   }
 
   rebuildContentBox(rows: number, id: string = 'terminal-content'): any {
+    log.debug(`[SELECT REBUILD] rebuildContentBox: id=${id} rows=${rows} _selectionSetup=${this._selectionSetup}`);
+    // Content box is being replaced — drop any stale selection from the old box
+    this.clearSelection();
+    this._selectionRenderable = null;
     return this.createContentBox(rows, id);
   }
 

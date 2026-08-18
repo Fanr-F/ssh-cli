@@ -398,6 +398,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       // 2. Create new content box with new row count
       const contentBox = entry.renderer.rebuildContentBox(newRows, `tab-content-${tabId}`);
       entry.contentBox = contentBox;
+      log.debug(`[RESIZE/SELECT] new contentBox created: hasShouldStartSelection=${typeof (contentBox as any)?.shouldStartSelection} selectable=${(contentBox as any)?.selectable}`);
 
       // 3. Add new content box to connected
       r.connected.add(contentBox);
@@ -406,6 +407,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       // 4. Resolve children — must use REAL renderable via findDescendantById, not Proxy
       const realBox = renderer.root.findDescendantById(`tab-content-${tabId}`);
       if (realBox) {
+        log.debug(`[RESIZE/SELECT] realBox found: num=${(realBox as any)?.num} hasShouldStartSelection=${typeof (realBox as any)?.shouldStartSelection} selectable=${(realBox as any)?.selectable}`);
         const nodeChildren = realBox.getChildren();
         entry.resolvedChildren = nodeChildren ?? [];
         entry.renderer.resolveChildren(entry.resolvedChildren);
