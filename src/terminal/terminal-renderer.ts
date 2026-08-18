@@ -52,21 +52,29 @@ export class TerminalRenderer {
         ? this._selectionAnchor.col
         : Math.max(this._selectionAnchor.col, this._selectionFocus.col);
 
+    log.debug(`[SELECT] getSelectedText: anchor={${this._selectionAnchor.row},${this._selectionAnchor.col}} focus={${this._selectionFocus.row},${this._selectionFocus.col}} startRow=${startRow} endRow=${endRow} startCol=${startCol} endCol=${endCol}`);
+
     const lines: string[] = [];
     for (let row = startRow; row <= endRow; row++) {
       const lineText = this.vterm.getLineText(row);
       const cells = this.vterm.getLineCells(row);
       const startIdx = this.cellToCharIndex(cells, row === startRow ? startCol : 0);
       const endIdx = this.cellToCharIndex(cells, row === endRow ? endCol : cells.length - 1);
+      const wideCount = cells.filter(c => c.wide).length;
+      const spacerCount = cells.filter(c => c.char === '').length;
+      log.debug(`[SELECT] row=${row} cells.length=${cells.length} wide=${wideCount} emptyChar=${spacerCount} startIdx=${startIdx} endIdx=${endIdx} lineText="${lineText.substring(0, 120)}"`);
       lines.push(lineText.substring(startIdx, endIdx + 1));
     }
-    return lines.join('\n');
+    const result = lines.join('\n');
+    log.debug(`[SELECT] extracted="${result}"`);
+    return result;
   }
 
   private cellToCharIndex(cells: ScreenCell[], cellPos: number): number {
     let count = 0;
     for (let i = 0; i < cellPos && i < cells.length; i++) {
-      if (!(cells[i].wide && cells[i].char === '')) count++;
+      if (cells[i].char === '') continue; // skip wide-char spacer cells + empty cells
+      count++;
     }
     return count;
   }
@@ -99,6 +107,8 @@ export class TerminalRenderer {
       const anchorCol = Math.max(0, Math.min((selection.anchor.x - sx), (this.vterm?.cols ?? 1) - 1));
       const focusRow = Math.max(0, Math.min((selection.focus.y - sy), (this.vterm?.rows ?? 1) - 1));
       const focusCol = Math.max(0, Math.min((selection.focus.x - sx), (this.vterm?.cols ?? 1) - 1));
+
+      log.debug(`[SELECT] onSelectionChanged: sx=${sx} sy=${sy} anchor=(${selection.anchor.x},${selection.anchor.y}) focus=(${selection.focus.x},${selection.focus.y}) -> anchor={${anchorRow},${anchorCol}} focus={${focusRow},${focusCol}} cols=${this.vterm?.cols} rows=${this.vterm?.rows}`);
 
       this._selectionAnchor = { row: anchorRow, col: anchorCol };
       this._selectionFocus = { row: focusRow, col: focusCol };
