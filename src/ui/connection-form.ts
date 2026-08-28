@@ -169,7 +169,7 @@ export function createConnectionForm(
   // ── Key handler ────────────────────────────────────────
   function handleKeyDown(key: KeyEvent) {
     if (!hasFocus) return;
-    logForm.debug(`handleKeyDown: name=${key.name}, ctrl=${key.ctrl}, shift=${key.shift}`);
+    logForm.debug(`handleKeyDown: name=${key.name}, ctrl=${key.ctrl}, shift=${key.shift}, focusedField=${focusedField}, justFocused=${justFocused}, cursorVisible=${cursorVisible}, cursorPos5=${cursorPositions[5]}`);
 
     if (key.name === "escape") {
       key.preventDefault();
@@ -241,24 +241,29 @@ export function createConnectionForm(
       justFocused = false;
       cursorVisible = true;
       const idx = mapFocusToTextIndex(focusedField);
+      logForm.debug(`[ARROW] focusedField=${focusedField}, idx=${idx}, key=${key.name}`);
       if (idx >= 0) {
         const k = getStateKey(idx);
         const text = (state[k] as string) || "";
         const pos = cursorPositions[idx];
+        logForm.debug(`[ARROW] field=${k}, text="${text}", pos=${pos}`);
         if (key.name === "left") {
           cursorPositions[idx] = Math.max(0, pos - 1);
         } else {
           cursorPositions[idx] = Math.min(text.length, pos + 1);
         }
+        logForm.debug(`[ARROW] new cursorPos=${cursorPositions[idx]}`);
         refreshTextField(idx);
       } else if (focusedField === 5) {
         const text = state.authType === "key" ? state.privateKeyPath : state.password;
         const pos = cursorPositions[5];
+        logForm.debug(`[ARROW] field=conditional, authType=${state.authType}, text="${text}", pos=${pos}, state.privateKeyPath="${state.privateKeyPath}"`);
         if (key.name === "left") {
           cursorPositions[5] = Math.max(0, pos - 1);
         } else {
           cursorPositions[5] = Math.min(text.length, pos + 1);
         }
+        logForm.debug(`[ARROW] new cursorPos=${cursorPositions[5]}`);
         refreshConditional();
       }
       return;
@@ -371,6 +376,7 @@ export function createConnectionForm(
       key.preventDefault();
       const ch = key.shift ? key.name.toUpperCase() : key.name;
       const wasCursorHidden = !cursorVisible;
+      logForm.debug(`[CHAR] ch="${ch}", wasCursorHidden=${wasCursorHidden}, focusedField=${focusedField}`);
       justFocused = false;
       cursorVisible = true;
       const idx = mapFocusToTextIndex(focusedField);
@@ -392,6 +398,7 @@ export function createConnectionForm(
       } else if (focusedField === 5) {
         if (wasCursorHidden) {
           // No cursor visible → replace entire field content
+          logForm.debug(`[CHAR] replacing conditional field, ch="${ch}"`);
           if (state.authType === "key") {
             state.privateKeyPath = ch;
           } else {
@@ -401,6 +408,7 @@ export function createConnectionForm(
         } else {
           // Cursor visible → insert at cursor position
           const pos = cursorPositions[5];
+          logForm.debug(`[CHAR] inserting into conditional field at pos=${pos}, ch="${ch}"`);
           if (state.authType === "key") {
             state.privateKeyPath = state.privateKeyPath.slice(0, pos) + ch + state.privateKeyPath.slice(pos);
           } else {
@@ -408,6 +416,7 @@ export function createConnectionForm(
           }
           cursorPositions[5] = pos + 1;
         }
+        logForm.debug(`[CHAR] conditional field after: "${state.authType === "key" ? state.privateKeyPath : state.password}"`);
         refreshConditional();
       }
       return;
@@ -473,11 +482,9 @@ export function createConnectionForm(
     fieldLabels.push(lbl);
 
     const val = new TextRenderable(ctx, {
-      content: getInitialText(fd.key),
+      content: makeStyledText(getInitialText(fd.key), C.fieldText),
       fg: C.fieldText,
     });
-    // Set initial styled text
-    val.textBuffer.setStyledText(makeStyledText(getInitialText(fd.key), C.fieldText));
     fieldTexts.push(val);
 
     const inp = new BoxRenderable(ctx, {
@@ -555,11 +562,9 @@ export function createConnectionForm(
   body.add(conditionalLabel);
 
   conditionalText = new TextRenderable(ctx, {
-    content: state.privateKeyPath || "~/.ssh/id_ed25519",
+    content: makeStyledText(state.privateKeyPath || "~/.ssh/id_ed25519", C.fieldText),
     fg: C.fieldText,
   });
-  // Set initial styled text
-  conditionalText.textBuffer.setStyledText(makeStyledText(state.privateKeyPath || "~/.ssh/id_ed25519", C.fieldText));
 
   conditionalBox = new BoxRenderable(ctx, {
     flexDirection: "row",
@@ -687,12 +692,12 @@ export function createConnectionForm(
       if (idx === focusedField && cursorVisible) {
         const cursorPos = cursorPositions[idx];
         if (text.length > 0) {
-          fieldTexts[idx].textBuffer.setStyledText(createStyledWithCursor(text, cursorPos));
+          fieldTexts[idx].content = createStyledWithCursor(text, cursorPos);
         } else {
-          fieldTexts[idx].textBuffer.setStyledText(makeStyledText(text, C.fieldText));
+          fieldTexts[idx].content = makeStyledText(text, C.fieldText);
         }
       } else {
-        fieldTexts[idx].textBuffer.setStyledText(makeStyledText(text, C.fieldText));
+        fieldTexts[idx].content = makeStyledText(text, C.fieldText);
       }
     } catch (err) {
       logForm.debug(`refreshTextField error: ${err}`);
@@ -714,14 +719,15 @@ export function createConnectionForm(
     try {
       if (isKey) {
         const text = state.privateKeyPath || "~/.ssh/id_ed25519";
+        logForm.debug(`[REFRESH-COND] isKey=true, state.privateKeyPath="${state.privateKeyPath}", displayText="${text}", cursorPos=${cursorPositions[5]}, showCursor=${showCursor}`);
         if (showCursor) {
           if (text.length > 0) {
-            conditionalText.textBuffer.setStyledText(createStyledWithCursor(text, cursorPositions[5]));
+            conditionalText.content = createStyledWithCursor(text, cursorPositions[5]);
           } else {
-            conditionalText.textBuffer.setStyledText(makeStyledText(text, C.fieldText));
+            conditionalText.content = makeStyledText(text, C.fieldText);
           }
         } else {
-          conditionalText.textBuffer.setStyledText(makeStyledText(text, C.fieldText));
+          conditionalText.content = makeStyledText(text, C.fieldText);
         }
       } else {
         const displayText = passwordRevealed
@@ -729,12 +735,12 @@ export function createConnectionForm(
           : maskPassword(state.password || "");
         if (showCursor) {
           if (displayText.length > 0) {
-            conditionalText.textBuffer.setStyledText(createStyledWithCursor(displayText, cursorPositions[5]));
+            conditionalText.content = createStyledWithCursor(displayText, cursorPositions[5]);
           } else {
-            conditionalText.textBuffer.setStyledText(makeStyledText(displayText, C.fieldText));
+            conditionalText.content = makeStyledText(displayText, C.fieldText);
           }
         } else {
-          conditionalText.textBuffer.setStyledText(makeStyledText(displayText, C.fieldText));
+          conditionalText.content = makeStyledText(displayText, C.fieldText);
         }
       }
       // Show/hide eye icon based on auth type
@@ -848,6 +854,7 @@ export function createConnectionForm(
     }
     const condText = state.authType === "key" ? state.privateKeyPath : state.password;
     cursorPositions[5] = condText.length;
+    logForm.debug(`focus() called: focusedField=${focusedField}, condText="${condText}", cursorPos5=${cursorPositions[5]}`);
     updateFocusIndicators();
   }
 

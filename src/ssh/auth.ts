@@ -45,11 +45,9 @@ export function buildConnectConfig(connection: ConnectionConfig): SshConnectConf
           ? path.join(os.homedir(), keyPath.slice(1))
           : keyPath;
         const keyData = fs.readFileSync(resolvedPath);
-        const parsedKey = utils.parseKey(keyData);
-        if (parsedKey instanceof Error) {
-          console.warn(`Warning: Failed to parse key at ${resolvedPath}: ${parsedKey.message}`);
-        } else {
-          config.privateKey = parsedKey;
+        config.privateKey = keyData;
+        if (connection.passphrase) {
+          config.passphrase = connection.passphrase;
         }
       } catch (err) {
         console.warn(`Warning: Could not read key at ${keyPath}`);

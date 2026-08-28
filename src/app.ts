@@ -814,32 +814,14 @@ export class App {
         }
       }
 
-      // 3. No selection — copy the last non-empty visible line
-      if (!text) {
-        logDebug(`[COPY] terminal: no selection, using getVisibleLines fallback`);
-        if (activeId) {
-          const entry = this.tabs.get(activeId);
-          if (entry?.renderer) {
-            const lines = entry.renderer.getVisibleLines();
-            for (let i = lines.length - 1; i >= 0; i--) {
-              const line = lines[i].trim();
-              if (line.length > 0) {
-                text = line;
-                logDebug(`[COPY] terminal: fallback copied line ${i}="${text.substring(0, 100)}"`);
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      // 4. Still no text — send SIGINT
+      // 3. No selection — send SIGINT directly
       if (!text) {
         if (activeId) {
           const tab = this.tabs.get(activeId);
           if (tab?.ssh.isConnected()) {
             tab.ssh.writeToShell('\x03');
             this.statusBar.setStatus('Sent interrupt (Ctrl+C)');
+            logDebug(`[COPY] terminal: sent SIGINT`);
           }
         }
         this.renderer.requestRender();
