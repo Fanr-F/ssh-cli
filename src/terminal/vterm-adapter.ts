@@ -73,6 +73,12 @@ export class VtermAdapter {
   private _updateCount = 0;
   private _generation = 0;
 
+  // ── DECCKM (cursor key mode) tracking ─────────────────────────
+  // When the remote app sets DECCKM (CSI ?1 h), arrow keys should use
+  // application mode sequences (\x1bOA etc.) instead of normal mode
+  // (\x1b[A etc.). This is critical for vi/vim on servers with broken terminfo.
+  private _cursorKeyMode: number = 0; // 0 = normal, 1 = application
+
   // ── Viewport offset tracking ────────────────────────────────────
   // We track viewport offset ourselves because vterm.js's scrollback length
   // can diverge from our _scrollbackBuffer.length after resize captures.
@@ -91,6 +97,9 @@ export class VtermAdapter {
   }
 
   get generation(): number { return this._generation; }
+
+  /** Get cursor key mode: 0 = normal (\x1b[A), 1 = application (\x1bOA). */
+  getCursorKeyMode(): number { return this._cursorKeyMode; }
 
   /** Capture the current screen state for scrollback tracking. */
   private captureScreen(): void {
@@ -114,6 +123,22 @@ export class VtermAdapter {
   feed(data: Uint8Array | string): void {
     try {
       const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+
+      // Track DECCKM (cursor key mode) changes from the remote application.
+      // CSI ?1 h = set application cursor mode (arrow keys send \x1bOA etc.)
+      // CSI ?1 l = reset normal cursor mode (arrow keys send \x1b[A etc.)
+      // This must be detected before vterm processes the data so we can
+      // translate outgoing arrow key sequences accordingly.
+      // NOTE: \? is literal question mark (not a regex quantifier!)
+      const ckmPattern = /\x1b\[\?1([hl])/g;
+      let ckmMatch;
+      while ((ckmMatch = ckmPattern.exec(text)) !== null) {
+        const newMode = ckmMatch[1] === 'h' ? 1 : 0;
+        if (newMode !== this._cursorKeyMode) {
+          this._cursorKeyMode = newMode;
+          log.debug(`DECCKM cursor key mode changed to ${newMode === 1 ? 'application' : 'normal'}`);
+        }
+      }
 
       // Split on newlines so each line triggers its own scroll detection.
       // Without this, a single large screen.process() call can cause vterm to

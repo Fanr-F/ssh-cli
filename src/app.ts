@@ -65,6 +65,22 @@ export class App {
   private connections: ConnectionConfig[] = [];
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * Translate arrow key escape sequences based on the remote terminal's
+   * DECCKM (cursor key mode). When DECCKM is set (application mode),
+   * arrow keys should use \x1bOA/B/C/D instead of \x1b[A/B/C/D.
+   * This is critical for vi/vim on servers with broken terminfo.
+   */
+  private translateKeySequence(key: string, cursorKeyMode: number): string {
+    if (cursorKeyMode !== 1) return key;
+    // Application cursor mode: normal → application
+    return key
+      .replace(/\x1b\[A/g, '\x1bOA')
+      .replace(/\x1b\[B/g, '\x1bOB')
+      .replace(/\x1b\[C/g, '\x1bOC')
+      .replace(/\x1b\[D/g, '\x1bOD');
+  }
+
   // ── Multi-tab state ──────────────────────────────────────────────
   private tabs = new Map<string, {
     vterm: VtermAdapter;
@@ -134,8 +150,9 @@ export class App {
             this.terminalPanel.updateTerminalContentForTab(activeId);
             this.renderer.requestRender();
           }
-          logIO('OUT', key);
-          tab.ssh.writeToShell(key);
+          const translated = this.translateKeySequence(key, tab.vterm.getCursorKeyMode());
+          logIO('OUT', translated);
+          tab.ssh.writeToShell(translated);
         }
       }
     });
