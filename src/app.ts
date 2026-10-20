@@ -1,5 +1,11 @@
-import { Box, ScrollBox } from '@opentui/core';
-import type { CliRenderer, KeyEvent, PasteEvent } from '@opentui/core';
+import {
+  Box,
+  ScrollBox,
+  createClipboard,
+  createHostClipboard,
+  createRendererClipboardAdapter,
+} from '@opentui/core';
+import type { CliRenderer, ClipboardService, KeyEvent, PasteEvent } from '@opentui/core';
 import type { ConnectionConfig } from './types/connection';
 import { ConnectionStore } from './storage/connections';
 import { createSidebar, type SidebarAPI } from './ui/sidebar';
@@ -16,7 +22,6 @@ import { SshConnection } from './ssh/connection';
 import { SftpClient } from './sftp/sftp-client';
 import { createInputDialog } from './sftp/sftp-input-dialog';
 import { createSftpTab, type SftpTabAPI } from './sftp/sftp-tab';
-import { copyToClipboard, pasteFromClipboard } from './clipboard';
 import { logDebug, logIO } from './logger';
 
 type FocusZone = 'sidebar' | 'terminal' | 'form' | 'sftp';
@@ -52,6 +57,7 @@ function createFakeKeyEvent(ch: string) {
 
 export class App {
   private renderer: CliRenderer;
+  private clipboard: ClipboardService;
   private store!: ConnectionStore;
   private mainContainer!: ReturnType<typeof Box>;
   private toolbar!: ReturnType<typeof Box>;
@@ -95,6 +101,11 @@ export class App {
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer;
+    // 复制：OSC52（终端）+ 系统剪贴板都写；粘贴：只有系统剪贴板可读。
+    this.clipboard = createClipboard({
+      host: createHostClipboard(),
+      terminal: createRendererClipboardAdapter(renderer),
+    });
   }
 
   async init(): Promise<void> {
@@ -797,6 +808,11 @@ export class App {
       if (tab.ssh.isConnected()) await tab.ssh.disconnect();
     }
     this.tabs.clear();
+    try {
+      await this.clipboard.dispose();
+    } catch {
+      // 剪贴板后端释放失败不应阻塞退出
+    }
     this.renderer.destroy();
     // OpenTUI 0.6 起 destroy() 是异步恢复终端（退出备用屏、关闭鼠标模式等）。
     // 必须等 closed 落地再退出，否则可能残留鼠标模式 / 备用屏。
@@ -878,8 +894,24 @@ export class App {
 
     if (text) {
       logDebug(`[COPY] copying to clipboard: "${text.substring(0, 100)}"`);
-      const ok = await copyToClipboard(text);
-      logDebug(`[COPY] copyToClipboard result: ok=${ok}`);
+      const result = await this.clipboard
+        .writeText(text, {
+          destination: 'all-available',
+          selection: 'clipboard',
+          // 终端能力尚未探测完时 capabilities 为 null，adapter 会把 remote 默认为 true
+          // 并跳过本机剪贴板写入；这里显式允许，保证本机绑定永远生效。
+          allowRemoteHost: true,
+        })
+        .catch((err) => {
+          logDebug(`[COPY] writeText failed: ${err}`);
+          return null;
+        });
+      if (result) {
+        logDebug(
+          `[COPY] writeText: host=${result.host.status}, terminal=${result.terminal.status}/${result.terminal.capability}`,
+        );
+      }
+      const ok = !!result && (result.host.status === 'written' || result.terminal.status === 'attempted');
       this.statusBar.setStatus(ok ? 'Copied to clipboard' : 'Copy failed');
     } else {
       logDebug(`[COPY] no text to copy`);
@@ -889,7 +921,42 @@ export class App {
   }
 
   private async handlePaste(): Promise<void> {
-    const text = await pasteFromClipboard();
+    const result = await this.clipboard
+      .read({ preferredTypes: ['text/plain'], selection: 'clipboard' })
+      .catch((err) => {
+        logDebug(`[PASTE] clipboard read failed: ${err}`);
+        return null;
+      });
+
+    if (!result) {
+      this.statusBar.setStatus('Clipboard read failed');
+      this.renderer.requestRender();
+      return;
+    }
+
+    if (result.status !== 'read') {
+      logDebug(`[PASTE] clipboard read status: ${result.status}`);
+      this.statusBar.setStatus(
+        result.status === 'empty'
+          ? 'Clipboard is empty'
+          : result.status === 'unsupported'
+            ? 'Clipboard unsupported'
+            : result.status === 'timed-out'
+              ? 'Clipboard read timed out'
+              : 'Clipboard read failed',
+      );
+      this.renderer.requestRender();
+      return;
+    }
+
+    // 统一行尾并去掉尾部空行：CRLF 直接灌进远程 shell 时，bracketed paste 会把 \r 当字面字符；
+    // 尾随换行则会让粘贴后立刻执行。
+    const text = new TextDecoder()
+      .decode(result.representation.bytes)
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\n+$/, '');
+
     if (!text) {
       this.statusBar.setStatus('Clipboard is empty');
       this.renderer.requestRender();
