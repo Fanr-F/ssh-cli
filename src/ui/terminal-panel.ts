@@ -1,6 +1,5 @@
-import { Box, Text, stringToStyledText } from '@opentui/core';
-import type { CliRenderer, KeyEvent, MouseEvent } from '@opentui/core';
-import { TerminalRenderer } from '../terminal/terminal-renderer';
+import { Box, Text, stringToStyledText, type EmbeddedTerminalRenderable } from '@opentui/core';
+import type { CliRenderer } from '@opentui/core';
 import { createLogger } from '../logger';
 
 const log = createLogger('terminal-panel');
@@ -9,7 +8,9 @@ const log = createLogger('terminal-panel');
  * Public API for the terminal panel component.
  *
  * The panel manages visual states (idle, connecting, connected, error,
- * disconnected) and forwards keyboard input while connected.
+ * disconnected) and hosts one `EmbeddedTerminalRenderable` per terminal tab.
+ * 键盘、粘贴、滚轮、选区、resize 全部由终端 renderable 自己处理，
+ * 面板只负责显隐与焦点转移。
  *
  * Access the root component via `.component` to mount it in the render tree.
  */
@@ -17,21 +18,12 @@ export interface TerminalPanelAPI {
   /** Root Box renderable — add this to the application layout tree. */
   readonly component: ReturnType<typeof Box>;
 
-  /** Attach a TerminalRenderer to use when the connected state is active. */
-  setTerminalRenderer(renderer: TerminalRenderer): void;
-
-  /** Replace the connected-state content with the given Box tree. */
-  setTerminalContent(node: ReturnType<typeof Box>): void;
-
-  /** Update terminal content in-place (no remove/add, updates resolved Text renderables). */
-  updateTerminalContent(): boolean;
-
   // ── Multi-tab API ──────────────────────────────────────────────────
 
-  /** Register a terminal renderer for a tab. Returns a content Box to mount. */
-  registerTerminal(tabId: string, r: TerminalRenderer, rows: number): ReturnType<typeof Box>;
+  /** Mount a terminal renderable for a tab (hidden until switchTerminal). */
+  registerTerminal(tabId: string, term: EmbeddedTerminalRenderable): void;
 
-  /** Unregister and remove a terminal renderer for a tab. */
+  /** Destroy and remove a terminal renderable for a tab. */
   unregisterTerminal(tabId: string): void;
 
   /** Switch the visible terminal to the given tab. */
@@ -40,15 +32,9 @@ export interface TerminalPanelAPI {
   /** Get the currently active tab id. */
   getActiveTabId(): string | null;
 
-  /** Update terminal content for a specific tab. */
-  updateTerminalContentForTab(tabId: string): boolean;
-
-  /** Rebuild a tab's content box when terminal rows change (e.g. window resize). */
-  resizeTerminal(tabId: string, newRows: number): void;
-
   // ── State management ───────────────────────────────────────────────
 
-  /** Give keyboard focus to this panel. */
+  /** Give keyboard focus to the active terminal. */
   focus(): void;
 
   /** Show the idle placeholder: "← Select a connection to begin". */
@@ -57,7 +43,7 @@ export interface TerminalPanelAPI {
   /** Show the "Connecting to {host}..." state. */
   showConnecting(host: string): void;
 
-  /** Show the connected state — terminal output area is visible and empty. */
+  /** Show the connected state — terminal output area is visible. */
   showConnected(host: string): void;
 
   /** Show a centered red error message. */
@@ -66,23 +52,7 @@ export interface TerminalPanelAPI {
   /** Show the yellow "Connection closed" state. */
   showDisconnected(): void;
 
-  /**
-   * Register a callback that receives every raw key sequence the panel
-   * receives while it has keyboard focus. Used by the app bridge to
-   * forward keystrokes to the SSH channel.
-   */
-  onKeyInput(callback: (key: string) => void): void;
-
-  /**
-   * Register a callback for mouse scroll events.
-   * Receives the scroll direction: "up" or "down".
-   */
-  onScroll(callback: (direction: 'up' | 'down') => void): void;
-
-  /** Set the focusable state on the real renderable (Proxy-safe). */
-  setFocusable(value: boolean): void;
-
-  /** Set visual focus highlight (changes border color). */
+  /** Set visual focus highlight (border color) and blur the terminal when false. */
   setFocused(value: boolean): void;
 
   /** Show or hide the terminal panel. */
@@ -99,10 +69,6 @@ export interface TerminalPanelAPI {
  * @param renderer – The active CLI renderer (used for `requestRender()`).
  */
 export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
-  let terminalRenderer: TerminalRenderer | null = null;
-  let keyCallback: ((key: string) => void) | null = null;
-  let scrollCallback: ((direction: 'up' | 'down') => void) | null = null;
-
   // ── Shared styling constants ──────────────────────────────────────────
   // Tokyo Night palette
   const C = {
@@ -110,7 +76,6 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     textDim: '#565f89',
     yellow: '#e0af68',
     red: '#f7768e',
-    cyan: '#7dcfff',
   };
 
   const overlayProps = {
@@ -121,7 +86,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     height: '100%' as const,
   };
 
-  // ── State containers (VNode proxies — used only at construction) ──────
+  // ── State containers (VNode proxies — resolved after mounting) ────────
 
   // 1. Idle
   const idleBox = Box(
@@ -133,7 +98,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   const connectingText = Text({ content: 'Connecting\u2026', fg: C.yellow });
   const connectingBox = Box(overlayProps, connectingText);
 
-  // 3. Connected – empty terminal area
+  // 3. Connected – hosts one EmbeddedTerminalRenderable per tab
   const connectedBox = Box({
     id: 'terminal-connected',
     width: '100%',
@@ -159,23 +124,6 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       backgroundColor: C.bg,
       borderStyle: 'rounded',
       borderColor: '#3b4261',
-      onKeyDown: (key: KeyEvent) => {
-        if (keyCallback) {
-          keyCallback(key.sequence);
-          key.preventDefault();
-        }
-      },
-      onMouseScroll: (e: MouseEvent) => {
-        if (scrollCallback && e.scroll) {
-          log.debug(`[TERMINAL PANEL] onMouseScroll: direction=${e.scroll.direction}, delta=${e.scroll.delta}`);
-          // The terminal viewport only scrolls vertically — ignore horizontal wheel events
-          // (ScrollInfo.direction is 'up'|'down'|'left'|'right', the callback takes 'up'|'down').
-          if (e.scroll.direction === 'up' || e.scroll.direction === 'down') {
-            scrollCallback(e.scroll.direction);
-          }
-          e.preventDefault();
-        }
-      },
     },
     idleBox,
     connectingBox,
@@ -236,260 +184,60 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   }
 
   // ── Multi-tab terminal tracking ──────────────────────────────────────
-  interface TerminalEntry {
-    renderer: TerminalRenderer;
-    contentBox: ReturnType<typeof Box>;
-    resolvedChildren: any[];
-  }
-  const terminals = new Map<string, TerminalEntry>();
+  const terminals = new Map<string, EmbeddedTerminalRenderable>();
   let activeTabId: string | null = null;
-
-  // ── Terminal content child tracking (legacy single-tab) ─────────────
-  let hasTerminalContent = false;
-  let lastAddedContentBox: ReturnType<typeof Box> | null = null;
 
   // ── Public API ────────────────────────────────────────────────────────
   return {
     component: container,
 
-    registerTerminal(tabId: string, r: TerminalRenderer, rows: number): ReturnType<typeof Box> {
-      log.debug(`[TERMINAL PANEL] registerTerminal: tabId=${tabId}, rows=${rows}`);
-      // Use a unique id per tab so we can find the real renderable later
-      const contentBox = r.createContentBox(rows, `tab-content-${tabId}`);
-      terminals.set(tabId, { renderer: r, contentBox, resolvedChildren: [] });
-
-      // Add directly to connected box (multi-tab: each tab owns its own contentBox)
-      const resolved = resolve();
-      if (resolved) {
-        resolved.connected.add(contentBox);
-        // Hide by default — switchTerminal will show the active one
-        contentBox.visible = false;
-        log.debug(`[TERMINAL PANEL] registerTerminal: added contentBox to connected, hidden by default`);
+    registerTerminal(tabId: string, term: EmbeddedTerminalRenderable): void {
+      log.debug(`[TERMINAL PANEL] registerTerminal: tabId=${tabId}`);
+      const r = resolve();
+      if (r) {
+        r.connected.add(term);
+        // Hide by default — switchTerminal will show the active one.
+        // 注意：visible=false 的节点不参与布局，所以隐藏的 tab 不会被 resize，
+        // 切回来时才拿到真实行列数（并由 onTerminalResize 同步远端 PTY）。
+        term.visible = false;
       }
-
-      log.debug(`[TERMINAL PANEL] registerTerminal: terminals count now=${terminals.size}, terminals keys=[${[...terminals.keys()].join(', ')}]`);
-      return contentBox;
+      terminals.set(tabId, term);
+      log.debug(`[TERMINAL PANEL] registerTerminal: terminals count now=${terminals.size}`);
     },
 
     unregisterTerminal(tabId: string): void {
       log.debug(`[TERMINAL PANEL] unregisterTerminal: tabId=${tabId}`);
-      const entry = terminals.get(tabId);
-      if (!entry) {
-        log.debug(`[TERMINAL PANEL] unregisterTerminal: entry not found for ${tabId}`);
-        return;
-      }
-      const r = resolve();
-      if (r) {
-        // Find and remove by iterating children (more reliable than findDescendantById)
-        const children = r.connected.getChildren() ?? [];
-        log.debug(`[TERMINAL PANEL] unregisterTerminal: connected has ${children.length} children`);
-        for (let i = children.length - 1; i >= 0; i--) {
-          const child = children[i];
-          const childId = child?.id ?? '';
-          log.debug(`[TERMINAL PANEL] unregisterTerminal: checking child ${i} id=${childId}`);
-          if (childId === `tab-content-${tabId}`) {
-            log.debug(`[TERMINAL PANEL] unregisterTerminal: removing child ${i} (tab-content-${tabId})`);
-            try { 
-              // 0.6.x remove() takes the renderable object, not its id
-              r.connected.remove(child); 
-              log.debug(`[TERMINAL PANEL] unregisterTerminal: successfully removed`);
-            } catch (err) {
-              log.debug(`[TERMINAL PANEL] unregisterTerminal: error removing: ${err}`);
-            }
-            break;
-          }
-        }
+      const term = terminals.get(tabId);
+      if (!term) return;
+      try {
+        term.destroy();
+      } catch (err) {
+        log.debug(`[TERMINAL PANEL] unregisterTerminal: destroy error: ${err}`);
       }
       terminals.delete(tabId);
-      if (activeTabId === tabId) {
-        log.debug(`[TERMINAL PANEL] unregisterTerminal: was active tab, setting activeTabId=null`);
-        activeTabId = null;
-      }
-      // Reset terminal content tracking since we removed the content
-      hasTerminalContent = false;
-      lastAddedContentBox = null;
-      log.debug(`[TERMINAL PANEL] unregisterTerminal: terminals count now=${terminals.size}`);
+      if (activeTabId === tabId) activeTabId = null;
       renderer.requestRender();
+      log.debug(`[TERMINAL PANEL] unregisterTerminal: terminals count now=${terminals.size}`);
     },
 
     switchTerminal(tabId: string): void {
-      log.debug(`[TERMINAL PANEL] switchTerminal: tabId=${tabId}, current activeTabId=${activeTabId}`);
+      log.debug(`[TERMINAL PANEL] switchTerminal: tabId=${tabId}, current=${activeTabId}`);
       const r = resolve();
-      if (!r) {
-        log.debug(`[TERMINAL PANEL] switchTerminal: resolve() returned null`);
-        return;
-      }
+      if (!r) return;
 
-      log.debug(`[TERMINAL PANEL] switchTerminal: terminals count=${terminals.size}`);
-      log.debug(`[TERMINAL PANEL] switchTerminal: terminals keys=[${[...terminals.keys()].join(', ')}]`);
-      
-      // Log connected children
-      const connectedChildren = r.connected.getChildren() ?? [];
-      log.debug(`[TERMINAL PANEL] switchTerminal: connected has ${connectedChildren.length} children`);
-      for (let i = 0; i < connectedChildren.length; i++) {
-        const child = connectedChildren[i];
-        log.debug(`[TERMINAL PANEL] switchTerminal: child ${i} id=${child?.id ?? 'unknown'}`);
-      }
-
-      // Hide all terminals — must use REAL renderables, not VNode proxies
-      for (const [id, entry] of terminals) {
-        const shouldShow = id === tabId;
-        log.debug(`[TERMINAL PANEL] switchTerminal: setting tab ${id} visible=${shouldShow}`);
-        // Find the REAL renderable by id
-        const realBox = renderer.root.findDescendantById(`tab-content-${id}`);
-        if (realBox) {
-          log.debug(`[TERMINAL PANEL] switchTerminal: found real renderable for ${id}`);
-          realBox.visible = shouldShow;
-        } else {
-          log.debug(`[TERMINAL PANEL] switchTerminal: real renderable NOT found for ${id}, falling back to proxy`);
-          try { entry.contentBox.visible = shouldShow; } catch (err) {
-            log.debug(`[TERMINAL PANEL] switchTerminal: error setting visible for ${id}: ${err}`);
-          }
-        }
+      for (const [id, term] of terminals) {
+        term.visible = id === tabId;
       }
 
       activeTabId = tabId;
       showOnly(r.connected);
-
-      // Resolve children for the active terminal
-      const entry = terminals.get(tabId);
-      if (entry) {
-        log.debug(`[TERMINAL PANEL] switchTerminal: found entry for ${tabId}, resolving children`);
-        // Find the content box by its unique id
-        const contentBox = renderer.root.findDescendantById(`tab-content-${tabId}`);
-        if (contentBox) {
-          const nodeChildren = contentBox.getChildren();
-          entry.resolvedChildren = nodeChildren ?? [];
-          log.debug(`[TERMINAL PANEL] switchTerminal: resolved ${entry.resolvedChildren.length} children`);
-          entry.renderer.resolveChildren(entry.resolvedChildren);
-        } else {
-          log.debug(`[TERMINAL PANEL] switchTerminal: contentBox not found by id 'tab-content-${tabId}'`);
-        }
-      } else {
-        log.debug(`[TERMINAL PANEL] switchTerminal: no entry found for ${tabId}`);
-      }
-
-      renderer.requestRender();
     },
 
     getActiveTabId: () => activeTabId,
 
-    updateTerminalContentForTab(tabId: string): boolean {
-      const entry = terminals.get(tabId);
-      if (!entry) return false;
-      const ok = entry.renderer.updateContent();
-      if (ok) renderer.requestRender();
-      return ok;
-    },
-
-    resizeTerminal(tabId: string, newRows: number): void {
-      const r = resolve();
-      const entry = terminals.get(tabId);
-      if (!r || !entry) return;
-
-      log.debug(`[TERMINAL PANEL] resizeTerminal: tabId=${tabId}, newRows=${newRows}`);
-
-      // 1. Remove old content box from connected
-      const children = r.connected.getChildren() ?? [];
-      for (let i = children.length - 1; i >= 0; i--) {
-        const child = children[i];
-        if (child?.id === `tab-content-${tabId}`) {
-          log.debug(`[TERMINAL PANEL] resizeTerminal: removing old content box at index ${i}`);
-          // 0.6.x remove() takes the renderable object, not its id
-          try { r.connected.remove(child); } catch {}
-          break;
-        }
-      }
-
-      // 2. Create new content box with new row count
-      const contentBox = entry.renderer.rebuildContentBox(newRows, `tab-content-${tabId}`);
-      entry.contentBox = contentBox;
-      log.debug(`[RESIZE/SELECT] new contentBox created: hasShouldStartSelection=${typeof (contentBox as any)?.shouldStartSelection} selectable=${(contentBox as any)?.selectable}`);
-
-      // 3. Add new content box to connected
-      r.connected.add(contentBox);
-      contentBox.visible = (activeTabId === tabId);
-
-      // 4. Resolve children — must use REAL renderable via findDescendantById, not Proxy
-      const realBox = renderer.root.findDescendantById(`tab-content-${tabId}`);
-      if (realBox) {
-        log.debug(`[RESIZE/SELECT] realBox found: num=${(realBox as any)?.num} hasShouldStartSelection=${typeof (realBox as any)?.shouldStartSelection} selectable=${(realBox as any)?.selectable}`);
-        const nodeChildren = realBox.getChildren();
-        entry.resolvedChildren = nodeChildren ?? [];
-        entry.renderer.resolveChildren(entry.resolvedChildren);
-        log.debug(`[TERMINAL PANEL] resizeTerminal: resolved ${entry.resolvedChildren.length} children via findDescendantById`);
-      } else {
-        // Fallback: retry resolution after next render tick (real renderable may not be materialized yet)
-        log.debug(`[TERMINAL PANEL] resizeTerminal: findDescendantById returned null for tab-content-${tabId}, scheduling retry`);
-        setTimeout(() => {
-          const retryBox = renderer.root.findDescendantById(`tab-content-${tabId}`);
-          if (retryBox) {
-            const nodeChildren = retryBox.getChildren();
-            entry.resolvedChildren = nodeChildren ?? [];
-            entry.renderer.resolveChildren(entry.resolvedChildren);
-            log.debug(`[TERMINAL PANEL] resizeTerminal retry: resolved ${entry.resolvedChildren.length} children`);
-            renderer.requestRender();
-          } else {
-            log.debug(`[TERMINAL PANEL] resizeTerminal retry: still null for tab-content-${tabId}`);
-          }
-        }, 0);
-      }
-
-      renderer.requestRender();
-    },
-
-    setTerminalRenderer(r: TerminalRenderer): void {
-      terminalRenderer = r;
-    },
-
-    setTerminalContent(node: ReturnType<typeof Box>): void {
-      const r = resolve();
-      if (!r) {
-        log.debug(`[TERMINAL PANEL] setTerminalContent: resolve() returned null`);
-        return;
-      }
-      log.debug(`[TERMINAL PANEL] setTerminalContent: hasTerminalContent=${hasTerminalContent}`);
-      
-      // If there's still old content (shouldn't happen after unregisterTerminal), remove it
-      if (hasTerminalContent) {
-        const children = r.connected.getChildren() ?? [];
-        log.debug(`[TERMINAL PANEL] setTerminalContent: clearing ${children.length} old children`);
-        for (let i = children.length - 1; i >= 0; i--) {
-          // 0.6.x remove() takes the renderable object, not its id
-          const child = children[i];
-          try { if (child) r.connected.remove(child); } catch {}
-        }
-      }
-      
-      log.debug(`[TERMINAL PANEL] setTerminalContent: adding new node`);
-      r.connected.add(node);
-      lastAddedContentBox = node;
-      hasTerminalContent = true;
-      
-      // Resolve children for in-place updates.
-      // NOTE: `node` comes from Box(), so it is a ProxiedVNode and node.getChildren()
-      // returns another proxy rather than a real array. Resolve the underlying
-      // renderable first. (terminalRenderer.resolveChildren() is currently a no-op.)
-      if (terminalRenderer) {
-        const nodeId = (node as any)?.id;
-        const nodeInstance: any = nodeId ? renderer.root.findDescendantById(nodeId) : null;
-        const nodeChildren: any[] = nodeInstance?.getChildren?.() ?? [];
-        terminalRenderer.resolveChildren(nodeChildren);
-        log.debug(`[TERMINAL PANEL] setTerminalContent: resolved ${nodeChildren.length} children`);
-      }
-      renderer.requestRender();
-    },
-
-    updateTerminalContent(): boolean {
-      if (!terminalRenderer) return false;
-      const ok = terminalRenderer.updateContent();
-      if (ok) renderer.requestRender();
-      return ok;
-    },
-
     focus(): void {
-      const r = resolve();
-      if (r) r.container.focus();
+      const term = activeTabId ? terminals.get(activeTabId) : null;
+      if (term) term.focus();
       renderer.requestRender();
     },
 
@@ -529,22 +277,14 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       if (r) showOnly(r.disconnected);
     },
 
-    onKeyInput(callback: (key: string) => void): void {
-      keyCallback = callback;
-    },
-
-    onScroll(callback: (direction: 'up' | 'down') => void): void {
-      scrollCallback = callback;
-    },
-
-    setFocusable(value: boolean): void {
-      const r = resolve();
-      if (r) r.container.focusable = value;
-    },
-
     setFocused(value: boolean): void {
       const r = resolve();
       if (r) r.container.borderColor = value ? '#7aa2f7' : '#3b4261';
+      if (!value) {
+        // 离开终端时释放键盘焦点，避免后台 tab 继续收键
+        for (const term of terminals.values()) term.blur();
+      }
+      renderer.requestRender();
     },
 
     setVisible(visible: boolean): void {

@@ -1,6 +1,7 @@
 import {
   Box,
   ScrollBox,
+  EmbeddedTerminalRenderable,
   createClipboard,
   createHostClipboard,
   createRendererClipboardAdapter,
@@ -16,8 +17,6 @@ import { createToolbar } from './ui/toolbar';
 import { createDivider } from './ui/divider';
 import { createTabBar, type TabBarAPI } from './ui/tab-bar';
 import { createHelpPopup, type HelpPopupAPI } from './ui/help-popup';
-import { VtermAdapter } from './terminal/vterm-adapter';
-import { TerminalRenderer } from './terminal/terminal-renderer';
 import { SshConnection } from './ssh/connection';
 import { SftpClient } from './sftp/sftp-client';
 import { createSftpTab, type SftpTabAPI } from './sftp/sftp-tab';
@@ -70,33 +69,31 @@ export class App {
   private form: any = null;
   private focus: FocusZone = 'sidebar';
   private connections: ConnectionConfig[] = [];
-  private resizeTimer: ReturnType<typeof setTimeout> | null = null;
-
-  /**
-   * Translate arrow key escape sequences based on the remote terminal's
-   * DECCKM (cursor key mode). When DECCKM is set (application mode),
-   * arrow keys should use \x1bOA/B/C/D instead of \x1b[A/B/C/D.
-   * This is critical for vi/vim on servers with broken terminfo.
-   */
-  private translateKeySequence(key: string, cursorKeyMode: number): string {
-    if (cursorKeyMode !== 1) return key;
-    // Application cursor mode: normal → application
-    return key
-      .replace(/\x1b\[A/g, '\x1bOA')
-      .replace(/\x1b\[B/g, '\x1bOB')
-      .replace(/\x1b\[C/g, '\x1bOC')
-      .replace(/\x1b\[D/g, '\x1bOD');
-  }
 
   // ── Multi-tab state ──────────────────────────────────────────────
   private tabs = new Map<string, {
-    vterm: VtermAdapter;
-    renderer: TerminalRenderer;
+    term: EmbeddedTerminalRenderable;
     ssh: SshConnection;
     config: ConnectionConfig;
     sftpClient?: SftpClient;
     sftpTab?: SftpTabAPI;
   }>();
+
+  /**
+   * Ghostty 终端把视口滚动封装在原生层，0.6.6 没有导出公开的滚动 API，
+   * 这里直接调用 zig 绑定（`zig.d.ts` 有声明）：负数向上（更早），正数向下。
+   * 同时用于 PageUp/PageDown 和"输入时回到底部"。
+   */
+  private scrollTerminal(term: EmbeddedTerminalRenderable, delta: number): void {
+    const t = term as any;
+    if (!t.handle) return;
+    try {
+      t.lib.contextEmbeddedTerminalScroll(t.handle.context, t.handle, delta);
+      term.requestRender();
+    } catch (err) {
+      logDebug(`[SCROLL] contextEmbeddedTerminalScroll failed: ${err}`);
+    }
+  }
 
   constructor(renderer: CliRenderer) {
     this.renderer = renderer;
@@ -151,48 +148,6 @@ export class App {
     this.helpPopup = createHelpPopup(this.renderer);
 
     this.terminalPanel = createTerminalPanel(this.renderer);
-    this.terminalPanel.onKeyInput((key: string) => {
-      const activeId = this.tabBar.getActiveTabId();
-      if (activeId) {
-        const tab = this.tabs.get(activeId);
-        if (tab?.ssh.isConnected()) {
-          // Auto-scroll to bottom when user types
-          if (!tab.vterm.isAtBottom()) {
-            tab.vterm.scrollToBottom();
-            this.terminalPanel.updateTerminalContentForTab(activeId);
-            this.renderer.requestRender();
-          }
-          const translated = this.translateKeySequence(key, tab.vterm.getCursorKeyMode());
-          logIO('OUT', translated);
-          tab.ssh.writeToShell(translated);
-        }
-      }
-    });
-    this.terminalPanel.onScroll((direction: 'up' | 'down') => {
-      // Scroll the active tab's vterm viewport
-      const activeId = this.tabBar.getActiveTabId();
-      if (activeId) {
-        const tab = this.tabs.get(activeId);
-        if (tab?.vterm) {
-          tab.renderer.clearSelection();
-          const beforeOffset = tab.vterm.getViewportOffset();
-          const scrollback = tab.vterm.getScrollbackLength();
-          logDebug(`[SCROLL] direction=${direction}, scrollback=${scrollback}, viewportOffset=${beforeOffset}`);
-          
-          // up = scroll up (older content) = positive delta
-          // down = scroll down (newer content) = negative delta
-          const delta = direction === 'up' ? 3 : -3;
-          logDebug(`[SCROLL] applying delta=${delta} (reversed from direction=${direction})`);
-          
-          tab.vterm.scrollViewport(delta);
-          const afterOffset = tab.vterm.getViewportOffset();
-          logDebug(`[SCROLL] after: viewportOffset=${afterOffset}, changed=${beforeOffset !== afterOffset}`);
-          
-          this.terminalPanel.updateTerminalContentForTab(activeId);
-          this.renderer.requestRender();
-        }
-      }
-    });
     this.statusBar = createStatusBar(this.renderer);
 
     // Draggable divider between sidebar and terminal
@@ -293,29 +248,19 @@ export class App {
       // Terminal: PageUp/PageDown → scroll viewport
       if (this.focus === 'terminal') {
         if (key.name === 'pageup') {
-          const activeId = this.tabBar.getActiveTabId();
-          if (activeId) {
-            const tab = this.tabs.get(activeId);
-            if (tab?.vterm) {
-              tab.vterm.scrollViewport(tab.vterm.rows - 1);
-              this.terminalPanel.updateTerminalContentForTab(activeId);
-              this.renderer.requestRender();
-            }
-          }
+          const tab = this.getActiveTab();
+          if (tab) this.scrollTerminal(tab.term, -(Math.floor(tab.term.height) - 1));
           key.preventDefault(); return;
         }
         if (key.name === 'pagedown') {
-          const activeId = this.tabBar.getActiveTabId();
-          if (activeId) {
-            const tab = this.tabs.get(activeId);
-            if (tab?.vterm) {
-              tab.vterm.scrollViewport(-tab.vterm.rows + 1);
-              this.terminalPanel.updateTerminalContentForTab(activeId);
-              this.renderer.requestRender();
-            }
-          }
+          const tab = this.getActiveTab();
+          if (tab) this.scrollTerminal(tab.term, Math.floor(tab.term.height) - 1);
           key.preventDefault(); return;
         }
+        // 用户开始输入时回到底部（等价于旧版 isAtBottom + scrollToBottom）。
+        // 不 preventDefault —— 按键继续交给聚焦的终端编码后发给远端。
+        const tab = this.getActiveTab();
+        if (tab) this.scrollTerminal(tab.term, 1_000_000);
       }
 
       // Help popup: Up/Down scroll, other keys close it
@@ -363,13 +308,10 @@ export class App {
       if (!text) return;
 
       if (this.focus === 'terminal') {
-        const activeId = this.tabBar.getActiveTabId();
-        if (activeId) {
-          const tab = this.tabs.get(activeId);
-          if (tab?.ssh.isConnected()) {
-            tab.ssh.writeToShell(text);
-            this.statusBar.setStatus('Pasted to terminal');
-          }
+        // 粘贴交给聚焦的终端自己处理（encodePaste 会按需包 bracketed paste 标记，
+        // 再通过 onData 回写远端）。这里不能 preventDefault，否则组件的处理会被跳过。
+        if (this.getActiveTab()?.ssh.isConnected()) {
+          this.statusBar.setStatus('Pasted to terminal');
         }
       } else if (this.focus === 'form' && this.form) {
         // 阻止已聚焦的 InputRenderable 再处理一次同一个 paste 事件
@@ -396,90 +338,44 @@ export class App {
   }
 
   private setupResizeHandler(): void {
+    // 终端 renderable 依赖 Yoga 布局拿到新行列数，并在 onResize 里通过
+    // onTerminalResize → ssh.resizePty 同步远端 PTY，这里只需触发一次重排。
     this.renderer.on('resize', () => {
       logDebug(`[RESIZE] renderer.resize event fired`);
-      this.handleResize();
+      this.renderer.requestRender();
     });
   }
 
-  private handleResize(): void {
-    if (this.resizeTimer) clearTimeout(this.resizeTimer);
-    this.resizeTimer = setTimeout(() => {
-      const width = Math.max(20, this.renderer.width ?? 80);
-      const height = Math.max(5, this.renderer.height ?? 24);
-      const sidebarW = this.sidebar?.getWidth() ?? 30;
-      const cols = Math.max(40, width - sidebarW - 1 - 2); // -1 divider, -2 borders
-      const rows = Math.max(10, height - 4); // -2 borders, -1 toolbar, -1 tabBar
-
-      logDebug(`[RESIZE] handleResize: renderer=${width}x${height}, sidebarW=${sidebarW}, cols=${cols}, rows=${rows}`);
-
-      // Capture active tab's old rows BEFORE any resize
-      const activeId = this.tabBar.getActiveTabId();
-      const activeTab = activeId ? this.tabs.get(activeId) : undefined;
-      const oldActiveRows = activeTab?.vterm?.rows ?? 0;
-      logDebug(`[RESIZE] active tab oldRows=${oldActiveRows}, newRows=${rows}`);
-
-      // Resize all active tabs
-      for (const [tabId, tab] of this.tabs) {
-        if (tab.vterm) tab.vterm.resize(cols, rows);
-        if (tab.ssh?.isConnected()) tab.ssh.resizePty(cols, rows);
-      }
-
-      // Rebuild content box if row count changed, otherwise just update content
-      if (activeId) {
-        if (oldActiveRows !== rows) {
-          logDebug(`[RESIZE] rows changed ${oldActiveRows} -> ${rows}, rebuilding content box`);
-          this.terminalPanel.resizeTerminal(activeId, rows);
-          // Immediately populate the new content box with reflowed grid content
-          const ok = this.terminalPanel.updateTerminalContentForTab(activeId);
-          logDebug(`[RESIZE] post-resize updateContent result: ${ok}`);
-        } else {
-          logDebug(`[RESIZE] rows unchanged, updating content only`);
-          this.terminalPanel.updateTerminalContentForTab(activeId);
-        }
-      }
-      this.renderer.requestRender();
-
-      // Post-resize verification: dump grid content after 200ms (after all updates settle)
-      if (activeId && activeTab) {
-        setTimeout(() => {
-          const lines = activeTab.vterm.getStyledLines();
-          const rows = activeTab.vterm.rows;
-          logDebug(`[RESIZE] VERIFY: ${lines.length} styled lines, vterm.rows=${rows}`);
-          for (let i = 0; i < Math.min(rows, 5); i++) {
-            const rawChunks = (lines[i] as any).chunks ?? [];
-            const txt = rawChunks.map((c: any) => c.text ?? '').join('');
-            logDebug(`[RESIZE] VERIFY row=${i}: "${txt.substring(0, 60)}"`);
-          }
-        }, 200);
-      }
-    }, 100);
+  /** 当前激活的页签（终端页签与 SFTP 页签共用同一份 term） */
+  private getActiveTab() {
+    const id = this.tabBar.getActiveTabId();
+    return id ? this.tabs.get(id) : undefined;
   }
 
   private focusSidebar(): void {
     this.focus = 'sidebar'; this.sidebar.setFocusable(true);
     this.sidebar.setFocused(true);
-    if (this.terminalPanel) { this.terminalPanel.setFocusable(false); this.terminalPanel.setFocused(false); }
+    if (this.terminalPanel) { this.terminalPanel.setFocused(false); }
     this.statusBar.setStatus('Sidebar focused'); this.renderer.requestRender();
   }
 
   private focusTerminal(): void {
     this.focus = 'terminal'; this.sidebar.setFocusable(false);
     this.sidebar.setFocused(false);
-    if (this.terminalPanel) { this.terminalPanel.setFocusable(true); this.terminalPanel.setFocused(true); this.terminalPanel.focus(); }
+    if (this.terminalPanel) { this.terminalPanel.setFocused(true); this.terminalPanel.focus(); }
     this.statusBar.setStatus('Terminal focused'); this.renderer.requestRender();
   }
 
   private focusForm(): void {
     this.focus = 'form'; this.sidebar.setFocusable(false);
-    if (this.terminalPanel) this.terminalPanel.setFocusable(false);
+    if (this.terminalPanel) this.terminalPanel.setFocused(false);
   }
 
   private focusSftp(): void {
     this.focus = 'sftp';
     this.sidebar.setFocusable(false);
     this.sidebar.setFocused(false);
-    if (this.terminalPanel) { this.terminalPanel.setFocusable(false); this.terminalPanel.setFocused(false); }
+    if (this.terminalPanel) { this.terminalPanel.setFocused(false); }
     this.statusBar.setStatus('SFTP focused');
     this.renderer.requestRender();
   }
@@ -507,23 +403,39 @@ export class App {
     const tabTitle = `${config.username}@${config.host}`;
     logDebug(`[CONNECT] creating tab id=${tabId}, title=${tabTitle}`);
 
-    // Create vterm adapter and renderer for this tab
-    const vterm = new VtermAdapter(cols, rows, (response) => {
-      if (tab?.ssh.isConnected()) {
-        tab.ssh.writeToShell(response);
-      }
+    // Create the SSH connection first — the terminal's onData/onTerminalResize
+    // callbacks need to reference it.
+    const ssh = new SshConnection();
+
+    // Ghostty VT 终端（原生解析器）：键盘编码、粘贴、滚轮、选区、resize 全部内建
+    const term = new EmbeddedTerminalRenderable(this.renderer as any, {
+      id: `tab-terminal-${tabId}`,
+      width: '100%',
+      height: '100%',
+      cols,
+      rows,
+      // 单位是字节；10000 太小，按 200k 留够回滚
+      maxScrollback: 200_000,
+      // 默认背景用面板底色（Tokyo Night），而不是原生默认黑
+      transparentBackground: true,
+      selectable: true,
     });
-    const terminalRenderer = new TerminalRenderer();
-    terminalRenderer.setVterm(vterm);
+    // 键盘输入 + 终端响应（DSR/DA 等）都要回写远端
+    term.onData = (data, _source) => {
+      const text = Buffer.from(data).toString('utf8');
+      if (!text) return;
+      logIO('OUT', text);
+      ssh.writeToShell(text);
+    };
+    // Yoga 布局尺寸变化 → 同步远端 PTY
+    term.onTerminalResize = (c, r) => ssh.resizePty(c, r);
 
     // Register with terminal panel
     logDebug(`[CONNECT] registering terminal ${tabId}`);
-    const contentBox = this.terminalPanel.registerTerminal(tabId, terminalRenderer, rows);
+    this.terminalPanel.registerTerminal(tabId, term);
     logDebug(`[CONNECT] terminal registered: ${tabId}`);
 
-    // Create SSH connection
-    const ssh = new SshConnection();
-    const tab = { vterm, renderer: terminalRenderer, ssh, config };
+    const tab = { term, ssh, config };
     this.tabs.set(tabId, tab);
     logDebug(`[CONNECT] tabs map size now=${this.tabs.size}`);
 
@@ -548,28 +460,20 @@ export class App {
       this.renderer.requestRender();
 
       try {
-        const channel = await ssh.startShell({ cols, rows, term: 'xterm-256color' });
+        // 优先使用布局后的真实行列数，未完成布局时退回估算值
+        const shellCols = Math.floor(term.width) || cols;
+        const shellRows = Math.floor(term.height) || rows;
+        const channel = await ssh.startShell({ cols: shellCols, rows: shellRows, term: 'xterm-256color' });
+        // 布局可能晚于 shell 创建完成，这里再对齐一次
+        const realCols = Math.floor(term.width);
+        const realRows = Math.floor(term.height);
+        if (realCols > 0 && realRows > 0 && (realCols !== shellCols || realRows !== shellRows)) {
+          ssh.resizePty(realCols, realRows);
+        }
         const onSshData = (data: Buffer) => {
           logIO('IN', data);
-          const wasAtBottom = vterm.isAtBottom();
-          logDebug(`[SSH DATA] tab=${tabId} vterm=${!!vterm} renderer=${!!terminalRenderer} connected=${ssh.isConnected()} dataLen=${data.length} wasAtBottom=${wasAtBottom} viewportOffset=${vterm.getViewportOffset()}`);
-          try {
-            vterm.feed(data);
-            // Auto-scroll to bottom on new data only if already at bottom
-            // (don't interrupt user's scroll position)
-            if (wasAtBottom) {
-              vterm.scrollToBottom();
-            }
-            const ok = this.terminalPanel.updateTerminalContentForTab(tabId);
-            logDebug(`[SSH DATA] updateContent result: ${ok}`);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            const stack = err instanceof Error ? err.stack : '';
-            logDebug(`[SSH DATA ERROR] ${msg}\n${stack}`);
-            this.terminalPanel.showError('Render error: ' + msg);
-            this.statusBar.setStatus('Render error');
-            this.renderer.requestRender();
-          }
+          // 视口跟随由原生终端负责：在底部时自动跟进，上滚后保持不动
+          term.write(data);
         };
         channel.on('data', onSshData);
         channel.stderr.on('data', onSshData);
@@ -826,36 +730,21 @@ export class App {
         logDebug(`[COPY] sidebar: copied connection info="${text}"`);
       }
     } else if (this.focus === 'terminal') {
-      // Check our custom TerminalRenderer selection first, then OpenTUI's, then fallback
-      const activeId = this.tabBar.getActiveTabId();
-      if (activeId) {
-        const entry = this.tabs.get(activeId);
-        if (entry?.renderer) {
-          // 1. Our custom selection on TerminalRenderer (monkey-patched Generic)
-          if (entry.renderer.hasSelection()) {
-            text = entry.renderer.getSelectedText();
-            logDebug(`[COPY] terminal: copied custom selection="${text.substring(0, 100)}"`);
-            entry.renderer.clearSelection();
-          }
-          // 2. OpenTUI's built-in selection (in case it somehow works)
-          else if (this.renderer.hasSelection) {
-            const selection = this.renderer.getSelection();
-            text = selection?.getSelectedText() ?? '';
-            logDebug(`[COPY] terminal: copied OpenTUI selection="${text.substring(0, 100)}"`);
-            this.renderer.clearSelection();
-          }
-        }
+      // 终端选区 → 复制；没有选区则直接发 SIGINT（旧行为）
+      const tab = this.getActiveTab();
+      if (tab?.term?.hasSelection()) {
+        text = tab.term.getSelectedText();
+        logDebug(`[COPY] terminal: copied selection="${text.substring(0, 100)}"`);
+        // 传 null 走组件的 clear 分支（公开 API，不用碰内部绑定）
+        tab.term.onSelectionChanged(null as any);
       }
 
-      // 3. No selection — send SIGINT directly
+      // 没有选中内容 → 发送 SIGINT
       if (!text) {
-        if (activeId) {
-          const tab = this.tabs.get(activeId);
-          if (tab?.ssh.isConnected()) {
-            tab.ssh.writeToShell('\x03');
-            this.statusBar.setStatus('Sent interrupt (Ctrl+C)');
-            logDebug(`[COPY] terminal: sent SIGINT`);
-          }
+        if (tab?.ssh.isConnected()) {
+          tab.ssh.writeToShell('\x03');
+          this.statusBar.setStatus('Sent interrupt (Ctrl+C)');
+          logDebug(`[COPY] terminal: sent SIGINT`);
         }
         this.renderer.requestRender();
         return;
@@ -952,15 +841,12 @@ export class App {
 
     if (this.focus === 'terminal') {
       // Paste to SSH shell
-      const activeId = this.tabBar.getActiveTabId();
-      if (activeId) {
-        const tab = this.tabs.get(activeId);
-        if (tab?.ssh.isConnected()) {
-          tab.ssh.writeToShell(text);
-          this.statusBar.setStatus('Pasted to terminal');
-        } else {
-          this.statusBar.setStatus('Not connected');
-        }
+      const tab = this.getActiveTab();
+      if (tab?.ssh.isConnected()) {
+        tab.ssh.writeToShell(text);
+        this.statusBar.setStatus('Pasted to terminal');
+      } else {
+        this.statusBar.setStatus('Not connected');
       }
     } else if (this.focus === 'form' && this.form) {
       // Insert each character into the form's active field
@@ -1017,8 +903,7 @@ export class App {
       const sftpTabComponent = createSftpTab(tabId, this.renderer, sftpClient, remotePwd, localPwd);
 
       this.tabs.set(tabId, {
-        vterm: tab.vterm,
-        renderer: tab.renderer,
+        term: tab.term,
         ssh: sftpSsh,
         config,
         sftpClient,
