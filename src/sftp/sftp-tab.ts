@@ -1,4 +1,4 @@
-import { Box, Text, StyledText, type TextChunk } from '@opentui/core';
+import { Box, Text, StyledText, ScrollBarRenderable, type TextChunk } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
 import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
@@ -173,6 +173,30 @@ export function createSftpTab(
   let cmdHistoryIdx = -1;
 
   // ── Build the UI ──────────────────────────────────────────────
+  // OpenTUI 0.6.6 has no composition factory for ScrollBar, so build it with an
+  // explicit RenderContext (taken from the render root) and pass the instance
+  // straight into Box(...) — VChild accepts a Renderable.
+  const scrollBarCtx = renderer.root.ctx;
+
+  /** Vertical scrollbar bound to a Text list that scrolls via `scrollY`. */
+  function createListScrollBar(id: string, listId: string): ScrollBarRenderable {
+    return new ScrollBarRenderable(scrollBarCtx, {
+      id,
+      orientation: 'vertical',
+      showArrows: false,
+      width: 1,
+      flexShrink: 0,
+      trackOptions: { backgroundColor: C.statusBarBg, foregroundColor: C.textDim },
+      onChange: (position: number) => {
+        const list = renderer.root.findDescendantById(listId);
+        if (list) {
+          (list as any).scrollY = position;
+        }
+        renderer.requestRender();
+      },
+    });
+  }
+
   const headerBox = Box(
     { id: 'sftp-header', flexDirection: 'row', height: 1, backgroundColor: C.bg, paddingX: 1 },
     Text({ content: ' SFTP ', fg: C.blue }),
@@ -182,22 +206,24 @@ export function createSftpTab(
 
   // Local panel
   const localPathText = Text({ content: ` Local: ${localState.currentPath}`, fg: C.cyan, id: 'sftp-local-path' });
-  const localListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-local-list', wrapMode: 'none' });
+  const localListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-local-list', wrapMode: 'none', flexGrow: 1, flexBasis: 0 });
+  const localScrollBar = createListScrollBar('sftp-local-scrollbar', 'sftp-local-list');
   const localPanel = Box(
     { id: 'sftp-local-panel', flexDirection: 'column', flexGrow: 1, backgroundColor: C.surface, paddingX: 1 },
     localPathText,
     Text({ content: '', fg: C.border, width: '100%' }),
-    localListText,
+    Box({ flexDirection: 'row', flexGrow: 1, flexBasis: 0 }, localListText, localScrollBar),
   );
 
   // Remote panel
   const remotePathText = Text({ content: ` Remote: ${remoteState.currentPath}`, fg: C.cyan, id: 'sftp-remote-path' });
-  const remoteListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-remote-list', wrapMode: 'none' });
+  const remoteListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-remote-list', wrapMode: 'none', flexGrow: 1, flexBasis: 0 });
+  const remoteScrollBar = createListScrollBar('sftp-remote-scrollbar', 'sftp-remote-list');
   const remotePanel = Box(
     { id: 'sftp-remote-panel', flexDirection: 'column', flexGrow: 1, backgroundColor: C.surface, paddingX: 1 },
     remotePathText,
     Text({ content: '', fg: C.border, width: '100%' }),
-    remoteListText,
+    Box({ flexDirection: 'row', flexGrow: 1, flexBasis: 0 }, remoteListText, remoteScrollBar),
   );
 
   // Status bar
@@ -250,6 +276,15 @@ export function createSftpTab(
   }
 
   // ── Render functions ──────────────────────────────────────────
+  /** Push the Text list's current scroll state into its ScrollBar. */
+  function syncListScrollBar(bar: ScrollBarRenderable | null, listText: any, itemCount: number): void {
+    if (!bar || !listText || bar.isDestroyed) return;
+    const viewport = Math.max(1, Math.floor(listText.height || 1));
+    bar.scrollSize = itemCount;
+    bar.viewportSize = viewport;
+    bar.scrollPosition = listText.scrollY || 0;
+  }
+
   function renderFileList(state: FileListState, listText: any, pathText: any, panel: any, side: PanelSide): void {
     log.debug(`[SFTP RENDER] side:${side} listText:${!!listText} pathText:${!!pathText} panel:${!!panel} items:${state.items.length}`);
     if (!listText || !pathText) {
@@ -298,6 +333,8 @@ export function createSftpTab(
 
       listText.content = new StyledText(chunks);
     }
+
+    syncListScrollBar(side === 'local' ? localScrollBar : remoteScrollBar, listText, state.items.length);
   }
 
   function renderStatus(msg: string, fg?: string): void {
