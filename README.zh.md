@@ -140,7 +140,7 @@ src/
 │   └── types.ts          #   SSH 类型（SshConnectionState、错误）
 ├── sftp/                 # SFTP 文件管理器模块
 │   ├── sftp-client.ts    #   SFTP 客户端封装（readdir、mkdir、upload、download）
-│   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、键盘、scrollY 滚动）
+│   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、键盘、ScrollBox 滚动）
 │   └── types.ts          #   SFTP 类型（FileEntry、TransferTask、PanelSide）
 ├── storage/              # 持久化层
 │   ├── config.ts         #   配置文件路径（~/.ssh-cli/）

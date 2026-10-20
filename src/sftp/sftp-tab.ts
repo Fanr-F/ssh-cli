@@ -1,4 +1,4 @@
-import { Box, Text, StyledText, ScrollBarRenderable, type TextChunk } from '@opentui/core';
+import { Box, ScrollBox, Text, StyledText, type TextChunk } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
 import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
@@ -173,28 +173,29 @@ export function createSftpTab(
   let cmdHistoryIdx = -1;
 
   // ── Build the UI ──────────────────────────────────────────────
-  // OpenTUI 0.6.6 has no composition factory for ScrollBar, so build it with an
-  // explicit RenderContext (taken from the render root) and pass the instance
-  // straight into Box(...) — VChild accepts a Renderable.
-  const scrollBarCtx = renderer.root.ctx;
-
-  /** Vertical scrollbar bound to a Text list that scrolls via `scrollY`. */
-  function createListScrollBar(id: string, listId: string): ScrollBarRenderable {
-    return new ScrollBarRenderable(scrollBarCtx, {
-      id,
-      orientation: 'vertical',
-      showArrows: false,
-      width: 1,
-      flexShrink: 0,
-      trackOptions: { backgroundColor: C.statusBarBg, foregroundColor: C.textDim },
-      onChange: (position: number) => {
-        const list = renderer.root.findDescendantById(listId);
-        if (list) {
-          (list as any).scrollY = position;
-        }
-        renderer.requestRender();
+  /**
+   * Wrap a file list in a ScrollBox: 滚动、滚动条、滚轮都由 OpenTUI 自己管理，
+   * 不再手写 `scrollY` 与 ScrollBar 同步。
+   */
+  function createListScrollBox(id: string, list: ReturnType<typeof Text>) {
+    return ScrollBox(
+      {
+        id,
+        width: '100%',
+        flexGrow: 1,
+        flexBasis: 0,
+        scrollY: true,
+        scrollX: false,
+        backgroundColor: C.surface,
+        contentOptions: { flexDirection: 'column' },
+        scrollbarOptions: {
+          width: 1,
+          showArrows: false,
+          trackOptions: { backgroundColor: C.statusBarBg, foregroundColor: C.textDim },
+        },
       },
-    });
+      list,
+    );
   }
 
   const headerBox = Box(
@@ -206,24 +207,24 @@ export function createSftpTab(
 
   // Local panel
   const localPathText = Text({ content: ` Local: ${localState.currentPath}`, fg: C.cyan, id: 'sftp-local-path' });
-  const localListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-local-list', wrapMode: 'none', flexGrow: 1, flexBasis: 0 });
-  const localScrollBar = createListScrollBar('sftp-local-scrollbar', 'sftp-local-list');
+  const localListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-local-list', wrapMode: 'none', width: '100%' });
+  const localScroll = createListScrollBox('sftp-local-scroll', localListText);
   const localPanel = Box(
-    { id: 'sftp-local-panel', flexDirection: 'column', flexGrow: 1, backgroundColor: C.surface, paddingX: 1 },
+    { id: 'sftp-local-panel', flexDirection: 'column', flexGrow: 1, flexBasis: 0, backgroundColor: C.surface, paddingX: 1 },
     localPathText,
     Text({ content: '', fg: C.border, width: '100%' }),
-    Box({ flexDirection: 'row', flexGrow: 1, flexBasis: 0 }, localListText, localScrollBar),
+    localScroll,
   );
 
   // Remote panel
   const remotePathText = Text({ content: ` Remote: ${remoteState.currentPath}`, fg: C.cyan, id: 'sftp-remote-path' });
-  const remoteListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-remote-list', wrapMode: 'none', flexGrow: 1, flexBasis: 0 });
-  const remoteScrollBar = createListScrollBar('sftp-remote-scrollbar', 'sftp-remote-list');
+  const remoteListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-remote-list', wrapMode: 'none', width: '100%' });
+  const remoteScroll = createListScrollBox('sftp-remote-scroll', remoteListText);
   const remotePanel = Box(
-    { id: 'sftp-remote-panel', flexDirection: 'column', flexGrow: 1, backgroundColor: C.surface, paddingX: 1 },
+    { id: 'sftp-remote-panel', flexDirection: 'column', flexGrow: 1, flexBasis: 0, backgroundColor: C.surface, paddingX: 1 },
     remotePathText,
     Text({ content: '', fg: C.border, width: '100%' }),
-    Box({ flexDirection: 'row', flexGrow: 1, flexBasis: 0 }, remoteListText, remoteScrollBar),
+    remoteScroll,
   );
 
   // Status bar
@@ -259,6 +260,8 @@ export function createSftpTab(
   let _resolvedLocalList: any = null;
   let _resolvedRemotePath: any = null;
   let _resolvedRemoteList: any = null;
+  let _resolvedLocalScroll: any = null;
+  let _resolvedRemoteScroll: any = null;
   let _resolvedStatus: any = null;
   let _resolvedLocalPanel: any = null;
   let _resolvedRemotePanel: any = null;
@@ -272,17 +275,24 @@ export function createSftpTab(
     _resolvedStatus = root?.findDescendantById('sftp-status') ?? null;
     _resolvedLocalPanel = root?.findDescendantById('sftp-local-panel') ?? null;
     _resolvedRemotePanel = root?.findDescendantById('sftp-remote-panel') ?? null;
+    _resolvedLocalScroll = root?.findDescendantById('sftp-local-scroll') ?? null;
+    _resolvedRemoteScroll = root?.findDescendantById('sftp-remote-scroll') ?? null;
+    // ScrollBox 默认可聚焦；文件列表的按键由本组件统一处理，别让它抢焦点
+    if (_resolvedLocalScroll) _resolvedLocalScroll.focusable = false;
+    if (_resolvedRemoteScroll) _resolvedRemoteScroll.focusable = false;
     log.debug(`[SFTP RESOLVE] root:${!!root} localPath:${!!_resolvedLocalPath} localList:${!!_resolvedLocalList} remotePath:${!!_resolvedRemotePath} remoteList:${!!_resolvedRemoteList} status:${!!_resolvedStatus} localPanel:${!!_resolvedLocalPanel} remotePanel:${!!_resolvedRemotePanel}`);
   }
 
   // ── Render functions ──────────────────────────────────────────
-  /** Push the Text list's current scroll state into its ScrollBar. */
-  function syncListScrollBar(bar: ScrollBarRenderable | null, listText: any, itemCount: number): void {
-    if (!bar || !listText || bar.isDestroyed) return;
-    const viewport = Math.max(1, Math.floor(listText.height || 1));
-    bar.scrollSize = itemCount;
-    bar.viewportSize = viewport;
-    bar.scrollPosition = listText.scrollY || 0;
+  /** 让选中行保持在视口内（ScrollBox 自带滚动，只需按需 scrollTo）。 */
+  function ensureIndexVisible(scroll: any, index: number): void {
+    if (!scroll || scroll.isDestroyed) return;
+    const viewport = Math.max(1, Math.floor(scroll.viewport?.height || scroll.height || 1));
+    if (index < scroll.scrollTop) {
+      scroll.scrollTo(index);
+    } else if (index >= scroll.scrollTop + viewport) {
+      scroll.scrollTo(index - viewport + 1);
+    }
   }
 
   function renderFileList(state: FileListState, listText: any, pathText: any, panel: any, side: PanelSide): void {
@@ -334,7 +344,10 @@ export function createSftpTab(
       listText.content = new StyledText(chunks);
     }
 
-    syncListScrollBar(side === 'local' ? localScrollBar : remoteScrollBar, listText, state.items.length);
+    ensureIndexVisible(
+      side === 'local' ? _resolvedLocalScroll : _resolvedRemoteScroll,
+      state.selectedIndex,
+    );
   }
 
   function renderStatus(msg: string, fg?: string): void {
@@ -926,15 +939,11 @@ export function createSftpTab(
     }
 
     const state = activeSide === 'local' ? localState : remoteState;
-    const listText = activeSide === 'local' ? _resolvedLocalList : _resolvedRemoteList;
 
-    // Up/Down — navigate
+    // Up/Down — navigate（滚动由 renderFileList → ensureIndexVisible 处理）
     if (key.name === 'up') {
       if (state.selectedIndex > 0) {
         state.selectedIndex--;
-        if (listText && state.selectedIndex < listText.scrollY) {
-          listText.scrollY = state.selectedIndex;
-        }
       }
       resolveAll();
       renderFileList(state, activeSide === 'local' ? _resolvedLocalList : _resolvedRemoteList,
@@ -946,12 +955,6 @@ export function createSftpTab(
     if (key.name === 'down') {
       if (state.selectedIndex < state.items.length - 1) {
         state.selectedIndex++;
-        if (listText) {
-          const h = listText.height || 1;
-          if (state.selectedIndex >= listText.scrollY + h) {
-            listText.scrollY = state.selectedIndex - h + 1;
-          }
-        }
       }
       resolveAll();
       renderFileList(state, activeSide === 'local' ? _resolvedLocalList : _resolvedRemoteList,

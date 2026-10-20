@@ -145,7 +145,7 @@ src/
 │   └── types.ts          #   SSH types (SshConnectionState, errors)
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    #   SFTP client wrapper (readdir, mkdir, upload, download)
-│   ├── sftp-tab.ts       #   SFTP dual-panel tab (cmd mode, keyboard, scrollY)
+│   ├── sftp-tab.ts       #   SFTP dual-panel tab (cmd mode, keyboard, ScrollBox scrolling)
 │   └── types.ts          #   SFTP types (FileEntry, TransferTask, PanelSide)
 ├── storage/              # Persistence layer
 │   ├── config.ts         #   Config file paths (~/.ssh-cli/)
@@ -439,7 +439,7 @@ src/
 │   └── types.ts          #   SSH 类型（SshConnectionState、错误）
 ├── sftp/                 # SFTP 文件管理器模块
 │   ├── sftp-client.ts    #   SFTP 客户端封装（readdir、mkdir、upload、download）
-│   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、键盘、scrollY 滚动）
+│   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、键盘、ScrollBox 滚动）
 │   └── types.ts          #   SFTP 类型（FileEntry、TransferTask、PanelSide）
 ├── storage/              # 持久化层
 │   ├── config.ts         #   配置文件路径（~/.ssh-cli/）

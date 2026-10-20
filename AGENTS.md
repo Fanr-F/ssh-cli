@@ -25,7 +25,7 @@ src/
 │   └── types.ts          # SSH types (SshConnectionState, errors)
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    # SFTP client wrapper (readdir, mkdir, upload, download, etc.)
-│   ├── sftp-tab.ts       # SFTP dual-panel tab (cmd mode, keyboard, scrollY scrolling)
+│   ├── sftp-tab.ts       # SFTP dual-panel tab (cmd mode, keyboard, ScrollBox scrolling)
 │   └── types.ts          # SFTP types (FileEntry, TransferTask, PanelSide)
 ├── storage/              # Persistence layer (plain JSON, NO encryption)
 │   ├── config.ts         # Config file paths (~/.ssh-cli/)
@@ -127,7 +127,7 @@ onMouseDrag: (e: MouseEvent) => {
 - **Independent SSH connections**: Each SFTP tab creates its own SSH connection
 - **Command line mode** (`:`): persistent mode, Enter executes but stays in mode, Esc exits
 - **Commands**: `upload <local> <remote>`, `download <remote> <local>`, `mkdir <path>`, `rm <path>`, `rename <old> <new>`, `cd <path>`
-- **ScrollY scrolling**: Uses `listText.scrollY` to sync keyboard navigation with file list
+- **ScrollBox scrolling**: Each list is a `ScrollBox` (built-in scrollbar / wheel / auto-hide); `ensureIndexVisible()` calls `scrollTo()` to keep the selected row in view
 - **Remote cd resolution**: Relative paths resolved against `remoteState.currentPath`
 - **Tab close independence**: Closing one tab doesn't affect others
 
