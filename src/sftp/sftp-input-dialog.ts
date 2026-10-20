@@ -1,7 +1,6 @@
-import { Box, Text, StyledText, type TextChunk } from '@opentui/core';
+import { Box, Text, InputRenderable } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
 import { createLogger } from '../logger';
-import { toRGBA } from '../color';
 
 const log = createLogger('sftp-dialog');
 
@@ -30,27 +29,12 @@ export interface InputDialogAPI {
   onError(msg: string): void;
 }
 
-/** Create aStyledText with cursor highlight */
-function createStyledWithCursor(text: string, pos: number): StyledText {
-  const chunks: TextChunk[] = [];
-  const cursorFg = toRGBA('#1a1b26');
-  const cursorBg = toRGBA(C.cursorBg);
-  const fieldFg = toRGBA(C.fieldText);
-  for (let i = 0; i < text.length; i++) {
-    if (i === pos) {
-      chunks.push({ __isChunk: true, text: text[i], fg: cursorFg, bg: cursorBg, attributes: 0 });
-    } else {
-      chunks.push({ __isChunk: true, text: text[i], fg: fieldFg, attributes: 0 });
-    }
-  }
-  if (pos >= text.length) {
-    chunks.push({ __isChunk: true, text: ' ', fg: cursorFg, bg: cursorBg, attributes: 0 });
-  }
-  return new StyledText(chunks);
-}
-
 /**
  * Create a path input dialog for SFTP upload/download.
+ *
+ * Editing (cursor movement, insertion, selection, undo) is delegated to
+ * OpenTUI's `InputRenderable`; this module only owns the dialog chrome,
+ * the Enter/Esc semantics and the error line.
  *
  * @param renderer - OpenTUI renderer
  * @param title - Dialog title (e.g. "Upload File" or "Download File")
@@ -67,9 +51,19 @@ export function createInputDialog(
   onSubmit: (path: string) => void,
   onCancel: () => void,
 ): InputDialogAPI {
-  let inputValue = '';
-  let cursorPos = 0;
   let errorMsg = '';
+
+  // 单行输入框。编辑、光标、选区、撤销全部由 OpenTUI 负责。
+  const input = new InputRenderable(renderer.root.ctx, {
+    id: 'sftp-input-control',
+    width: '100%',
+    textColor: C.fieldText,
+    focusedTextColor: C.fieldText,
+    placeholder,
+    placeholderColor: C.labelFg,
+    cursorColor: C.cursorBg,
+    cursorStyle: { style: 'block', blinking: true },
+  });
 
   // ── Build overlay ──────────────────────────────────────────
   const overlay = Box(
@@ -102,18 +96,18 @@ export function createInputDialog(
       Text({ content: '' }),
       // Label
       Text({ content: ` ${label}`, fg: C.labelFg }),
-      // Input field
+      // Input field (border + one content row)
       Box(
         {
           id: 'sftp-input-field',
           flexDirection: 'row',
-          height: 1,
+          height: 3,
           backgroundColor: C.fieldBg,
           border: true,
-          borderColor: C.fieldBorder,
+          borderColor: C.fieldFocusedBorder,
           paddingX: 1,
         },
-        Text({ content: placeholder, fg: C.labelFg, id: 'sftp-input-text' }),
+        input,
       ),
       // Error message
       Text({ content: '', fg: C.errorFg, id: 'sftp-input-error' }),
@@ -129,20 +123,8 @@ export function createInputDialog(
 
   renderer.root.add(overlay);
 
-  // ── Resolve real renderables ────────────────────────────────
-  let _resolvedInputText: any = null;
+  // ── Error line ─────────────────────────────────────────────
   let _resolvedErrorText: any = null;
-  let _resolvedField: any = null;
-
-  function getInputText(): any {
-    if (!_resolvedInputText) {
-      const dialog = renderer.root.findDescendantById('sftp-input-dialog');
-      if (dialog) {
-        _resolvedInputText = dialog.findDescendantById('sftp-input-text');
-      }
-    }
-    return _resolvedInputText;
-  }
 
   function getErrorText(): any {
     if (!_resolvedErrorText) {
@@ -152,36 +134,6 @@ export function createInputDialog(
       }
     }
     return _resolvedErrorText;
-  }
-
-  function getField(): any {
-    if (!_resolvedField) {
-      _resolvedField = renderer.root.findDescendantById('sftp-input-field');
-    }
-    return _resolvedField;
-  }
-
-  // ── Render input field ─────────────────────────────────────
-  function renderInput(): void {
-    const inputText = getInputText();
-    if (!inputText) return;
-
-    const displayText = inputValue || placeholder;
-    const fg = inputValue ? C.fieldText : C.labelFg;
-
-    if (inputValue) {
-      inputText.content = createStyledWithCursor(inputValue, cursorPos);
-    } else {
-      inputText.content = placeholder;
-      inputText.fg = C.labelFg;
-    }
-
-    const field = getField();
-    if (field) {
-      field.borderColor = C.fieldFocusedBorder;
-    }
-
-    renderer.requestRender();
   }
 
   function renderError(): void {
@@ -195,13 +147,14 @@ export function createInputDialog(
   // ── Public API ──────────────────────────────────────────────
   const api: InputDialogAPI = {
     focus(): void {
-      renderInput();
+      input.focus();
+      renderer.requestRender();
     },
 
     handleKey(key: KeyEvent): void {
-      // Enter — submit
-      if (key.name === 'enter') {
-        const path = inputValue.trim();
+      // Enter — submit（终端实际解析出的名字是 `return`，`enter` 兼容 kitty 键盘协议）
+      if (key.name === 'enter' || key.name === 'return') {
+        const path = input.value.trim();
         if (!path) {
           errorMsg = '请输入路径';
           renderError();
@@ -219,77 +172,31 @@ export function createInputDialog(
         return;
       }
 
-      // Backspace — delete char before cursor
-      if (key.name === 'backspace') {
-        if (cursorPos > 0) {
-          inputValue = inputValue.slice(0, cursorPos - 1) + inputValue.slice(cursorPos);
-          cursorPos--;
-          errorMsg = '';
-          renderError();
-          renderInput();
-        }
-        return;
-      }
-
-      // Delete — delete char at cursor
-      if (key.name === 'delete') {
-        if (cursorPos < inputValue.length) {
-          inputValue = inputValue.slice(0, cursorPos) + inputValue.slice(cursorPos + 1);
-          renderInput();
-        }
-        return;
-      }
-
-      // Arrow keys
-      if (key.name === 'left') {
-        if (cursorPos > 0) cursorPos--;
-        renderInput();
-        return;
-      }
-      if (key.name === 'right') {
-        if (cursorPos < inputValue.length) cursorPos++;
-        renderInput();
-        return;
-      }
-      if (key.name === 'home') {
-        cursorPos = 0;
-        renderInput();
-        return;
-      }
-      if (key.name === 'end') {
-        cursorPos = inputValue.length;
-        renderInput();
-        return;
-      }
-
-      // Ctrl+U — clear input
+      // Ctrl+U — clear the whole field（保留原对话框语义；
+      // Input 自带的绑定只删到行首）
       if (key.ctrl && key.name === 'u') {
-        inputValue = '';
-        cursorPos = 0;
+        input.value = '';
         errorMsg = '';
         renderError();
-        renderInput();
         return;
       }
 
-      // Regular character input
-      // NOTE: KeyEvent has no `alt` field (ParsedKey exposes `meta`/`option` instead),
-      // so `!key.alt` used to be dead code. `!key.meta` is the actual Alt guard.
-      if (key.sequence && !key.ctrl && !key.meta) {
-        inputValue += key.sequence;
-        cursorPos += key.sequence.length;
+      input.handleKeyPress(key);
+
+      if (errorMsg) {
         errorMsg = '';
         renderError();
-        renderInput();
       }
     },
 
     destroy(): void {
-      const overlay = renderer.root.findDescendantById('sftp-input-overlay');
-      if (overlay && overlay.parent) {
+      input.blur();
+      const overlayInstance = renderer.root.findDescendantById('sftp-input-overlay');
+      if (overlayInstance && overlayInstance.parent) {
         // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛错
-        overlay.parent.remove(overlay);
+        overlayInstance.parent.remove(overlayInstance);
       }
+      input.destroy();
       renderer.requestRender();
     },
 

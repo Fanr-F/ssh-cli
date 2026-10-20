@@ -389,6 +389,8 @@ export class App {
           }
         }
       } else if (this.focus === 'form' && this.form) {
+        // 阻止已聚焦的 InputRenderable 再处理一次同一个 paste 事件
+        event.preventDefault();
         for (const ch of text) {
           const fakeKey = createFakeKeyEvent(ch);
           this.form.handleKey(fakeKey);
