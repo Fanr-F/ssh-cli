@@ -1,45 +1,38 @@
-import { BoxRenderable, TextRenderable, StyledText } from "@opentui/core";
+import { BoxRenderable, TextRenderable, StyledText, type TextChunk } from "@opentui/core";
 import type { CliRenderer, KeyEvent, MouseEvent, RenderContext } from "@opentui/core";
 import type { ConnectionConfig } from "../types/connection.js";
 import { createLogger } from "../logger";
+import { toRGBA } from "../color";
 
 const logForm = createLogger('form');
 
 /** Create a StyledText from a plain string with optional per-char styling */
 function makeStyledText(text: string, fg?: string): StyledText {
-  const chunks: Array<{
-    __isChunk: true;
-    text: string;
-    fg?: string;
-    bg?: string;
-    attributes: number;
-  }> = [];
+  const chunks: TextChunk[] = [];
+  const color = toRGBA(fg);
   for (const ch of text) {
-    chunks.push({ __isChunk: true, text: ch, fg, attributes: 0 });
+    chunks.push({ __isChunk: true, text: ch, fg: color, attributes: 0 });
   }
   return new StyledText(chunks);
 }
 
 /** Create StyledText with cursor character highlighted (background color) */
 function createStyledWithCursor(text: string, pos: number, fg: string = C.fieldText): StyledText {
-  const chunks: Array<{
-    __isChunk: true;
-    text: string;
-    fg?: string;
-    bg?: string;
-    attributes: number;
-  }> = [];
+  const chunks: TextChunk[] = [];
+  const fieldFg = toRGBA(fg);
+  const cursorFg = toRGBA('#1a1b26');
+  const cursorBg = toRGBA(C.cursorBg);
   for (let i = 0; i < text.length; i++) {
     if (i === pos) {
       // Highlight character at cursor position
-      chunks.push({ __isChunk: true, text: text[i], fg: '#1a1b26', bg: C.cursorBg, attributes: 0 });
+      chunks.push({ __isChunk: true, text: text[i], fg: cursorFg, bg: cursorBg, attributes: 0 });
     } else {
-      chunks.push({ __isChunk: true, text: text[i], fg, attributes: 0 });
+      chunks.push({ __isChunk: true, text: text[i], fg: fieldFg, attributes: 0 });
     }
   }
   // When cursor is at end, add a cursor marker (space with inverted colors)
   if (pos >= text.length && text.length > 0) {
-    chunks.push({ __isChunk: true, text: ' ', fg: '#1a1b26', bg: C.cursorBg, attributes: 0 });
+    chunks.push({ __isChunk: true, text: ' ', fg: cursorFg, bg: cursorBg, attributes: 0 });
   }
   return new StyledText(chunks);
 }
@@ -861,7 +854,8 @@ export function createConnectionForm(
   function destroy() {
     hasFocus = false;
     if (overlay.parent) {
-      overlay.parent.remove(overlay.id);
+      // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛错
+      overlay.parent.remove(overlay);
     }
     onSubmitCb = null;
     onCancelCb = null;

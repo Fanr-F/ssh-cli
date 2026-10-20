@@ -142,8 +142,9 @@ export function createSidebar(
     if (!instance) return;
 
     // Remove old children from the actual Renderable.
-    for (const id of childIds) {
-      instance.remove(id);
+    // Since @opentui/core 0.6.x remove() takes the renderable object itself, not its id.
+    for (const child of instance.getChildren() ?? []) {
+      if (childIds.includes(child.id)) instance.remove(child);
     }
 
     // Insert fresh children.

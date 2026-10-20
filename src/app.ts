@@ -55,7 +55,9 @@ export class App {
   private store!: ConnectionStore;
   private mainContainer!: ReturnType<typeof Box>;
   private toolbar!: ReturnType<typeof Box>;
-  private sidebar!: ReturnType<typeof ScrollBox> & SidebarAPI;
+  // Omit 让 SidebarAPI 的同名成员优先：OpenTUI 0.6 起 Renderable 新增了 getWidth(): Value，
+  // 与 SidebarAPI.getWidth(): number 冲突，直接取交集会让 getWidth() 的返回值变成 VNode。
+  private sidebar!: Omit<ReturnType<typeof ScrollBox>, keyof SidebarAPI> & SidebarAPI;
   private terminalPanel!: TerminalPanelAPI;
   private statusBar!: StatusBarAPI;
   private tabBar!: TabBarAPI;
@@ -211,7 +213,7 @@ export class App {
   private setupGlobalKeys(): void {
     this.renderer.keyInput.on('keypress', async (key: KeyEvent) => {
       const seqHex = [...(key.sequence ?? '')].map(c => `0x${c.charCodeAt(0).toString(16).padStart(2,'0')}`).join(' ');
-      logDebug(`[KEY] name=${key.name} ctrl=${key.ctrl} shift=${key.shift} alt=${key.alt} seqHex=[${seqHex}] raw=${JSON.stringify(key.sequence)}`);
+      logDebug(`[KEY] name=${key.name} ctrl=${key.ctrl} shift=${key.shift} meta=${key.meta} seqHex=[${seqHex}] raw=${JSON.stringify(key.sequence)}`);
 
       // Global: Ctrl+Q → quit
       if (key.ctrl && key.name === 'q') { this.shutdown(); return; }
@@ -244,7 +246,8 @@ export class App {
       }
 
       // Global: Alt+Up/Down → navigate sidebar connections
-      // OpenTUI doesn't set key.alt, detect via xterm escape sequence: ESC[1;3A (Alt+Up) / ESC[1;3B (Alt+Down)
+      // KeyEvent has no `alt` field (ParsedKey exposes `meta`/`option` instead), so Alt is
+      // detected via the raw xterm escape sequence: ESC[1;3A (Alt+Up) / ESC[1;3B (Alt+Down)
       const seq = key.sequence ?? '';
       logDebug(`[KEY ALT] seq.length=${seq.length} seq[0]=0x${(seq.charCodeAt(0)||0).toString(16)} seq === altLeft? ${seq === '\x1b[1;3D'} seq === altRight? ${seq === '\x1b[1;3C'}`);
       if (seq === '\x1b[1;3A') { this.sidebar.selectPrevious(); key.preventDefault(); return; }
@@ -698,7 +701,10 @@ export class App {
     if (tab.sftpTab) {
       tab.sftpTab.destroy();
       const rightPanel = this.renderer.root.findDescendantById('right-panel');
-      if (rightPanel) rightPanel.remove(tab.sftpTab.id);
+      // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛
+      // "remove expects a renderable child object"，需先取回节点。
+      const sftpRoot = rightPanel?.findDescendantById(tab.sftpTab.id);
+      if (rightPanel && sftpRoot) rightPanel.remove(sftpRoot);
     }
 
     // Disconnect own SSH connection
@@ -792,6 +798,13 @@ export class App {
     }
     this.tabs.clear();
     this.renderer.destroy();
+    // OpenTUI 0.6 起 destroy() 是异步恢复终端（退出备用屏、关闭鼠标模式等）。
+    // 必须等 closed 落地再退出，否则可能残留鼠标模式 / 备用屏。
+    try {
+      await this.renderer.closed;
+    } catch {
+      // 输出流出错时 closed 会 reject；此处已在退出流程，忽略即可
+    }
     process.exit(0);
   }
 

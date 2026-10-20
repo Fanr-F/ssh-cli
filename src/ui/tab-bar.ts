@@ -74,7 +74,10 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
           flexDirection: 'row',
           paddingX: 1,
           backgroundColor: isActive ? C.bgActive : undefined,
-          borderBottom: isActive ? C.borderActive : C.border,
+          // NOTE: this was `borderBottom: <color>`, which is not an OpenTUI Box option and
+          // was silently ignored. A real bottom border (`border: ['bottom']`) would consume
+          // the single row this 1-high tab bar has and clip the tab titles, so the active
+          // tab stays indicated by its background colour only.
           onMouseDown: (e: MouseEvent) => {
             e.stopPropagation();
             const now = Date.now();
@@ -102,9 +105,10 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
     const instance = getInstance();
     if (!instance) return;
 
-    // Remove old children by ID
-    for (const id of childIds) {
-      instance.remove(id);
+    // Remove old children. Since @opentui/core 0.6.x remove() takes the renderable
+    // object itself, not its id (0.4.0 looked the id up and skipped if missing).
+    for (const child of instance.getChildren() ?? []) {
+      if (childIds.includes(child.id)) instance.remove(child);
     }
 
     // Insert fresh children

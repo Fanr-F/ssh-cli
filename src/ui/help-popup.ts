@@ -1,4 +1,4 @@
-import { Box, Text, ScrollBox } from '@opentui/core';
+import { Box, Text, ScrollBox, TextAttributes } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 
 // ── Tokyo Night palette ───────────────────────────────────────
@@ -153,7 +153,7 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
       paddingX: 1,
       paddingY: 1,
     });
-    titleBox.add(Text({ content: 'Keyboard Shortcuts', fg: C.cyan, bold: true }));
+    titleBox.add(Text({ content: 'Keyboard Shortcuts', fg: C.cyan, attributes: TextAttributes.BOLD }));
     lines.push(titleBox);
 
     // Separator
@@ -174,7 +174,7 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
 
       // Category header
       const catBox = Box({ paddingX: 1, paddingY: 1 });
-      catBox.add(Text({ content: category.category, fg: C.yellow, bold: true }));
+      catBox.add(Text({ content: category.category, fg: C.yellow, attributes: TextAttributes.BOLD }));
       lines.push(catBox);
 
       // Keys
@@ -281,7 +281,7 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
     ScrollBox(
       {
         id: 'help-scroll',
-        flex: 1,
+        flexGrow: 1,
         scrollY: true,
         scrollX: false,
         stickyScroll: false,

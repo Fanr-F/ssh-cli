@@ -1,6 +1,7 @@
-import { StyledText } from '@opentui/core';
+import { StyledText, type TextChunk } from '@opentui/core';
 import { createVtermScreen, type VtermScreen, type ScreenCell } from 'vterm.js';
 import { createLogger } from '../logger';
+import { toRGBA } from '../color';
 
 const log = createLogger('terminal');
 
@@ -159,12 +160,18 @@ export class VtermAdapter {
         const topText = this.screen.getLine(0).map(c => c.char).join('').trimEnd();
         const bottomText = this.screen.getLine(this._rows - 1).map(c => c.char).join('').trimEnd();
         const cursor = this.screen.getCursorPosition();
-        log.debug({ data: text.replace(/\x1b/g, '\\e').replace(/\r/g, '\\r').replace(/\n/g, '\\n'), top: topText, bottom: bottomText, cursorY: cursor.y, sb: this._scrollbackBuffer.length }, 'FEED');
+        log.debug('FEED data={data} top={top} bottom={bottom} cursorY={cursorY} sb={sb}', {
+          data: text.replace(/\x1b/g, '\\e').replace(/\r/g, '\\r').replace(/\n/g, '\\n'),
+          top: topText,
+          bottom: bottomText,
+          cursorY: cursor.y,
+          sb: this._scrollbackBuffer.length,
+        });
       }
 
       this._generation++;
     } catch (err) {
-      log.error({ error: err }, 'Failed to feed data to vterm');
+      log.error('Failed to feed data to vterm: {error}', { error: err });
     }
   }
 
@@ -213,16 +220,18 @@ export class VtermAdapter {
       const newTopText = newTopLine.map(c => c.char).join('').trimEnd();
       const oldBottomText = oldBottomLine.map(c => c.char).join('').trimEnd();
       const newBottomText = newBottomLine.map(c => c.char).join('').trimEnd();
-      log.debug({
-        topChanged: true,
-        bottomSame: bottomStillSame,
-        oldTop: oldTopText,
-        newTop: newTopText,
-        oldBottom: oldBottomText,
-        newBottom: newBottomText,
-        cursorY: this._prevCursorY,
-        rows: this._rows,
-      }, 'SCROLL_DETECT: top line changed');
+      log.debug(
+        'SCROLL_DETECT: top line changed bottomSame={bottomSame} oldTop={oldTop} newTop={newTop} oldBottom={oldBottom} newBottom={newBottom} cursorY={cursorY} rows={rows}',
+        {
+          bottomSame: bottomStillSame,
+          oldTop: oldTopText,
+          newTop: newTopText,
+          oldBottom: oldBottomText,
+          newBottom: newBottomText,
+          cursorY: this._prevCursorY,
+          rows: this._rows,
+        },
+      );
     }
 
     if (bottomStillSame) {
@@ -276,7 +285,10 @@ export class VtermAdapter {
     }
     
     if (scrolledCount > 0) {
-      log.debug({ scrolledCount, bufferSize: this._scrollbackBuffer.length }, 'Scrollback captured lines');
+      log.debug('Scrollback captured lines: {scrolledCount} (buffer={bufferSize})', {
+        scrolledCount,
+        bufferSize: this._scrollbackBuffer.length,
+      });
     }
     
     // Update prev screen state
@@ -508,20 +520,18 @@ export class VtermAdapter {
    * Convert vterm.js ScreenCell array to OpenTUI StyledText.
    * Groups consecutive cells with the same styling into chunks.
    *
-   * IMPORTANT: fg/bg must be hex strings ("#RRGGBB"), NOT RGBA objects.
-   * OpenTUI's StyledChunkStruct.mapValue() calls normalizeColorValue()
-   * → parseColor() internally to convert strings to RGBA.
+   * IMPORTANT: fg/bg must be real RGBA objects, NOT hex strings.
+   * Up to @opentui/core 0.4.0 the chunk encoder normalised hex strings, but 0.6.x
+   * dereferences the color's internal buffer directly and throws
+   * `undefined is not an object (evaluating 'source[index]')`.
+   * `toRGBA()` memoises the conversion since this runs per row, per frame.
    */
   private cellsToStyledText(cells: ScreenCell[]): StyledText {
-    const chunks: Array<{
-      __isChunk: true;
-      text: string;
-      fg?: string;
-      bg?: string;
-      attributes: number;
-    }> = [];
+    const chunks: TextChunk[] = [];
 
-    // Track current chunk's text and styling for merging
+    // Track current chunk's text and styling for merging.
+    // Colors are kept as hex strings while merging (that is the merge key) and only
+    // converted to RGBA when a chunk is actually flushed.
     let currentText = '';
     let currentFg: string | undefined;
     let currentBg: string | undefined;
@@ -531,8 +541,8 @@ export class VtermAdapter {
         chunks.push({
           __isChunk: true,
           text: currentText,
-          fg: currentFg,
-          bg: currentBg,
+          fg: toRGBA(currentFg),
+          bg: toRGBA(currentBg),
           attributes: 0,
         });
       }

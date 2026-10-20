@@ -1,6 +1,7 @@
-import { Box, Text, StyledText } from '@opentui/core';
+import { Box, Text, StyledText, type TextChunk } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
 import { createLogger } from '../logger';
+import { toRGBA } from '../color';
 
 const log = createLogger('sftp-dialog');
 
@@ -31,22 +32,19 @@ export interface InputDialogAPI {
 
 /** Create aStyledText with cursor highlight */
 function createStyledWithCursor(text: string, pos: number): StyledText {
-  const chunks: Array<{
-    __isChunk: true;
-    text: string;
-    fg?: string;
-    bg?: string;
-    attributes: number;
-  }> = [];
+  const chunks: TextChunk[] = [];
+  const cursorFg = toRGBA('#1a1b26');
+  const cursorBg = toRGBA(C.cursorBg);
+  const fieldFg = toRGBA(C.fieldText);
   for (let i = 0; i < text.length; i++) {
     if (i === pos) {
-      chunks.push({ __isChunk: true, text: text[i], fg: '#1a1b26', bg: C.cursorBg, attributes: 0 });
+      chunks.push({ __isChunk: true, text: text[i], fg: cursorFg, bg: cursorBg, attributes: 0 });
     } else {
-      chunks.push({ __isChunk: true, text: text[i], fg: C.fieldText, attributes: 0 });
+      chunks.push({ __isChunk: true, text: text[i], fg: fieldFg, attributes: 0 });
     }
   }
   if (pos >= text.length) {
-    chunks.push({ __isChunk: true, text: ' ', fg: '#1a1b26', bg: C.cursorBg, attributes: 0 });
+    chunks.push({ __isChunk: true, text: ' ', fg: cursorFg, bg: cursorBg, attributes: 0 });
   }
   return new StyledText(chunks);
 }
@@ -275,7 +273,9 @@ export function createInputDialog(
       }
 
       // Regular character input
-      if (key.sequence && !key.ctrl && !key.alt && !key.meta) {
+      // NOTE: KeyEvent has no `alt` field (ParsedKey exposes `meta`/`option` instead),
+      // so `!key.alt` used to be dead code. `!key.meta` is the actual Alt guard.
+      if (key.sequence && !key.ctrl && !key.meta) {
         inputValue += key.sequence;
         cursorPos += key.sequence.length;
         errorMsg = '';
@@ -287,7 +287,8 @@ export function createInputDialog(
     destroy(): void {
       const overlay = renderer.root.findDescendantById('sftp-input-overlay');
       if (overlay && overlay.parent) {
-        overlay.parent.remove(overlay.id);
+        // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛错
+        overlay.parent.remove(overlay);
       }
       renderer.requestRender();
     },

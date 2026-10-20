@@ -55,7 +55,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     });
 
     this.client.on('error', (err: Error) => {
-      log.error({ error: err.message }, 'SSH connection error');
+      log.error('SSH connection error: {error}', { error: err.message });
       this._lastError = err; // Track the error
       this.emit('error', err);
     });
@@ -74,7 +74,11 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
         return;
       }
 
-      log.info({ host: config.host, port: config.port, username: config.username }, 'Connecting to SSH server');
+      log.info('Connecting to SSH server: {host}:{port} as {username}', {
+        host: config.host,
+        port: config.port,
+        username: config.username,
+      });
       this.setState(SshConnectionState.Connecting);
 
       // Build config using auth.ts (handles both key and password auth)

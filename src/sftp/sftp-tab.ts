@@ -1,8 +1,9 @@
-import { Box, Text, StyledText } from '@opentui/core';
+import { Box, Text, StyledText, type TextChunk } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
 import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
+import { toRGBA } from '../color';
 import { basename, isAbsolute, resolve } from 'node:path';
 
 const log = createLogger('sftp-tab');
@@ -270,7 +271,10 @@ export function createSftpTab(
       listText.content = ' (empty)';
       listText.fg = C.textDim;
     } else {
-      const chunks: any[] = [];
+      const chunks: TextChunk[] = [];
+      const selectedFg = toRGBA(C.bg);
+      const selectedBg = toRGBA(C.textDim);
+      const normalFg = toRGBA(C.textDim);
 
       for (let i = 0; i < state.items.length; i++) {
         const item = state.items[i];
@@ -282,13 +286,13 @@ export function createSftpTab(
         const line = ` ${name}${sizeStr}${timeStr} `;
 
         if (isSelected) {
-          chunks.push({ __isChunk: true, text: line, fg: C.bg, bg: C.textDim, attributes: 0 });
+          chunks.push({ __isChunk: true, text: line, fg: selectedFg, bg: selectedBg, attributes: 0 });
         } else {
-          chunks.push({ __isChunk: true, text: line, fg: C.textDim, attributes: 0 });
+          chunks.push({ __isChunk: true, text: line, fg: normalFg, attributes: 0 });
         }
 
         if (i < state.items.length - 1) {
-          chunks.push({ __isChunk: true, text: '\n', fg: C.textDim, attributes: 0 });
+          chunks.push({ __isChunk: true, text: '\n', fg: normalFg, attributes: 0 });
         }
       }
 
@@ -767,7 +771,8 @@ export function createSftpTab(
         renderStatus('Cancelled');
         return;
       }
-      if (key.sequence && !key.ctrl && !key.alt && !key.meta) {
+      // NOTE: KeyEvent has no `alt` field (ParsedKey exposes `meta`/`option`); `!key.meta` is the real Alt guard.
+      if (key.sequence && !key.ctrl && !key.meta) {
         inputBuffer += key.sequence;
         renderStatus(`Input: ${inputBuffer}_`);
         renderer.requestRender();
@@ -862,7 +867,8 @@ export function createSftpTab(
         return;
       }
       // Regular character input
-      if (key.sequence && !key.ctrl && !key.alt && !key.meta) {
+      // NOTE: KeyEvent has no `alt` field (ParsedKey exposes `meta`/`option`); `!key.meta` is the real Alt guard.
+      if (key.sequence && !key.ctrl && !key.meta) {
         cmdBuffer = cmdBuffer.slice(0, cmdCursorPos) + key.sequence + cmdBuffer.slice(cmdCursorPos);
         cmdCursorPos += key.sequence.length;
         renderStatus(`> ${cmdBuffer}_`);

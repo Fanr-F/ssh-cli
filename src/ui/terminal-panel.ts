@@ -167,8 +167,12 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       },
       onMouseScroll: (e: MouseEvent) => {
         if (scrollCallback && e.scroll) {
-          log.debug(`[TERMINAL PANEL] onMouseScroll: direction=${e.scroll.direction}, deltaY=${e.scroll.deltaY}`);
-          scrollCallback(e.scroll.direction);
+          log.debug(`[TERMINAL PANEL] onMouseScroll: direction=${e.scroll.direction}, delta=${e.scroll.delta}`);
+          // The terminal viewport only scrolls vertically — ignore horizontal wheel events
+          // (ScrollInfo.direction is 'up'|'down'|'left'|'right', the callback takes 'up'|'down').
+          if (e.scroll.direction === 'up' || e.scroll.direction === 'down') {
+            scrollCallback(e.scroll.direction);
+          }
           e.preventDefault();
         }
       },
@@ -286,7 +290,8 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
           if (childId === `tab-content-${tabId}`) {
             log.debug(`[TERMINAL PANEL] unregisterTerminal: removing child ${i} (tab-content-${tabId})`);
             try { 
-              r.connected.remove(childId); 
+              // 0.6.x remove() takes the renderable object, not its id
+              r.connected.remove(child); 
               log.debug(`[TERMINAL PANEL] unregisterTerminal: successfully removed`);
             } catch (err) {
               log.debug(`[TERMINAL PANEL] unregisterTerminal: error removing: ${err}`);
@@ -390,7 +395,8 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
         const child = children[i];
         if (child?.id === `tab-content-${tabId}`) {
           log.debug(`[TERMINAL PANEL] resizeTerminal: removing old content box at index ${i}`);
-          try { r.connected.remove(child.id); } catch {}
+          // 0.6.x remove() takes the renderable object, not its id
+          try { r.connected.remove(child); } catch {}
           break;
         }
       }
@@ -449,7 +455,9 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
         const children = r.connected.getChildren() ?? [];
         log.debug(`[TERMINAL PANEL] setTerminalContent: clearing ${children.length} old children`);
         for (let i = children.length - 1; i >= 0; i--) {
-          try { r.connected.remove(children[i]?.id ?? ''); } catch {}
+          // 0.6.x remove() takes the renderable object, not its id
+          const child = children[i];
+          try { if (child) r.connected.remove(child); } catch {}
         }
       }
       
@@ -458,9 +466,14 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       lastAddedContentBox = node;
       hasTerminalContent = true;
       
-      // Resolve children for in-place updates
+      // Resolve children for in-place updates.
+      // NOTE: `node` comes from Box(), so it is a ProxiedVNode and node.getChildren()
+      // returns another proxy rather than a real array. Resolve the underlying
+      // renderable first. (terminalRenderer.resolveChildren() is currently a no-op.)
       if (terminalRenderer) {
-        const nodeChildren = node.getChildren?.() ?? [];
+        const nodeId = (node as any)?.id;
+        const nodeInstance: any = nodeId ? renderer.root.findDescendantById(nodeId) : null;
+        const nodeChildren: any[] = nodeInstance?.getChildren?.() ?? [];
         terminalRenderer.resolveChildren(nodeChildren);
         log.debug(`[TERMINAL PANEL] setTerminalContent: resolved ${nodeChildren.length} children`);
       }
