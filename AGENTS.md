@@ -26,7 +26,6 @@ src/
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    # SFTP client wrapper (readdir, mkdir, upload, download, etc.)
 │   ├── sftp-tab.ts       # SFTP dual-panel tab (cmd mode, keyboard, scrollY scrolling)
-│   ├── sftp-input-dialog.ts # Path input dialog (used by Ctrl+U/D in terminal mode)
 │   └── types.ts          # SFTP types (FileEntry, TransferTask, PanelSide)
 ├── storage/              # Persistence layer (plain JSON, NO encryption)
 │   ├── config.ts         # Config file paths (~/.ssh-cli/)
@@ -70,7 +69,7 @@ The app uses a focus zone system: `sidebar`, `terminal`, `form`. Keyboard events
 - **Delete** — Delete selected connection
 - **Esc** — Cancel/close form
 - **↑/↓** — Navigate connection list (when sidebar focused)
-- **Ctrl+E** — Open SFTP tab (terminal mode: opens dialog for path input; SFTP mode: no-op)
+- **Ctrl+E** — Open SFTP tab
 
 ### Mouse Support
 - Mouse support enabled via `useMouse: true` in index.ts renderer config

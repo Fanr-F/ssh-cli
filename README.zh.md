@@ -141,7 +141,6 @@ src/
 ├── sftp/                 # SFTP 文件管理器模块
 │   ├── sftp-client.ts    #   SFTP 客户端封装（readdir、mkdir、upload、download）
 │   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、键盘、scrollY 滚动）
-│   ├── sftp-input-dialog.ts # 路径输入弹窗（用于 Ctrl+U/D）
 │   └── types.ts          #   SFTP 类型（FileEntry、TransferTask、PanelSide）
 ├── storage/              # 持久化层
 │   ├── config.ts         #   配置文件路径（~/.ssh-cli/）

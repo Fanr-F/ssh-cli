@@ -20,7 +20,6 @@ import { VtermAdapter } from './terminal/vterm-adapter';
 import { TerminalRenderer } from './terminal/terminal-renderer';
 import { SshConnection } from './ssh/connection';
 import { SftpClient } from './sftp/sftp-client';
-import { createInputDialog } from './sftp/sftp-input-dialog';
 import { createSftpTab, type SftpTabAPI } from './sftp/sftp-tab';
 import { logDebug, logIO } from './logger';
 
@@ -282,22 +281,6 @@ export class App {
           this.switchToTabIndex(num - 2);
           key.preventDefault(); return;
         }
-      }
-
-      // Global: Ctrl+U → upload file
-      if (key.ctrl && key.name === 'u' && this.focus === 'terminal') {
-        logDebug(`[KEY] Ctrl+U upload, focus=${this.focus}`);
-        key.preventDefault();
-        this.openUploadDialog();
-        return;
-      }
-
-      // Global: Ctrl+D → download file
-      if (key.ctrl && key.name === 'd' && this.focus === 'terminal') {
-        logDebug(`[KEY] Ctrl+D download, focus=${this.focus}`);
-        key.preventDefault();
-        this.openDownloadDialog();
-        return;
       }
 
       // Global: Ctrl+E → open SFTP tab
@@ -1003,92 +986,6 @@ export class App {
   }
 
   // ── SFTP handlers ─────────────────────────────────────────────
-
-  private openUploadDialog(): void {
-    const activeId = this.tabBar.getActiveTabId();
-    if (!activeId) {
-      this.statusBar.setStatus('No active connection');
-      this.renderer.requestRender();
-      return;
-    }
-    const tab = this.tabs.get(activeId);
-    if (!tab?.ssh.isConnected()) {
-      this.statusBar.setStatus('Not connected');
-      this.renderer.requestRender();
-      return;
-    }
-
-    const dialog = createInputDialog(
-      this.renderer,
-      'Upload File',
-      'Local path:',
-      '/path/to/local/file',
-      async (localPath: string) => {
-        this.statusBar.setStatus(`Uploading ${localPath}...`);
-        this.renderer.requestRender();
-        try {
-          const sftp = await tab.ssh.startSftp();
-          const client = new SftpClient(sftp);
-          const remotePath = localPath.split(/[/\\]/).pop() || 'file';
-          await client.upload(localPath, remotePath);
-          this.statusBar.setStatus(`Uploaded: ${remotePath}`);
-          client.close();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Upload failed';
-          this.statusBar.setStatus(`Upload failed: ${msg}`);
-        }
-        this.renderer.requestRender();
-      },
-      () => {},
-    );
-    this.form = dialog;
-    this.focusForm();
-    dialog.focus();
-    this.renderer.requestRender();
-  }
-
-  private openDownloadDialog(): void {
-    const activeId = this.tabBar.getActiveTabId();
-    if (!activeId) {
-      this.statusBar.setStatus('No active connection');
-      this.renderer.requestRender();
-      return;
-    }
-    const tab = this.tabs.get(activeId);
-    if (!tab?.ssh.isConnected()) {
-      this.statusBar.setStatus('Not connected');
-      this.renderer.requestRender();
-      return;
-    }
-
-    const dialog = createInputDialog(
-      this.renderer,
-      'Download File',
-      'Remote path:',
-      '/path/to/remote/file',
-      async (remotePath: string) => {
-        this.statusBar.setStatus(`Downloading ${remotePath}...`);
-        this.renderer.requestRender();
-        try {
-          const sftp = await tab.ssh.startSftp();
-          const client = new SftpClient(sftp);
-          const localPath = remotePath.split('/').pop() || 'file';
-          await client.download(remotePath, localPath);
-          this.statusBar.setStatus(`Downloaded: ${localPath}`);
-          client.close();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Download failed';
-          this.statusBar.setStatus(`Download failed: ${msg}`);
-        }
-        this.renderer.requestRender();
-      },
-      () => {},
-    );
-    this.form = dialog;
-    this.focusForm();
-    dialog.focus();
-    this.renderer.requestRender();
-  }
 
   private async openSftpTab(): Promise<void> {
     const activeId = this.tabBar.getActiveTabId();
