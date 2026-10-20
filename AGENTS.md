@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-**ssh-cli** is a keyboard-driven terminal-based SSH client with an interactive TUI. It manages SSH connections, authenticates with key or password, and provides a live remote shell with vterm.js terminal emulation.
+**ssh-cli** is a keyboard-driven terminal-based SSH client with an interactive TUI. It manages SSH connections, authenticates with key or password, and provides a live remote shell with native VT emulation.
 
 - **Runtime**: Bun
 - **UI Framework**: OpenTUI (@opentui/core)
-- **Terminal Emulation**: vterm.js (via vterm-adapter.ts)
+- **Terminal Emulation**: `@opentui/core` `EmbeddedTerminalRenderable` (Ghostty VT)
 - **SSH Library**: ssh2-no-cpu-features
 - **Language**: TypeScript (strict mode)
 - **Documentation**: [English](README.md) | [中文](README.zh.md)
@@ -30,12 +30,8 @@ src/
 ├── storage/              # Persistence layer (plain JSON, NO encryption)
 │   ├── config.ts         # Config file paths (~/.ssh-cli/)
 │   └── connections.ts    # ConnectionStore CRUD
-├── terminal/             # Terminal emulation engine
-│   ├── vterm-adapter.ts  # vterm.js wrapper with scrollback buffer
-│   └── terminal-renderer.ts # OpenTUI render bridge (dirty-diff rendering)
 ├── types/                # Shared TypeScript interfaces
-│   ├── connection.ts     # ConnectionConfig interface
-│   └── terminal.ts       # Cell, CursorPosition, ScreenBufferState
+│   └── connection.ts     # ConnectionConfig interface
 └── ui/                   # OpenTUI UI components
     ├── sidebar.ts        # Connection list sidebar (ScrollBox with mouse selection)
     ├── connection-form.ts # Add/edit connection modal form
@@ -119,10 +115,12 @@ onMouseDrag: (e: MouseEvent) => {
 ```
 
 ### Multi-Tab System
-- Tabs stored in `Map<string, { vterm, renderer, ssh, config }>`
+- Tabs stored in `Map<string, { term, ssh, config, sftpClient?, sftpTab? }>`
 - Tab bar manages tab switching and closing
-- Each tab has its own VtermAdapter and TerminalRenderer
+- Each tab has its own `EmbeddedTerminalRenderable` (native, registered in `terminal-panel.ts`)
 - Active tab ID tracked via `tabBar.getActiveTabId()`
+- Key input / paste / wheel scroll / selection / resize are handled by the renderable itself;
+  the app only routes focus and global shortcuts
 
 ### SFTP File Manager
 - **Dual-panel layout**: Local (left) / Remote (right)
@@ -157,6 +155,7 @@ No test suite, no linter, no formatter configured. TypeScript strict mode enforc
 
 - **Ctrl+C does NOT exit** — `exitOnCtrlC: false` in index.ts. Ctrl+C is forwarded to SSH shell when connected, copies text when terminal has selection.
 - **ssh2-no-cpu-features** — Used over ssh2 because native cpu-features module fails on Bun.
-- **vterm.js** — Full terminal emulation, NOT custom ANSI parser. Scrollback buffer managed in vterm-adapter.ts.
+- **Native VT** — Terminal emulation is `EmbeddedTerminalRenderable` from `@opentui/core` (Ghostty VT), NOT a custom ANSI parser. Scrollback lives inside the native terminal (`maxScrollback`).
+- **No public scroll API** — PageUp/PageDown call the zig binding `contextEmbeddedTerminalScroll` via `(term as any).lib` (negative = older lines); mouse wheel scrolling is built in.
 - **No encryption** — Storage is plain JSON (~/.ssh-cli/config.json). Master password dialog was removed.
 - **Platform-specific OpenTUI** — `@opentui/core-win32-x64` is a separate dependency for Windows.

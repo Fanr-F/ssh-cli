@@ -21,7 +21,7 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 - **Connection Manager** — Add, edit, delete connections via keyboard-driven sidebar UI
 - **Plain JSON Storage** — Connections saved to `~/.ssh-cli/config.json`
 - **Dual Auth** — Supports both private key (`~/.ssh/id_rsa`, etc.) and password authentication
-- **vterm.js Terminal Emulation** — Full terminal emulation with ANSI color support via vterm.js
+- **Native Terminal Emulation** — Full VT emulation via OpenTUI's `EmbeddedTerminalRenderable` (Ghostty VT engine)
 - **Multi-Tab Support** — Open multiple SSH sessions in tabs, switch between them
 - **Keyboard Forwarding** — Type directly into the remote shell; window resize propagates PTY size
 - **Terminal Scrollback** — Scroll up/down to view previous output
@@ -125,7 +125,7 @@ All core layers are implemented and integrated.
 
 | Layer | Status |
 |---|---|
-| Engine (SSH, vterm.js, Renderer, Storage) | ✅ Complete |
+| Engine (SSH, VT, Renderer, Storage) | ✅ Complete |
 | UI Components (Sidebar, Form, Terminal Panel, StatusBar, TabBar, HelpPopup) | ✅ Complete |
 | Application Wiring (layout, keyboard routing, SSH lifecycle, multi-tab) | ✅ Complete |
 | Mouse Support (selection, copy, drag) | ✅ Complete |
@@ -150,12 +150,9 @@ src/
 ├── storage/              # Persistence layer
 │   ├── config.ts         #   Config file paths (~/.ssh-cli/)
 │   └── connections.ts    #   ConnectionStore CRUD (plain JSON)
-├── terminal/             # Terminal emulation engine
-│   ├── vterm-adapter.ts  #   vterm.js wrapper with scrollback support
-│   └── terminal-renderer.ts # OpenTUI render bridge (dirty-diff rendering)
+├── terminal/             # (removed — VT emulation is native in @opentui/core)
 ├── types/                # Shared TypeScript interfaces
-│   ├── connection.ts     #   ConnectionConfig interface
-│   └── terminal.ts       #   Cell, CursorPosition, ScreenBufferState
+│   └── connection.ts     #   ConnectionConfig interface
 └── ui/                   # OpenTUI UI components
     ├── sidebar.ts        #   Connection list sidebar
     ├── connection-form.ts #   Add/edit connection modal form
@@ -292,7 +289,6 @@ Press `Ctrl+Q` to quit the application.
 |---|---|
 | [`@opentui/core`](https://github.com/xanderjohansen/opentui) | Terminal UI framework (Box, Text, renderer, input) |
 | [`@opentui/core-win32-x64`](https://github.com/xanderjohansen/opentui) | Platform-specific OpenTUI binary for Windows x64 |
-| [`vterm.js`](https://github.com/nickmccurdy/vterm.js) | Full terminal emulation with ANSI support |
 | [`ssh2-no-cpu-features`](https://github.com/JAForbes/ssh2-no-cpu-features) | SSH2 client (cpu-features-free fork) |
 | [`@logtape/logtape`](https://github.com/dahlia/logtape) | Structured logging (zero deps, file output) |
 
@@ -301,8 +297,8 @@ Press `Ctrl+Q` to quit the application.
 - **No JSX** — OpenTUI uses an imperative VNode API (`BoxRenderable`, `TextRenderable`, etc.) for component construction
 - **Imperative API** — All UI components are classes, not functional components; state is mutated directly and re-rendered on demand
 - **`ssh2-no-cpu-features`** — Used over `ssh2` because native `cpu-features` module fails on Bun
-- **vterm.js** — Full terminal emulation instead of custom ANSI parser for better compatibility
-- **Dirty-row rendering** — The terminal renderer only redraws rows that changed (efficient for partial updates)
+- **Native VT** — Terminal emulation is OpenTUI's native `EmbeddedTerminalRenderable`, which handles ANSI parsing, keyboard encoding, selection, scrolling and scrollback
+- **No manual redraw** — The native renderable owns its buffer, so there is no per-row dirty-diff code in this project
 - **Dynamic import** — `ssh2-no-cpu-features` is imported via `await import()` because it ships ESM with top-level await
 - **File-only logging** — All logs write to `ssh-cli.log` (no console output to preserve TUI integrity)
 
@@ -319,7 +315,7 @@ Press `Ctrl+Q` to quit the application.
 - **连接管理** — 通过键盘驱动的侧边栏界面添加、编辑、删除 SSH 连接
 - **JSON 持久化** — 连接保存到 `~/.ssh-cli/config.json`
 - **双重认证** — 支持私钥（`~/.ssh/id_rsa` 等）和密码认证
-- **vterm.js 终端模拟** — 通过 vterm.js 实现完整的终端模拟和 ANSI 颜色支持
+- **原生终端模拟** — 通过 OpenTUI 的 `EmbeddedTerminalRenderable`（Ghostty VT 引擎）实现完整终端模拟
 - **多标签页支持** — 在标签页中打开多个 SSH 会话，自由切换
 - **键盘转发** — 在远程 shell 中直接输入，窗口大小变化自动调整 PTY
 - **终端历史回滚** — 向上/向下滚动查看之前的输出
@@ -423,7 +419,7 @@ Press `Ctrl+Q` to quit the application.
 
 | 层级 | 状态 |
 |---|---|
-| 引擎（SSH、vterm.js、渲染器、存储） | ✅ 完成 |
+| 引擎（SSH、VT、渲染器、存储） | ✅ 完成 |
 | UI 组件（侧边栏、表单、终端面板、状态栏、标签栏、帮助弹窗） | ✅ 完成 |
 | 应用编排（布局、键盘路由、SSH 生命周期、多标签页） | ✅ 完成 |
 | 鼠标支持（选中、复制、拖动） | ✅ 完成 |
@@ -448,12 +444,9 @@ src/
 ├── storage/              # 持久化层
 │   ├── config.ts         #   配置文件路径（~/.ssh-cli/）
 │   └── connections.ts    #   ConnectionStore CRUD（纯 JSON）
-├── terminal/             # 终端模拟引擎
-│   ├── vterm-adapter.ts  #   vterm.js 封装，支持历史回滚
-│   └── terminal-renderer.ts # OpenTUI 渲染桥接（脏行差异渲染）
+├── terminal/             # （已移除 — VT 模拟由 @opentui/core 原生提供）
 ├── types/                # 共享 TypeScript 接口
-│   ├── connection.ts     #   ConnectionConfig 接口
-│   └── terminal.ts       #   Cell、CursorPosition、ScreenBufferState
+│   └── connection.ts     #   ConnectionConfig 接口
 └── ui/                   # OpenTUI UI 组件
     ├── sidebar.ts        #   连接列表侧边栏
     ├── connection-form.ts #   添加/编辑连接模态表单
@@ -571,7 +564,6 @@ bun run build:win
 |---|---|
 | [`@opentui/core`](https://github.com/xanderjohansen/opentui) | 终端 UI 框架（Box、Text、渲染器、输入） |
 | [`@opentui/core-win32-x64`](https://github.com/xanderjohansen/opentui) | Windows x64 平台的 OpenTUI 原生依赖 |
-| [`vterm.js`](https://github.com/nickmccurdy/vterm.js) | 完整的终端模拟，支持 ANSI 颜色 |
 | [`ssh2-no-cpu-features`](https://github.com/JAForbes/ssh2-no-cpu-features) | SSH2 客户端（移除 cpu-features 的分支） |
 | [`@logtape/logtape`](https://github.com/dahlia/logtape) | 结构化日志（零依赖，文件输出） |
 
@@ -580,8 +572,8 @@ bun run build:win
 - **无 JSX** — OpenTUI 使用命令式 VNode API（`BoxRenderable`、`TextRenderable` 等）构建组件
 - **命令式 API** — 所有 UI 组件均为类而非函数组件，状态直接变更并按需重渲染
 - **`ssh2-no-cpu-features`** — 替代 `ssh2`，因为原生 `cpu-features` 模块在 Bun 上无法运行
-- **vterm.js** — 使用完整终端模拟替代自定义 ANSI 解析器，以获得更好的兼容性
-- **脏行渲染** — 终端渲染器只重绘发生变化的行，对局部更新高效
+- **原生 VT** — 终端模拟使用 OpenTUI 原生 `EmbeddedTerminalRenderable`，ANSI 解析、按键编码、选区、滚动与回滚均由它负责
+- **无自研重绘** — 原生组件自己维护缓冲区，项目内不再有逐行脏差异渲染代码
 - **动态导入** — 通过 `await import()` 导入 `ssh2-no-cpu-features`，因其以含顶层 await 的 ESM 格式发布
 
 ---
