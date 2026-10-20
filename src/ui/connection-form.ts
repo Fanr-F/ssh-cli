@@ -1,4 +1,4 @@
-import { BoxRenderable, TextRenderable, StyledText, type TextChunk } from "@opentui/core";
+import { BoxRenderable, TextRenderable, StyledText, InputRenderable, type TextChunk } from "@opentui/core";
 import type { CliRenderer, KeyEvent, MouseEvent, RenderContext } from "@opentui/core";
 import type { ConnectionConfig } from "../types/connection.js";
 import { createLogger } from "../logger";
@@ -127,17 +127,18 @@ export function createConnectionForm(
   let hasFocus = false;
   let focusedField = 0;
   let passwordRevealed = false;
-  let justFocused = true;
 
-  // Cursor state for each text field (0=name, 1=host, 2=port, 3=username, 5=conditional)
-  const cursorPositions: number[] = [0, 0, 0, 0, 0, 0]; // index 4 unused (auth toggle)
-  let cursorVisible = false;
+  // 光标位置只剩密码框还需要手写维护（其余字段由 InputRenderable 管理）
+  let passwordCursor = 0;
+  // Tab / ↑↓ 进入字段后，第一次可打印输入是否覆盖原值
+  let replaceOnType = true;
 
   // ── Renderable references (stored for direct updates) ──
 
   // Text-input fields: 0=name, 1=host, 2=port, 3=username
+  const textFieldKeys = ["name", "host", "port", "username"] as const;
   const fieldBoxes: BoxRenderable[] = [];
-  const fieldTexts: TextRenderable[] = [];
+  const textInputs: InputRenderable[] = [];
   const fieldLabels: TextRenderable[] = [];
 
   // Auth toggle
@@ -147,7 +148,10 @@ export function createConnectionForm(
   // Conditional field (key path | password)
   let conditionalLabel: TextRenderable;
   let conditionalText: TextRenderable;
+  let keyPathInput: InputRenderable;
   let conditionalBox: BoxRenderable;
+  let conditionalTextWrapper: BoxRenderable;
+  let conditionalChild: "key" | "password" | "none" = "none";
   let eyeIcon: TextRenderable;
 
   // Buttons
@@ -160,9 +164,34 @@ export function createConnectionForm(
   let authRow: BoxRenderable;
 
   // ── Key handler ────────────────────────────────────────
+  function isPrintable(key: KeyEvent): boolean {
+    return !!key.sequence && key.name.length === 1 && !key.ctrl && !key.meta && !key.option;
+  }
+
+  /** 让当前聚焦字段对应的输入框获得光标（其余失焦） */
+  function focusCurrentInput(): void {
+    for (const input of textInputs) input.blur();
+    keyPathInput.blur();
+    if (focusedField >= 0 && focusedField < 4) {
+      textInputs[focusedField].focus();
+    } else if (focusedField === 5 && state.authType === "key") {
+      keyPathInput.focus();
+    }
+  }
+
+  /** Tab / ↑↓ 切换字段 */
+  function moveFocus(dir: 1 | -1): void {
+    const total = getTotalFields();
+    focusedField = ((focusedField + dir) % total + total) % total;
+    replaceOnType = true;
+    if (focusedField === 5) passwordCursor = state.password.length;
+    focusCurrentInput();
+    updateFocusIndicators();
+  }
+
   function handleKeyDown(key: KeyEvent) {
     if (!hasFocus) return;
-    logForm.debug(`handleKeyDown: name=${key.name}, ctrl=${key.ctrl}, shift=${key.shift}, focusedField=${focusedField}, justFocused=${justFocused}, cursorVisible=${cursorVisible}, cursorPos5=${cursorPositions[5]}`);
+    logForm.debug(`handleKeyDown: name=${key.name}, ctrl=${key.ctrl}, shift=${key.shift}, focusedField=${focusedField}, replaceOnType=${replaceOnType}`);
 
     if (key.name === "escape") {
       key.preventDefault();
@@ -170,46 +199,13 @@ export function createConnectionForm(
       return;
     }
 
-    if (key.name === "tab") {
+    // Tab / ↑↓ — 切换字段
+    if (key.name === "tab" || key.name === "up" || key.name === "down") {
       key.preventDefault();
-      const dir = key.shift ? -1 : 1;
-      const total = getTotalFields();
-      focusedField = ((focusedField + dir) % total + total) % total;
-      justFocused = true;
-      cursorVisible = false;
-      // Reset cursor position to end of new field's text
-      const idx = mapFocusToTextIndex(focusedField);
-      if (idx >= 0) {
-        const k = getStateKey(idx);
-        const text = (state[k] as string) || "";
-        cursorPositions[idx] = text.length;
-      } else if (focusedField === 5) {
-        const text = state.authType === "key" ? state.privateKeyPath : state.password;
-        cursorPositions[5] = text.length;
-      }
-      updateFocusIndicators();
-      return;
-    }
-
-    // Up/Down arrows to navigate between fields
-    if (key.name === "up" || key.name === "down") {
-      key.preventDefault();
-      const dir = key.name === "down" ? 1 : -1;
-      const total = getTotalFields();
-      focusedField = ((focusedField + dir) % total + total) % total;
-      justFocused = true;
-      cursorVisible = false;
-      // Reset cursor position to end of new field's text
-      const idx = mapFocusToTextIndex(focusedField);
-      if (idx >= 0) {
-        const k = getStateKey(idx);
-        const text = (state[k] as string) || "";
-        cursorPositions[idx] = text.length;
-      } else if (focusedField === 5) {
-        const text = state.authType === "key" ? state.privateKeyPath : state.password;
-        cursorPositions[5] = text.length;
-      }
-      updateFocusIndicators();
+      const dir: 1 | -1 = key.name === "tab"
+        ? (key.shift ? -1 : 1)
+        : (key.name === "down" ? 1 : -1);
+      moveFocus(dir);
       return;
     }
 
@@ -219,201 +215,87 @@ export function createConnectionForm(
       return;
     }
 
-    // Arrow keys for auth toggle (field index 4)
+    // Auth toggle（字段 4）— ←/→ 切换 Key / Password
     if ((key.name === "left" || key.name === "right") && focusedField === 4) {
       key.preventDefault();
       state.authType = key.name === "left" ? "key" : "password";
+      replaceOnType = true;
+      passwordCursor = state.password.length;
       refreshAuthToggle();
       refreshConditional();
+      focusCurrentInput();
       return;
     }
 
-    // Left/Right arrows to move cursor
-    if (key.name === "left" || key.name === "right") {
+    // 字段 0-3 — 交给 InputRenderable
+    if (focusedField >= 0 && focusedField < 4) {
+      const input = textInputs[focusedField];
       key.preventDefault();
-      justFocused = false;
-      cursorVisible = true;
-      const idx = mapFocusToTextIndex(focusedField);
-      logForm.debug(`[ARROW] focusedField=${focusedField}, idx=${idx}, key=${key.name}`);
-      if (idx >= 0) {
-        const k = getStateKey(idx);
-        const text = (state[k] as string) || "";
-        const pos = cursorPositions[idx];
-        logForm.debug(`[ARROW] field=${k}, text="${text}", pos=${pos}`);
-        if (key.name === "left") {
-          cursorPositions[idx] = Math.max(0, pos - 1);
-        } else {
-          cursorPositions[idx] = Math.min(text.length, pos + 1);
-        }
-        logForm.debug(`[ARROW] new cursorPos=${cursorPositions[idx]}`);
-        refreshTextField(idx);
-      } else if (focusedField === 5) {
-        const text = state.authType === "key" ? state.privateKeyPath : state.password;
-        const pos = cursorPositions[5];
-        logForm.debug(`[ARROW] field=conditional, authType=${state.authType}, text="${text}", pos=${pos}, state.privateKeyPath="${state.privateKeyPath}"`);
-        if (key.name === "left") {
-          cursorPositions[5] = Math.max(0, pos - 1);
-        } else {
-          cursorPositions[5] = Math.min(text.length, pos + 1);
-        }
-        logForm.debug(`[ARROW] new cursorPos=${cursorPositions[5]}`);
-        refreshConditional();
-      }
+      if (replaceOnType && isPrintable(key)) input.value = "";
+      replaceOnType = false;
+      input.handleKeyPress(key);
+      state[textFieldKeys[focusedField]] = input.value;
       return;
     }
 
-    // Home key - move to start
-    if (key.name === "home") {
+    // 字段 5（Key Path）— 交给 InputRenderable
+    if (focusedField === 5 && state.authType === "key") {
       key.preventDefault();
-      justFocused = false;
-      cursorVisible = true;
-      const idx = mapFocusToTextIndex(focusedField);
-      if (idx >= 0) {
-        cursorPositions[idx] = 0;
-        refreshTextField(idx);
-      } else if (focusedField === 5) {
-        cursorPositions[5] = 0;
-        refreshConditional();
-      }
+      if (replaceOnType && isPrintable(key)) keyPathInput.value = "";
+      replaceOnType = false;
+      keyPathInput.handleKeyPress(key);
+      state.privateKeyPath = keyPathInput.value;
       return;
     }
 
-    // End key - move to end
-    if (key.name === "end") {
+    // 字段 5（Password）— 唯一保留的手写编辑（InputRenderable 没有遮罩能力）
+    if (focusedField === 5 && state.authType === "password") {
       key.preventDefault();
-      justFocused = false;
-      cursorVisible = true;
-      const idx = mapFocusToTextIndex(focusedField);
-      if (idx >= 0) {
-        const k = getStateKey(idx);
-        const text = (state[k] as string) || "";
-        cursorPositions[idx] = text.length;
-        refreshTextField(idx);
-      } else if (focusedField === 5) {
-        const text = state.authType === "key" ? state.privateKeyPath : state.password;
-        cursorPositions[5] = text.length;
-        refreshConditional();
-      }
+      editPassword(key);
       return;
     }
+  }
 
-    // Backspace
-    if (key.name === "backspace") {
-      key.preventDefault();
-      justFocused = false;
-      cursorVisible = true;
-      const idx = mapFocusToTextIndex(focusedField);
-      if (idx >= 0) {
-        const k = getStateKey(idx);
-        const text = (state[k] as string) || "";
-        const pos = cursorPositions[idx];
-        if (pos > 0) {
-          state[k] = (text.slice(0, pos - 1) + text.slice(pos)) as never;
-          cursorPositions[idx] = pos - 1;
-          refreshTextField(idx);
-        }
-      } else if (focusedField === 5) {
-        if (state.authType === "key") {
-          const pos = cursorPositions[5];
-          if (pos > 0) {
-            state.privateKeyPath = state.privateKeyPath.slice(0, pos - 1) + state.privateKeyPath.slice(pos);
-            cursorPositions[5] = pos - 1;
-            refreshConditional();
-          }
-        } else {
-          const pos = cursorPositions[5];
-          if (pos > 0) {
-            state.password = state.password.slice(0, pos - 1) + state.password.slice(pos);
-            cursorPositions[5] = pos - 1;
-            refreshConditional();
-          }
-        }
+  /** 密码框编辑（遮罩与显示/隐藏切换仍由本文件维护） */
+  function editPassword(key: KeyEvent): void {
+    if (key.name === "left") {
+      replaceOnType = false;
+      passwordCursor = Math.max(0, passwordCursor - 1);
+    } else if (key.name === "right") {
+      replaceOnType = false;
+      passwordCursor = Math.min(state.password.length, passwordCursor + 1);
+    } else if (key.name === "home") {
+      replaceOnType = false;
+      passwordCursor = 0;
+    } else if (key.name === "end") {
+      replaceOnType = false;
+      passwordCursor = state.password.length;
+    } else if (key.name === "backspace") {
+      if (replaceOnType) {
+        state.password = "";
+        passwordCursor = 0;
+      } else if (passwordCursor > 0) {
+        state.password = state.password.slice(0, passwordCursor - 1) + state.password.slice(passwordCursor);
+        passwordCursor--;
       }
-      return;
-    }
-
-    // Delete
-    if (key.name === "delete") {
-      key.preventDefault();
-      justFocused = false;
-      cursorVisible = true;
-      const idx = mapFocusToTextIndex(focusedField);
-      if (idx >= 0) {
-        const k = getStateKey(idx);
-        const text = (state[k] as string) || "";
-        const pos = cursorPositions[idx];
-        if (pos < text.length) {
-          state[k] = (text.slice(0, pos) + text.slice(pos + 1)) as never;
-          refreshTextField(idx);
-        }
-      } else if (focusedField === 5) {
-        if (state.authType === "key") {
-          const pos = cursorPositions[5];
-          if (pos < state.privateKeyPath.length) {
-            state.privateKeyPath = state.privateKeyPath.slice(0, pos) + state.privateKeyPath.slice(pos + 1);
-            refreshConditional();
-          }
-        } else {
-          const pos = cursorPositions[5];
-          if (pos < state.password.length) {
-            state.password = state.password.slice(0, pos) + state.password.slice(pos + 1);
-            refreshConditional();
-          }
-        }
+      replaceOnType = false;
+    } else if (key.name === "delete") {
+      if (!replaceOnType && passwordCursor < state.password.length) {
+        state.password = state.password.slice(0, passwordCursor) + state.password.slice(passwordCursor + 1);
       }
-      return;
-    }
-
-    // Printable character input
-    if (key.name.length === 1 && !key.ctrl && !key.meta && !key.option) {
-      key.preventDefault();
-      const ch = key.shift ? key.name.toUpperCase() : key.name;
-      const wasCursorHidden = !cursorVisible;
-      logForm.debug(`[CHAR] ch="${ch}", wasCursorHidden=${wasCursorHidden}, focusedField=${focusedField}`);
-      justFocused = false;
-      cursorVisible = true;
-      const idx = mapFocusToTextIndex(focusedField);
-      
-      if (idx >= 0) {
-        const k = getStateKey(idx);
-        if (wasCursorHidden) {
-          // No cursor visible → replace entire field content
-          state[k] = ch as never;
-          cursorPositions[idx] = 1;
-        } else {
-          // Cursor visible → insert at cursor position
-          const text = (state[k] as string) || "";
-          const pos = cursorPositions[idx];
-          state[k] = (text.slice(0, pos) + ch + text.slice(pos)) as never;
-          cursorPositions[idx] = pos + 1;
-        }
-        refreshTextField(idx);
-      } else if (focusedField === 5) {
-        if (wasCursorHidden) {
-          // No cursor visible → replace entire field content
-          logForm.debug(`[CHAR] replacing conditional field, ch="${ch}"`);
-          if (state.authType === "key") {
-            state.privateKeyPath = ch;
-          } else {
-            state.password = ch;
-          }
-          cursorPositions[5] = 1;
-        } else {
-          // Cursor visible → insert at cursor position
-          const pos = cursorPositions[5];
-          logForm.debug(`[CHAR] inserting into conditional field at pos=${pos}, ch="${ch}"`);
-          if (state.authType === "key") {
-            state.privateKeyPath = state.privateKeyPath.slice(0, pos) + ch + state.privateKeyPath.slice(pos);
-          } else {
-            state.password = state.password.slice(0, pos) + ch + state.password.slice(pos);
-          }
-          cursorPositions[5] = pos + 1;
-        }
-        logForm.debug(`[CHAR] conditional field after: "${state.authType === "key" ? state.privateKeyPath : state.password}"`);
-        refreshConditional();
+      replaceOnType = false;
+    } else if (isPrintable(key)) {
+      const ch = key.sequence;
+      if (replaceOnType) {
+        state.password = ch;
+        passwordCursor = ch.length;
+      } else {
+        state.password = state.password.slice(0, passwordCursor) + ch + state.password.slice(passwordCursor);
+        passwordCursor += ch.length;
       }
-      return;
+      replaceOnType = false;
     }
+    refreshConditional();
   }
 
   // ── Build UI tree ──────────────────────────────────────
@@ -438,7 +320,10 @@ export function createConnectionForm(
     border: true,
     borderColor: C.surfaceBorder,
     backgroundColor: C.surfaceBg,
+    // 固定宽度：InputRenderable 的 width:"100%" 撑不住自动宽度（会把弹窗拉到整屏）
+    width: C.dialogWidth,
     minWidth: C.dialogWidth,
+    maxHeight: "100%",
     padding: 1,
     title: existing ? "  Edit Connection  " : "  New Connection  ",
     titleColor: C.titleFg,
@@ -456,7 +341,7 @@ export function createConnectionForm(
 
   // ── Text fields ────────────────────────────────────────
   interface TextFieldDef {
-    key: string;
+    key: (typeof textFieldKeys)[number];
     label: string;
   }
   const textFieldDefs: TextFieldDef[] = [
@@ -474,13 +359,18 @@ export function createConnectionForm(
     });
     fieldLabels.push(lbl);
 
-    const val = new TextRenderable(ctx, {
-      content: makeStyledText(getInitialText(fd.key), C.fieldText),
-      fg: C.fieldText,
+    // 编辑 / 光标 / 选区 / 撤销全部由 OpenTUI 负责
+    const input = new InputRenderable(ctx, {
+      width: "100%",
+      value: state[fd.key],
+      textColor: C.fieldText,
+      focusedTextColor: C.fieldText,
+      cursorColor: C.cursorBg,
+      cursorStyle: { style: "block", blinking: true },
     });
-    fieldTexts.push(val);
+    textInputs.push(input);
 
-    const inp = new BoxRenderable(ctx, {
+    const fieldBox = new BoxRenderable(ctx, {
       border: true,
       borderColor: C.fieldBorder,
       backgroundColor: C.fieldBg,
@@ -489,27 +379,19 @@ export function createConnectionForm(
       onMouseDown: (e: MouseEvent) => {
         e.stopPropagation();
         focusedField = i;
-        justFocused = false;
-        cursorVisible = true;
-        // Position cursor at end on click
-        const k = getStateKey(i);
-        const text = (state[k] as string) || "";
-        cursorPositions[i] = text.length;
-        updateFocusIndicators();
+        replaceOnType = false;
         hasFocus = true;
+        focusCurrentInput();
+        // 点击后光标落到末尾
+        input.cursorOffset = input.plainText.length;
+        updateFocusIndicators();
       },
     });
-    inp.add(val);
-    fieldBoxes.push(inp);
+    fieldBox.add(input);
+    fieldBoxes.push(fieldBox);
 
     body.add(lbl);
-    body.add(inp);
-  }
-
-  function getInitialText(key: string): string {
-    const s = state as unknown as Record<string, string>;
-    const v = s[key];
-    return v || (key === "port" ? "22" : " ");
+    body.add(fieldBox);
   }
 
   // ── Auth toggle ────────────────────────────────────────
@@ -559,6 +441,16 @@ export function createConnectionForm(
     fg: C.fieldText,
   });
 
+  // Key Path 输入框（密码模式时换成下面的 conditionalText 手写渲染）
+  keyPathInput = new InputRenderable(ctx, {
+    width: "100%",
+    value: state.privateKeyPath,
+    textColor: C.fieldText,
+    focusedTextColor: C.fieldText,
+    cursorColor: C.cursorBg,
+    cursorStyle: { style: "block", blinking: true },
+  });
+
   conditionalBox = new BoxRenderable(ctx, {
     flexDirection: "row",
     border: true,
@@ -569,22 +461,24 @@ export function createConnectionForm(
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
       focusedField = 5;
-      justFocused = false;
-      cursorVisible = true;
-      // Position cursor at end on click
-      const text = state.authType === "key" ? state.privateKeyPath : state.password;
-      cursorPositions[5] = text.length;
-      updateFocusIndicators();
+      replaceOnType = false;
       hasFocus = true;
+      if (state.authType === "key") {
+        focusCurrentInput();
+        keyPathInput.cursorOffset = keyPathInput.plainText.length;
+      } else {
+        passwordCursor = state.password.length;
+        focusCurrentInput();
+      }
+      updateFocusIndicators();
     },
   });
 
   // Text wrapper — flexGrow: 1 pushes the eye icon to the right edge
-  const conditionalTextWrapper = new BoxRenderable(ctx, {
+  conditionalTextWrapper = new BoxRenderable(ctx, {
     flexDirection: "row",
     flexGrow: 1,
   });
-  conditionalTextWrapper.add(conditionalText);
   conditionalBox.add(conditionalTextWrapper);
 
   // Eye icon — press and hold to reveal password plaintext
@@ -594,11 +488,8 @@ export function createConnectionForm(
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
       focusedField = 5;
-      justFocused = false;
-      cursorVisible = true;
-      // Position cursor at end on click
-      const text = state.authType === "key" ? state.privateKeyPath : state.password;
-      cursorPositions[5] = text.length;
+      replaceOnType = false;
+      passwordCursor = state.password.length;
       updateFocusIndicators();
       hasFocus = true;
       passwordRevealed = true;
@@ -672,31 +563,6 @@ export function createConnectionForm(
 
   // ── UI update helpers ──────────────────────────────────
 
-  function getStateKey(fieldIdx: number): keyof FormState {
-    const keys: (keyof FormState)[] = ["name", "host", "port", "username"];
-    return keys[fieldIdx] ?? "name";
-  }
-
-  function refreshTextField(idx: number) {
-    if (idx < 0 || idx >= fieldTexts.length) return;
-    const k = getStateKey(idx);
-    const text = (state[k] as string) || " ";
-    try {
-      if (idx === focusedField && cursorVisible) {
-        const cursorPos = cursorPositions[idx];
-        if (text.length > 0) {
-          fieldTexts[idx].content = createStyledWithCursor(text, cursorPos);
-        } else {
-          fieldTexts[idx].content = makeStyledText(text, C.fieldText);
-        }
-      } else {
-        fieldTexts[idx].content = makeStyledText(text, C.fieldText);
-      }
-    } catch (err) {
-      logForm.debug(`refreshTextField error: ${err}`);
-    }
-  }
-
   function refreshAuthToggle() {
     const isKey = state.authType === "key";
     authKeyText.content = isKey ? " ● Key " : " ○ Key ";
@@ -705,42 +571,38 @@ export function createConnectionForm(
     authPassText.fg = isKey ? C.authInactive : C.authActive;
   }
 
+  /** 在 Key Path 输入框与密码手写渲染之间切换 */
+  function syncConditionalChild(isKey: boolean) {
+    const target = isKey ? "key" : "password";
+    if (conditionalChild === target) return;
+    const current =
+      conditionalChild === "key" ? keyPathInput : conditionalChild === "password" ? conditionalText : null;
+    if (current) conditionalTextWrapper.remove(current);
+    conditionalTextWrapper.add(isKey ? keyPathInput : conditionalText);
+    conditionalChild = target;
+  }
+
   function refreshConditional() {
     const isKey = state.authType === "key";
     conditionalLabel.content = isKey ? "Key Path" : "Password";
-    const showCursor = focusedField === 5 && cursorVisible;
-    try {
-      if (isKey) {
-        const text = state.privateKeyPath || "~/.ssh/id_ed25519";
-        logForm.debug(`[REFRESH-COND] isKey=true, state.privateKeyPath="${state.privateKeyPath}", displayText="${text}", cursorPos=${cursorPositions[5]}, showCursor=${showCursor}`);
-        if (showCursor) {
-          if (text.length > 0) {
-            conditionalText.content = createStyledWithCursor(text, cursorPositions[5]);
-          } else {
-            conditionalText.content = makeStyledText(text, C.fieldText);
-          }
-        } else {
-          conditionalText.content = makeStyledText(text, C.fieldText);
-        }
-      } else {
-        const displayText = passwordRevealed
-          ? (state.password || " ")
-          : maskPassword(state.password || "");
-        if (showCursor) {
-          if (displayText.length > 0) {
-            conditionalText.content = createStyledWithCursor(displayText, cursorPositions[5]);
-          } else {
-            conditionalText.content = makeStyledText(displayText, C.fieldText);
-          }
+    syncConditionalChild(isKey);
+    // Key Path 模式下文本由 InputRenderable 自己渲染，无需刷新
+    if (!isKey) {
+      const displayText = passwordRevealed
+        ? (state.password || " ")
+        : maskPassword(state.password || "");
+      try {
+        if (focusedField === 5 && displayText.length > 0) {
+          conditionalText.content = createStyledWithCursor(displayText, passwordCursor);
         } else {
           conditionalText.content = makeStyledText(displayText, C.fieldText);
         }
+      } catch (err) {
+        logForm.debug(`refreshConditional error: ${err}`);
       }
-      // Show/hide eye icon based on auth type
-      eyeIcon.visible = !isKey;
-    } catch (err) {
-      logForm.debug(`refreshConditional error: ${err}`);
     }
+    // Show/hide eye icon based on auth type
+    eyeIcon.visible = !isKey;
   }
 
   function updateFocusIndicators() {
@@ -758,17 +620,8 @@ export function createConnectionForm(
     if (deleteBtnBox) {
       deleteBtnBox.borderColor = focusedField === 8 ? C.fieldFocusedBorder : C.fieldBorder;
     }
-    // Update cursor display for all text fields
-    for (let i = 0; i < fieldTexts.length; i++) {
-      refreshTextField(i);
-    }
-    // Update cursor for conditional field
+    // Conditional field (5) 的文本刷新（密码光标 / 显示切换）
     refreshConditional();
-  }
-
-  function mapFocusToTextIndex(focus: number): number {
-    // 0-3 → text fields, 4 → auth toggle, 5 → conditional, 6+ → buttons
-    return focus >= 0 && focus < 4 ? focus : -1;
   }
 
   function getTotalFields(): number {
@@ -820,10 +673,9 @@ export function createConnectionForm(
 
   function getFocusedFieldContent(): string {
     if (focusedField >= 0 && focusedField < 4) {
-      const k = getStateKey(focusedField);
-      return state[k] as string;
+      return textInputs[focusedField].value;
     } else if (focusedField === 5) {
-      return state.authType === "key" ? state.privateKeyPath : state.password;
+      return state.authType === "key" ? keyPathInput.value : state.password;
     }
     return "";
   }
@@ -837,22 +689,18 @@ export function createConnectionForm(
 
   function focus() {
     hasFocus = true;
-    justFocused = true;
-    cursorVisible = false;
-    // Initialize cursor positions to end of each field
-    for (let i = 0; i < 4; i++) {
-      const k = getStateKey(i);
-      const text = (state[k] as string) || "";
-      cursorPositions[i] = text.length;
-    }
-    const condText = state.authType === "key" ? state.privateKeyPath : state.password;
-    cursorPositions[5] = condText.length;
-    logForm.debug(`focus() called: focusedField=${focusedField}, condText="${condText}", cursorPos5=${cursorPositions[5]}`);
+    replaceOnType = true;
+    passwordCursor = state.password.length;
+    focusCurrentInput();
+    logForm.debug(`focus() called: focusedField=${focusedField}, passwordCursor=${passwordCursor}`);
     updateFocusIndicators();
   }
 
   function destroy() {
     hasFocus = false;
+    // 释放 InputRenderable 的焦点与按键监听
+    for (const input of textInputs) input.blur();
+    keyPathInput.blur();
     if (overlay.parent) {
       // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛错
       overlay.parent.remove(overlay);
