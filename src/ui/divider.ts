@@ -16,6 +16,7 @@ export function createDivider(
   getSidebarWidth: () => number,
 ): ReturnType<typeof Box> {
   let isDragging = false;
+  let isHovered = false;
   let dragStartX = 0;
   let dragStartWidth = 0;
 
@@ -40,7 +41,17 @@ export function createDivider(
       dragStartWidth = getSidebarWidth();
       const inst = getInstance();
       if (inst) inst.backgroundColor = DIVIDER_HOVER;
+      renderer.setMousePointer('col-resize');
       renderer.requestRender();
+    },
+    onMouseOver: (_e: MouseEvent) => {
+      isHovered = true;
+      renderer.setMousePointer('col-resize');
+    },
+    onMouseOut: (_e: MouseEvent) => {
+      isHovered = false;
+      // 拖拽中被捕获的指针可能短暂离开分隔条，此时不要重置成默认指针
+      if (!isDragging) renderer.setMousePointer('default');
     },
     onMouseDrag: (e: MouseEvent) => {
       if (!isDragging) return;
@@ -54,6 +65,7 @@ export function createDivider(
       isDragging = false;
       const inst = getInstance();
       if (inst) inst.backgroundColor = DIVIDER_BG;
+      if (!isHovered) renderer.setMousePointer('default');
       renderer.requestRender();
     },
   });

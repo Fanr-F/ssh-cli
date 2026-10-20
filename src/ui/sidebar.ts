@@ -108,6 +108,12 @@ export function createSidebar(
             onActionCb('select', conn);
           }
         },
+        onMouseOver: (_e: MouseEvent) => {
+          renderer.setMousePointer('pointer');
+        },
+        onMouseOut: (_e: MouseEvent) => {
+          renderer.setMousePointer('default');
+        },
       },
       Text({
         content: ` ${dot} ${conn.name}`,

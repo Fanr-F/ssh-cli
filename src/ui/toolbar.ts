@@ -25,7 +25,7 @@ export interface ToolbarCallbacks {
 }
 
 export function createToolbar(
-  _renderer: CliRenderer,
+  renderer: CliRenderer,
   callbacks: ToolbarCallbacks,
 ): ReturnType<typeof Box> {
   const toolbar = Box({
@@ -61,6 +61,12 @@ export function createToolbar(
       onMouseDown: (e: MouseEvent) => {
         e.stopPropagation();
         item.action();
+      },
+      onMouseOver: (_e: MouseEvent) => {
+        renderer.setMousePointer('pointer');
+      },
+      onMouseOut: (_e: MouseEvent) => {
+        renderer.setMousePointer('default');
       },
     });
 
