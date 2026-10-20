@@ -1,4 +1,4 @@
-import { Box, Text, ScrollBox } from '@opentui/core';
+import { ScrollBox, SelectRenderable } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import type { ConnectionConfig } from '../types/connection';
 
@@ -34,15 +34,16 @@ export interface SidebarAPI {
 
 const BG_SIDEBAR = '#16161e';
 const BG_SELECTED = '#1f2335';
-const BG_HOVER = '#292e42';
 const BORDER = '#3b4261';
 const BORDER_ACTIVE = '#7aa2f7';
 const TITLE = '#7aa2f7';
 const TEXT_SELECTED = '#c0caf5';
 const TEXT_NORMAL = '#a9b1d6';
 const TEXT_DIM = '#565f89';
-const DOT_CONNECTED = '#9ece6a';
-const DOT_DISCONNECTED = '#414868';
+
+/** Rows per connection entry: name line + user@host line. */
+const ITEM_LINES = 2;
+const DOUBLE_CLICK_MS = 300;
 
 // ── Factory ─────────────────────────────────────────────────────────────────
 
@@ -53,7 +54,33 @@ export function createSidebar(
   // ── Internal state ──────────────────────────────────────────────────────
 
   let items: ConnectionConfig[] = [...connections];
-  let selectedIndex = 0;
+
+  // The Select renders every entry itself; keeping its height at
+  // items × ITEM_LINES means it never scrolls internally (scrollOffset
+  // stays 0) and the surrounding ScrollBox owns scrolling.
+  const select = new SelectRenderable(renderer.root.ctx, {
+    id: 'sidebar-list',
+    width: '100%',
+    height: Math.max(1, items.length * ITEM_LINES),
+    options: items.map(toOption),
+    showDescription: true,
+    showSelectionIndicator: false,
+    showScrollIndicator: false,
+    wrapSelection: false,
+    backgroundColor: BG_SIDEBAR,
+    focusedBackgroundColor: BG_SIDEBAR,
+    textColor: TEXT_NORMAL,
+    focusedTextColor: TEXT_NORMAL,
+    selectedBackgroundColor: BG_SELECTED,
+    selectedTextColor: TEXT_SELECTED,
+    descriptionColor: TEXT_DIM,
+    selectedDescriptionColor: TEXT_DIM,
+    onMouseDown: handleMouseDown,
+    onMouseOver: () => renderer.setMousePointer('pointer'),
+    onMouseOut: () => renderer.setMousePointer('default'),
+  });
+  // Keyboard is routed by App (global shortcuts); the list must not consume it.
+  select.focusable = false;
 
   // Box() returns a Proxy that queues add/remove to __pendingCalls.
   // After instantiation those calls go nowhere.  We resolve the real
@@ -65,110 +92,67 @@ export function createSidebar(
     }
     return _instance;
   }
+
   let onSelectCb: ((conn: ConnectionConfig) => void) | null = null;
   let onActionCb: ((action: string, conn: ConnectionConfig) => void) | null = null;
 
-  // ── Connection item factory ─────────────────────────────────────────────
-
-  const ITEM_HEIGHT = 2; // rows per connection item
   let lastClickIndex = -1;
   let lastClickTime = 0;
-  const DOUBLE_CLICK_MS = 300;
 
-  function createItemVNode(
-    conn: ConnectionConfig,
-    index: number,
-  ): ReturnType<typeof Box> {
-    const isSelected = index === selectedIndex;
-    const isConnected = !!conn.lastConnectedAt;
-    const dot = isConnected ? '\u25CF' : '\u25CB'; // ●  ○
-    const dotColor = isConnected ? DOT_CONNECTED : DOT_DISCONNECTED;
+  // ── Logic ───────────────────────────────────────────────────────────────
 
-    return Box(
-      {
-        id: `conn-${conn.id}`,
-        flexDirection: 'column',
-        paddingX: 1,
-        paddingY: 0,
-        backgroundColor: isSelected ? BG_SELECTED : undefined,
-        onMouseDown: (e: MouseEvent) => {
-          e.stopPropagation();
-          const now = Date.now();
-          const isDoubleClick = index === lastClickIndex && (now - lastClickTime) < DOUBLE_CLICK_MS;
-          lastClickIndex = index;
-          lastClickTime = now;
-
-          selectedIndex = index;
-          rebuild();
-          fireSelection();
-
-          if (isDoubleClick && onActionCb) {
-            onActionCb('connect', conn);
-          } else if (onActionCb) {
-            onActionCb('select', conn);
-          }
-        },
-        onMouseOver: (_e: MouseEvent) => {
-          renderer.setMousePointer('pointer');
-        },
-        onMouseOut: (_e: MouseEvent) => {
-          renderer.setMousePointer('default');
-        },
-      },
-      Text({
-        content: ` ${dot} ${conn.name}`,
-        fg: isSelected ? TEXT_SELECTED : TEXT_NORMAL,
-      }),
-      Text({
-        content: `  ${conn.username}@${conn.host}:${conn.port}`,
-        fg: TEXT_DIM,
-      }),
-    );
+  function toOption(conn: ConnectionConfig): { name: string; description: string } {
+    const dot = conn.lastConnectedAt ? '\u25CF' : '\u25CB'; // ●  ○
+    return {
+      name: ` ${dot} ${conn.name}`,
+      description: `  ${conn.username}@${conn.host}:${conn.port}`,
+    };
   }
-
-  // ── Rebuild children ────────────────────────────────────────────────────
-
-  /** IDs of the children currently in the sidebar Box. */
-  let childIds: string[] = [];
-
-  /** Build a fresh set of child VNodes for the current state. */
-  function buildChildren(): ReturnType<typeof Box>[] {
-    return items.map((conn, i) => createItemVNode(conn, i));
-  }
-
-  /**
-   * Replace all children in the sidebar Box with ones that reflect the
-   * current internal state (selection, connection list).
-   *
-   * Uses the resolved renderable instance (not the Box() Proxy) so that
-   * add/remove calls actually hit the BoxRenderable and trigger a re-render.
-   */
-  function rebuild(): void {
-    const instance = getInstance();
-    if (!instance) return;
-
-    // Remove old children from the actual Renderable.
-    // Since @opentui/core 0.6.x remove() takes the renderable object itself, not its id.
-    for (const child of instance.getChildren() ?? []) {
-      if (childIds.includes(child.id)) instance.remove(child);
-    }
-
-    // Insert fresh children.
-    const fresh = buildChildren();
-    for (const child of fresh) {
-      instance.add(child);
-    }
-
-    // Remember the new IDs for the next rebuild.
-    childIds = items.map((c) => `conn-${c.id}`);
-  }
-
-  // ── Fire callbacks ──────────────────────────────────────────────────────
 
   function fireSelection(): void {
-    const conn = items[selectedIndex];
+    const conn = items[select.getSelectedIndex()];
     if (conn && onSelectCb) {
       onSelectCb(conn);
+    }
+  }
+
+  /** Keep the selected entry inside the ScrollBox viewport. */
+  function ensureVisible(index: number): void {
+    const scroll = getInstance();
+    if (!scroll) return;
+    const viewport = Math.max(1, Math.floor(scroll.viewport?.height || scroll.height || 1));
+    const top = index * ITEM_LINES;
+    const bottom = top + ITEM_LINES;
+    if (top < scroll.scrollTop) {
+      scroll.scrollTo(top);
+    } else if (bottom > scroll.scrollTop + viewport) {
+      scroll.scrollTo(bottom - viewport);
+    }
+  }
+
+  /** Select an entry by index; `notify` mirrors the old explicit fireSelection(). */
+  function selectIndex(index: number, notify: boolean): void {
+    if (items.length === 0) return;
+    const clamped = Math.max(0, Math.min(items.length - 1, index));
+    select.setSelectedIndex(clamped);
+    ensureVisible(clamped);
+    if (notify) fireSelection();
+  }
+
+  function handleMouseDown(e: MouseEvent): void {
+    if (items.length === 0) return;
+    const index = Math.floor((e.y - select.screenY) / ITEM_LINES);
+    if (index < 0 || index >= items.length) return;
+    e.stopPropagation();
+
+    const now = Date.now();
+    const isDoubleClick = index === lastClickIndex && (now - lastClickTime) < DOUBLE_CLICK_MS;
+    lastClickIndex = index;
+    lastClickTime = now;
+
+    selectIndex(index, true);
+    if (onActionCb) {
+      onActionCb(isDoubleClick ? 'connect' : 'select', items[index]);
     }
   }
 
@@ -190,47 +174,37 @@ export function createSidebar(
       stickyScroll: false,
       contentOptions: { flexDirection: 'column' },
     },
-    ...buildChildren(),
+    select,
   );
-
-  // Track the initial child IDs so rebuild() can clean them up later.
-  childIds = items.map((c) => `conn-${c.id}`);
 
   // ── Public API ──────────────────────────────────────────────────────────
 
   const api: SidebarAPI = {
     setConnections(newConnections: ConnectionConfig[]): void {
       items = [...newConnections];
-      selectedIndex = items.length > 0 ? 0 : -1;
-      rebuild();
+      select.options = items.map(toOption);
+      select.height = Math.max(1, items.length * ITEM_LINES);
+      select.setSelectedIndex(0);
+      const scroll = getInstance();
+      if (scroll) scroll.scrollTo(0);
     },
 
     getSelectedConnection(): ConnectionConfig | null {
-      if (items.length === 0 || selectedIndex < 0) return null;
-      return items[selectedIndex] ?? null;
+      if (items.length === 0) return null;
+      return items[select.getSelectedIndex()] ?? null;
     },
 
     selectNext(): void {
-      if (items.length === 0) return;
-      const prev = selectedIndex;
-      if (selectedIndex < items.length - 1) {
-        selectedIndex++;
-      }
-      if (selectedIndex !== prev) {
-        rebuild();
-        fireSelection();
+      const current = select.getSelectedIndex();
+      if (current < items.length - 1) {
+        selectIndex(current + 1, true);
       }
     },
 
     selectPrevious(): void {
-      if (items.length === 0) return;
-      const prev = selectedIndex;
-      if (selectedIndex > 0) {
-        selectedIndex--;
-      }
-      if (selectedIndex !== prev) {
-        rebuild();
-        fireSelection();
+      const current = select.getSelectedIndex();
+      if (current > 0) {
+        selectIndex(current - 1, true);
       }
     },
 
