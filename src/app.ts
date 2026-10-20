@@ -702,8 +702,6 @@ export class App {
     } catch {
       // 剪贴板后端释放失败不应阻塞退出
     }
-    // 退出前恢复默认鼠标指针，避免终端残留 col-resize / pointer 形状
-    this.renderer.setMousePointer('default');
     this.renderer.destroy();
     // OpenTUI 0.6 起 destroy() 是异步恢复终端（退出备用屏、关闭鼠标模式等）。
     // 必须等 closed 落地再退出，否则可能残留鼠标模式 / 备用屏。

@@ -76,8 +76,6 @@ export function createSidebar(
     descriptionColor: TEXT_DIM,
     selectedDescriptionColor: TEXT_DIM,
     onMouseDown: handleMouseDown,
-    onMouseOver: () => renderer.setMousePointer('pointer'),
-    onMouseOut: () => renderer.setMousePointer('default'),
   });
   // Keyboard is routed by App (global shortcuts); the list must not consume it.
   select.focusable = false;
