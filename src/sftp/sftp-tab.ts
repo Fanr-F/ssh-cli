@@ -732,7 +732,7 @@ export function createSftpTab(
         break;
       }
       default:
-        renderStatus(`Unknown command: ${cmd} (type help for commands)`, C.red);
+        renderStatus(`Unknown command: ${cmd}`, C.red);
         ok = false;
     }
     return ok;
