@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "start": "bun run src/index.ts",
+    "docs": "bun run scripts/gen-shortcuts.ts",
     "build:win": "bun build --compile --target=bun-windows-x64 src/index.ts --outfile ssh-cli.exe"
   },
   "devDependencies": {

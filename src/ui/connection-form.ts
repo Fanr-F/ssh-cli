@@ -3,6 +3,7 @@ import type { CliRenderer, KeyEvent, MouseEvent, RenderContext } from "@opentui/
 import type { ConnectionConfig } from "../types/connection.js";
 import { createLogger } from "../logger";
 import { toRGBA } from "../color";
+import { findBinding, normalizeKey, type KeyContext } from "../keymap";
 
 const logForm = createLogger('form');
 
@@ -56,6 +57,8 @@ export interface FormAPI {
   handleKey(key: KeyEvent): void;
   /** Get the content of the currently focused field */
   getFocusedFieldContent(): string;
+  /** Index of the focused field (used by the shared keymap context) */
+  getFocusedFieldIndex(): number;
   /** Remove the form from the renderer and clean up */
   destroy(): void;
 }
@@ -191,40 +194,63 @@ export function createConnectionForm(
 
   function handleKeyDown(key: KeyEvent) {
     if (!hasFocus) return;
-    logForm.debug(`handleKeyDown: name=${key.name}, ctrl=${key.ctrl}, shift=${key.shift}, focusedField=${focusedField}, replaceOnType=${replaceOnType}`);
 
-    if (key.name === "escape") {
-      key.preventDefault();
-      if (onCancelCb) onCancelCb();
-      return;
-    }
+    const k = normalizeKey(key);
+    const ctx: KeyContext = {
+      focus: "form",
+      helpOpen: false,
+      formOpen: true,
+      sftpCmdMode: false,
+      formField: focusedField,
+      activeTabType: null,
+    };
+    const binding = findBinding("form", k, ctx);
+    logForm.debug(
+      `handleKeyDown: name=${k.name}, binding=${binding?.id ?? "-"}, focusedField=${focusedField}, replaceOnType=${replaceOnType}`,
+    );
 
-    // Tab / ↑↓ — 切换字段
-    if (key.name === "tab" || key.name === "up" || key.name === "down") {
-      key.preventDefault();
-      const dir: 1 | -1 = key.name === "tab"
-        ? (key.shift ? -1 : 1)
-        : (key.name === "down" ? 1 : -1);
-      moveFocus(dir);
-      return;
-    }
+    switch (binding?.id) {
+      case "form.cancel":
+        key.preventDefault();
+        if (onCancelCb) onCancelCb();
+        return;
 
-    if (key.name === "enter" || key.name === "return") {
-      key.preventDefault();
-      handleSubmit();
-      return;
-    }
+      case "form.submit":
+        key.preventDefault();
+        handleSubmit();
+        return;
 
-    // Auth toggle（字段 4）— ←/→ 切换 Key / Password
-    if ((key.name === "left" || key.name === "right") && focusedField === 4) {
-      key.preventDefault();
-      state.authType = key.name === "left" ? "key" : "password";
-      replaceOnType = true;
-      passwordCursor = state.password.length;
-      refreshAuthToggle();
-      refreshConditional();
-      focusCurrentInput();
-      return;
+      case "form.nextField":
+      case "form.focusNext":
+        key.preventDefault();
+        moveFocus(1);
+        return;
+
+      case "form.prevField":
+      case "form.focusPrev":
+        key.preventDefault();
+        moveFocus(-1);
+        return;
+
+      // Auth toggle（字段 4）— ←/→ 切换 Key / Password
+      case "form.authKey":
+      case "form.authPassword":
+        key.preventDefault();
+        state.authType = binding.id === "form.authKey" ? "key" : "password";
+        replaceOnType = true;
+        passwordCursor = state.password.length;
+        refreshAuthToggle();
+        refreshConditional();
+        focusCurrentInput();
+        return;
+
+      // 剪贴板动作由 App 执行（需要 clipboard 后端）
+      case "form.copy":
+      case "form.paste":
+        return;
+
+      default:
+        break;
     }
 
     // 字段 0-3 — 交给 InputRenderable
@@ -680,6 +706,10 @@ export function createConnectionForm(
     return "";
   }
 
+  function getFocusedFieldIndex(): number {
+    return focusedField;
+  }
+
   function handleSubmit() {
     const errs = validate();
     if (errs.length > 0) return;
@@ -723,6 +753,7 @@ export function createConnectionForm(
   const api: FormAPI = {
     getFormData,
     getFocusedFieldContent,
+    getFocusedFieldIndex,
     validate,
     onSubmit: (cb) => { onSubmitCb = cb; },
     onCancel: (cb) => { onCancelCb = cb; },

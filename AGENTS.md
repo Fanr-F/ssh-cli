@@ -46,26 +46,31 @@ src/
 ## Key Patterns
 
 ### Focus Zones
-The app uses a focus zone system: `sidebar`, `terminal`, `form`. Keyboard events are routed based on current focus. Use `Alt+←/→` to switch between sidebar and terminal.
+The app uses a focus zone system: `sidebar`, `terminal`, `form`, `sftp`. Keyboard events are routed based on the current focus. Use `Alt+←/→` to switch between sidebar and terminal; opening a form or an SFTP tab moves focus automatically.
 
-### Keyboard Shortcuts
-- **Ctrl+Q** — Quit application (NOT Ctrl+C)
-- **Ctrl+C** — Copy (connection info in sidebar, selected text or last line in terminal)
-- **Ctrl+V** — Paste (clipboard content to terminal/form)
-- **Ctrl+Shift+C** — Close current tab
-- **Ctrl+Shift+Tab** — Cycle to next tab
-- **Alt+←/→** — Switch focus between sidebar and terminal
-- **Alt+↑/↓** — Navigate connections (global)
-- **F1** — Toggle help popup
-- **F2-F12** — Switch to tab 1-11
-- **PageUp/PageDown** — Scroll terminal output
-- **Enter** — Connect to selected server (in sidebar)
-- **a** — Add new connection
-- **e** — Edit selected connection
-- **Delete** — Delete selected connection
-- **Esc** — Cancel/close form
-- **↑/↓** — Navigate connection list (when sidebar focused)
-- **Ctrl+E** — Open SFTP tab
+### Keyboard Shortcuts — single source of truth
+
+**All key bindings live in `src/keymap/bindings.ts`.** Do not hand-write shortcut tables anywhere else.
+
+- `src/keymap/bindings.ts` — the binding table (`id`, `scope`, `key`, `group`, `en`, `zh`, `when`)
+- `src/keymap/matcher.ts` — `normalizeKey()` (terminal quirks: Alt arrow escape sequences) and pattern matching
+- `src/keymap/index.ts` — docs generation (`buildDocs()`)
+- `src/app.ts` — `dispatchKey()` → `actions` table, ordered by scope:
+  `system` → `help` / `form` (modal) → `global` → current focus
+- `src/sftp/sftp-tab.ts` / `src/ui/connection-form.ts` — look up the same table for their own scope (`owner: 'component'`)
+- `src/ui/help-popup.ts` — renders `buildDocs('en')`
+- `README.md` / `README.zh.md` — generated sections between `<!-- shortcuts:begin -->` and `<!-- shortcuts:end -->`; run `bun run docs` after changing bindings
+
+Adding a shortcut:
+1. add a row to `BINDINGS` (or extend an existing binding's `key` array);
+2. implement the action under the same `id` in `App.actions`, or in the owning component (`owner: 'component'`);
+3. run `bun run docs`.
+
+Key behaviors that are easy to break:
+- `Ctrl+C` is **not** a global binding: it is declared once per scope (sidebar / terminal / form / sftp) with different meanings.
+- When the help popup or the form is open, only `system` bindings (`Ctrl+Q`, `F1`) plus that modal's own scope are active.
+- Unmatched keys in `terminal` scope must **not** be `preventDefault()`-ed — they are encoded by the native terminal and sent to the remote shell.
+- `Ctrl+Shift+C` is unreliable in legacy terminals (see README "Known Issues"); double-clicking a tab always works.
 
 ### Mouse Support
 - Mouse support enabled via `useMouse: true` in index.ts renderer config
@@ -138,6 +143,7 @@ onMouseDrag: (e: MouseEvent) => {
 
 ```bash
 bun run start   # Run the application
+bun run docs    # Regenerate shortcut tables in README.md / README.zh.md
 ```
 
 No test suite, no linter, no formatter configured. TypeScript strict mode enforced via tsconfig.json.

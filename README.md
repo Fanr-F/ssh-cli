@@ -28,6 +28,8 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 - **Draggable UI** — Resize sidebar divider, drag help popup window
 - **Help System** — Press F1 to view all keyboard shortcuts
 
+<!-- shortcuts:begin -->
+
 ### Keyboard Shortcuts
 
 #### General
@@ -35,82 +37,116 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 | Key | Action |
 |---|---|
 | `Ctrl+Q` | Quit application |
-| `Alt+←/→` | Switch focus between Sidebar ↔ Terminal |
-| `F1` | Show help popup |
+| `F1` | Show / hide help |
+| `Ctrl+Shift+C` | Close current tab |
+| `Ctrl+Shift+Tab` | Next tab |
 | `F2-F12` | Switch to tab 1-11 |
-| `Ctrl+E` | Open SFTP tab for the active connection |
+| `Ctrl+E` | Open SFTP tab for active connection |
+| `Alt+←` | Focus sidebar |
+| `Alt+→` | Focus terminal |
 
 #### Sidebar
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` | Navigate connections (when sidebar focused) |
-| `Alt+↑/↓` | Navigate connections (global) |
+| `Alt+↑` | Previous connection (global) |
+| `Alt+↓` | Next connection (global) |
+| `↑` | Previous connection |
+| `↓` | Next connection |
 | `Enter` | Connect to selected server |
 | `A` | Add new connection |
 | `E` | Edit selected connection |
-| `Delete` | Delete selected connection |
+| `Delete / Backspace` | Delete selected connection (no confirmation) |
+| `Ctrl+C` | Copy connection info |
 
 #### Terminal
 
 | Key | Action |
 |---|---|
-| `Ctrl+C` | Copy (sidebar: connection info; terminal: selection or last line; sends SIGINT to shell if nothing to copy) |
-| `Ctrl+V` | Paste (clipboard content to terminal, form, or SFTP input) |
-| `Ctrl+Shift+C` | Close current tab (⚠️ does not work in legacy terminals, see [Known Issues](#known-issues)) |
-| `Ctrl+Shift+Tab` | Cycle to next tab |
-| `PageUp/PageDown` | Scroll terminal output |
+| `Ctrl+C` | Copy selection; with nothing selected, send SIGINT to the shell |
+| `Ctrl+V` | Paste clipboard into the terminal |
+| `PageUp` | Scroll output up |
+| `PageDown` | Scroll output down |
 
-#### SFTP File Manager
+#### SFTP
 
 | Key | Action |
 |---|---|
-| `Tab` | Switch focus between local and remote panels |
-| `↑` / `↓` | Navigate file list in current panel |
-| `Enter` | Open directory / execute command (when in command mode) |
+| `Ctrl+C` | Copy selected path |
+| `Ctrl+V` | Paste into the command line |
+| `PageUp` | Page up in the active panel |
+| `PageDown` | Page down in the active panel |
+| `Tab` | Switch panel (local ↔ remote) |
+| `↑` | Select previous item |
+| `↓` | Select next item |
+| `Enter` | Enter directory |
 | `Backspace` | Go to parent directory |
 | `:` | Enter command mode |
-| `Ctrl+U` | Pre-fill `upload` command for selected local file |
-| `Ctrl+D` | Pre-fill `download` command for selected remote file |
+| `Ctrl+U` | Pre-fill upload command for selected local file |
+| `Ctrl+D` | Pre-fill download command for selected remote file |
 
 #### SFTP Command Line
 
-Command mode is persistent — `Enter` executes the command but stays in the prompt, `Esc` exits.
+> Only active after pressing `:` to enter command mode.
+
+| Key | Action |
+|---|---|
+| `Enter` | Execute command (stays in command mode) |
+| `Esc` | Leave command mode |
+| `↑` | Previous command in history |
+| `↓` | Next command in history |
+| `Backspace` | Delete character before cursor |
+| `←` | Move cursor left |
+| `→` | Move cursor right |
+| `Home` | Move cursor to start |
+| `End` | Move cursor to end |
+| `Tab` | Autocomplete command or file path |
+
+#### SFTP Commands
+
+> Command mode is persistent — Enter executes but stays in the prompt, Esc exits.
 
 | Command | Description |
 |---|---|
-| `:upload <local> [remote]` | Upload a local file to remote path (defaults to file name) |
-| `:download <remote> [local]` | Download a remote file to local path (defaults to file name) |
-| `:mkdir <name>` | Create directory on the active panel |
-| `:rm [path]` | Delete the selected item, or the given path (active panel) |
-| `:mv <src> <dst>` | Move / rename on the active panel (paths allowed) |
-| `:cd <path>` | Change directory and refresh both panels |
-| `:refresh` | Refresh both panels |
-| `:hidden [on|off]` | Show or hide Windows system-protected files |
-
-> Tip: `Tab` autocompletes commands and file paths, `↑/↓` browse command history.
+| `upload <src> [dest]` | Upload local file to remote |
+| `download <src> [dest]` | Download remote file to local |
+| `mkdir <name>` | Create directory on active panel |
+| `rm [path]` | Delete selected item or given path |
+| `mv <src> <dst>` | Move / rename on active panel |
+| `cd <path>` | Change directory and refresh both panels |
+| `refresh` | Refresh both panels |
+| `hidden [on\|off]` | Show / hide Windows system files |
 
 #### Form
 
 | Key | Action |
 |---|---|
+| `Ctrl+C` | Copy focused field |
+| `Ctrl+V` | Paste into focused field |
+| `Esc` | Cancel and close form |
+| `Enter` | Save connection |
 | `Tab` | Next field |
 | `Shift+Tab` | Previous field |
-| `↑/↓` | Navigate between fields |
-| `←/→` | Move cursor within field |
-| `Home` | Move cursor to start |
-| `End` | Move cursor to end |
+| `↓` | Next field (same as Tab) |
+| `↑` | Previous field (same as Shift+Tab) |
+| `←` | Switch auth type to Key (on Auth row) |
+| `→` | Switch auth type to Password (on Auth row) |
 
 ### Mouse Shortcuts
 
 | Action | Description |
 |---|---|
-| Single-click | Select connection in sidebar |
-| Double-click | Connect to selected server |
-| Click toolbar buttons | new, edit, connect, delete, quit, help |
-| Double-click tab | Close tab |
-| Drag divider | Resize sidebar width |
-| Drag help popup | Reposition help window |
+| Single-click (sidebar) | Select connection |
+| Double-click (sidebar) | Connect to selected server |
+| Toolbar buttons | new / edit / connect / delete / quit / help |
+| Single-click (tab) | Switch to that tab |
+| Double-click (tab) | Close tab |
+| Drag divider | Resize sidebar |
+| Drag help window | Move help popup |
+| Click form field | Focus that field |
+| Hold eye icon | Reveal password |
+
+<!-- shortcuts:end -->
 
 ### Project Status
 
@@ -138,7 +174,7 @@ All core layers are implemented and integrated.
 
 Windows Terminal and VS Code also bind `Ctrl+Shift+C` to "Copy" by default, so the key may be intercepted at the terminal layer.
 
-**Status**: The in-app key handling order has been fixed (close-tab is checked before copy), so terminals that support the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) work correctly. Legacy terminals cannot recover the Shift modifier at the application level. A replacement shortcut (`Alt+W` / `Ctrl+W` / `Shift+F4`) has not been chosen yet; this is deferred.
+**Status**: Keyboard handling is now scope-based: the terminal's `Ctrl+C` binding requires `shift: false`, so `Ctrl+Shift+C` can only match the global close-tab binding. Terminals that support the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) therefore work correctly. Legacy terminals cannot recover the Shift modifier at the application level. A replacement shortcut (`Alt+W` / `Ctrl+W` / `Shift+F4`) has not been chosen yet; this is deferred.
 
 **Workaround**: double-click the tab to close it, or cycle with `Ctrl+Shift+Tab` and jump with `F2-F12`.
 
@@ -147,9 +183,14 @@ Windows Terminal and VS Code also bind `Ctrl+Shift+C` to "Copy" by default, so t
 ```
 src/
 ├── index.ts              # Entry point — creates renderer and initializes App
-├── app.ts                # Main application class — layout, focus management, keyboard routing
+├── app.ts                # Main application class — layout, focus management, keyboard dispatch
 ├── logger.ts             # Logging system (LogTape, writes to ssh-cli.log)
 ├── clipboard.ts          # Clipboard operations (copy/paste)
+├── keymap/               # Keyboard shortcut definitions (single source of truth)
+│   ├── bindings.ts       #   Every binding: scope, key, group, docs text
+│   ├── matcher.ts        #   Key normalization + pattern matching
+│   ├── types.ts          #   Scope / Binding / KeyContext types
+│   └── index.ts          #   buildDocs() used by help popup and README generator
 ├── ssh/                  # SSH connection layer
 │   ├── auth.ts           #   Authentication config builder (key/password)
 │   ├── connection.ts     #   SSH session lifecycle (SshConnection class)
@@ -198,6 +239,9 @@ bun run start -- --log-level trace
 
 # Compile a standalone Windows executable
 bun run build:win
+
+# Regenerate the shortcut tables in README.md / README.zh.md
+bun run docs
 ```
 
 ### Logging
@@ -262,7 +306,7 @@ Select a connection in the sidebar and press `Enter`. The terminal panel will sh
 - The terminal renders ANSI escape sequences (colors, cursor movement, etc.)
 - Resize your terminal window — the PTY size is automatically updated
 - Use `PageUp`/`PageDown` to scroll through terminal output
-- `Ctrl+C` copies the terminal selection (or last line); when there is nothing to copy it sends an interrupt (`SIGINT`) to the shell instead
+- `Ctrl+C` copies the terminal selection; when there is nothing selected it sends an interrupt (`SIGINT`) to the shell instead
 
 #### 4. Multi-Tab Support
 - Open multiple SSH sessions in separate tabs

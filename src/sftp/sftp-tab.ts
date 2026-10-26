@@ -4,6 +4,7 @@ import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
 import { toRGBA } from '../color';
+import { findBinding, normalizeKey, type KeyContext } from '../keymap';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 
 const log = createLogger('sftp-tab');
@@ -37,6 +38,8 @@ export interface SftpTabAPI {
   handleKey(key: KeyEvent): void;
   pasteText(text: string): void;
   getSelectedFilePath(): string | null;
+  /** 是否处于 `:` 命令行模式（供 keymap 的 when 条件使用）。 */
+  isCommandMode(): boolean;
   focus(): void;
   destroy(): void;
   refresh(): void;
@@ -848,36 +851,70 @@ export function createSftpTab(
   }
 
   // ── Keyboard handling ─────────────────────────────────────────
+  /** 当前面板上下移动 N 行（翻页也复用它）。 */
+  function moveSelection(delta: number): void {
+    const state = activeSide === 'local' ? localState : remoteState;
+    if (state.items.length === 0) return;
+    const next = Math.max(0, Math.min(state.items.length - 1, state.selectedIndex + delta));
+    if (next === state.selectedIndex) return;
+    state.selectedIndex = next;
+    resolveAll();
+    renderFileList(
+      state,
+      activeSide === 'local' ? _resolvedLocalList : _resolvedRemoteList,
+      activeSide === 'local' ? _resolvedLocalPath : _resolvedRemotePath,
+      activeSide === 'local' ? _resolvedLocalPanel : _resolvedRemotePanel,
+      activeSide,
+    );
+    renderer.requestRender();
+  }
+
+  /** PageUp/PageDown 的步长 = 当前列表视口高度 - 1。 */
+  function pageStep(): number {
+    const scroll = activeSide === 'local' ? _resolvedLocalScroll : _resolvedRemoteScroll;
+    const viewport = Math.floor(scroll?.viewport?.height || 10);
+    return Math.max(1, viewport - 1);
+  }
+
   async function handleKey(key: KeyEvent): Promise<void> {
-    log.debug(`[SFTP KEY] name:${key.name} ctrl:${key.ctrl} shift:${key.shift} destroyed:${destroyed}`);
     if (destroyed) return;
 
-    // If we're in command mode, handle that
-    if (cmdMode) {
-      if (key.name === 'enter' || key.name === 'return') {
+    const k = normalizeKey(key);
+    const ctx: KeyContext = {
+      focus: 'sftp',
+      helpOpen: false,
+      formOpen: false,
+      sftpCmdMode: cmdMode,
+      formField: -1,
+      activeTabType: 'sftp',
+    };
+    const binding = findBinding('sftp', k, ctx);
+    log.debug(`[SFTP KEY] name:${k.name} ctrl:${k.ctrl} cmd:${cmdMode} binding:${binding?.id ?? '-'}`);
+
+    switch (binding?.id) {
+      // ── 命令行模式 ────────────────────────────────────────────
+      case 'sftp.cmd.execute': {
         const cmd = cmdBuffer.trim();
         cmdBuffer = '';
         cmdCursorPos = 0;
-        let ok = true;
         if (cmd) {
           cmdHistory.push(cmd);
           cmdHistoryIdx = cmdHistory.length;
-          ok = await executeCommand(cmd);
-        }
-        if (ok) {
-          renderStatus('> ');
-          renderer.requestRender();
+          const ok = await executeCommand(cmd);
+          if (ok) {
+            renderStatus('> ');
+            renderer.requestRender();
+          }
         }
         return;
       }
-      if (key.name === 'escape') {
+      case 'sftp.cmd.cancel':
         cmdMode = false;
         cmdBuffer = '';
         cmdCursorPos = 0;
         renderStatus('Ready');
         return;
-      }
-      if (key.name === 'backspace') {
+      case 'sftp.cmd.backspace':
         if (cmdCursorPos > 0) {
           cmdBuffer = cmdBuffer.slice(0, cmdCursorPos - 1) + cmdBuffer.slice(cmdCursorPos);
           cmdCursorPos--;
@@ -885,8 +922,7 @@ export function createSftpTab(
           renderer.requestRender();
         }
         return;
-      }
-      if (key.name === 'up') {
+      case 'sftp.cmd.historyPrev':
         if (cmdHistoryIdx > 0) {
           cmdHistoryIdx--;
           cmdBuffer = cmdHistory[cmdHistoryIdx];
@@ -895,8 +931,7 @@ export function createSftpTab(
           renderer.requestRender();
         }
         return;
-      }
-      if (key.name === 'down') {
+      case 'sftp.cmd.historyNext':
         if (cmdHistoryIdx < cmdHistory.length - 1) {
           cmdHistoryIdx++;
           cmdBuffer = cmdHistory[cmdHistoryIdx];
@@ -908,126 +943,96 @@ export function createSftpTab(
         renderStatus(`> ${cmdBuffer}_`);
         renderer.requestRender();
         return;
-      }
-      if (key.name === 'left') {
+      case 'sftp.cmd.left':
         if (cmdCursorPos > 0) {
           cmdCursorPos--;
           renderer.requestRender();
         }
         return;
-      }
-      if (key.name === 'right') {
+      case 'sftp.cmd.right':
         if (cmdCursorPos < cmdBuffer.length) {
           cmdCursorPos++;
           renderer.requestRender();
         }
         return;
-      }
-      if (key.name === 'home') {
+      case 'sftp.cmd.home':
         cmdCursorPos = 0;
         renderer.requestRender();
         return;
-      }
-      if (key.name === 'end') {
+      case 'sftp.cmd.end':
         cmdCursorPos = cmdBuffer.length;
         renderer.requestRender();
         return;
-      }
-      // Tab — autocompletion
-      if (key.name === 'tab') {
+      case 'sftp.cmd.complete':
         await handleCommandTabCompletion();
         return;
-      }
-      // Regular character input
-      // NOTE: KeyEvent has no `alt` field (ParsedKey exposes `meta`/`option`); `!key.meta` is the real Alt guard.
-      if (key.sequence && !key.ctrl && !key.meta) {
-        cmdBuffer = cmdBuffer.slice(0, cmdCursorPos) + key.sequence + cmdBuffer.slice(cmdCursorPos);
-        cmdCursorPos += key.sequence.length;
-        renderStatus(`> ${cmdBuffer}_`);
+
+      // ── 浏览模式 ──────────────────────────────────────────────
+      case 'sftp.switchPanel':
+        activeSide = activeSide === 'local' ? 'remote' : 'local';
+        resolveAll();
+        renderFileList(localState, _resolvedLocalList, _resolvedLocalPath, _resolvedLocalPanel, 'local');
+        renderFileList(remoteState, _resolvedRemoteList, _resolvedRemotePath, _resolvedRemotePanel, 'remote');
+        renderStatus(`Panel: ${activeSide === 'local' ? 'Local' : 'Remote'}`);
         renderer.requestRender();
+        return;
+      case 'sftp.up':
+        moveSelection(-1);
+        return;
+      case 'sftp.down':
+        moveSelection(1);
+        return;
+      case 'sftp.pageUp':
+        moveSelection(-pageStep());
+        return;
+      case 'sftp.pageDown':
+        moveSelection(pageStep());
+        return;
+      case 'sftp.enter':
+        await enterDirectory(activeSide);
+        return;
+      case 'sftp.parent':
+        await goUp(activeSide);
+        return;
+      case 'sftp.commandMode':
+        enterCommandMode();
+        return;
+      case 'sftp.prefillUpload': {
+        const item = localState.items[localState.selectedIndex];
+        if (item && !item.isDirectory) {
+          const localPath = `${localState.currentPath}/${item.name}`;
+          const remotePath = `${remoteState.currentPath}/${item.name}`;
+          enterCommandMode(`upload ${localPath} ${remotePath}`);
+        } else {
+          renderStatus('Select a file in Local panel first', C.yellow);
+        }
+        return;
       }
-      return;
+      case 'sftp.prefillDownload': {
+        const item = remoteState.items[remoteState.selectedIndex];
+        if (item && !item.isDirectory) {
+          const remotePath = `${remoteState.currentPath}/${item.name}`;
+          const localPath = `${localState.currentPath}/${item.name}`;
+          enterCommandMode(`download ${remotePath} ${localPath}`);
+        } else {
+          renderStatus('Select a file in Remote panel first', C.yellow);
+        }
+        return;
+      }
+      // 剪贴板动作由 App 执行（需要 clipboard 后端），组件不处理
+      case 'sftp.copy':
+      case 'sftp.paste':
+        return;
+      default:
+        break;
     }
 
-    // Tab — switch panel
-    if (key.name === 'tab') {
-      activeSide = activeSide === 'local' ? 'remote' : 'local';
-      resolveAll();
-      renderFileList(localState, _resolvedLocalList, _resolvedLocalPath, _resolvedLocalPanel, 'local');
-      renderFileList(remoteState, _resolvedRemoteList, _resolvedRemotePath, _resolvedRemotePanel, 'remote');
-      renderStatus(`Panel: ${activeSide === 'local' ? 'Local' : 'Remote'}`);
+    // 命令行模式下：可打印字符写入缓冲区（没有对应绑定，属于自由输入）
+    if (cmdMode && k.printable) {
+      cmdBuffer = cmdBuffer.slice(0, cmdCursorPos) + k.sequence + cmdBuffer.slice(cmdCursorPos);
+      cmdCursorPos += k.sequence.length;
+      renderStatus(`> ${cmdBuffer}_`);
       renderer.requestRender();
-      return;
-    }
-
-    const state = activeSide === 'local' ? localState : remoteState;
-
-    // Up/Down — navigate（滚动由 renderFileList → ensureIndexVisible 处理）
-    if (key.name === 'up') {
-      if (state.selectedIndex > 0) {
-        state.selectedIndex--;
-      }
-      resolveAll();
-      renderFileList(state, activeSide === 'local' ? _resolvedLocalList : _resolvedRemoteList,
-        activeSide === 'local' ? _resolvedLocalPath : _resolvedRemotePath,
-        activeSide === 'local' ? _resolvedLocalPanel : _resolvedRemotePanel, activeSide);
-      renderer.requestRender();
-      return;
-    }
-    if (key.name === 'down') {
-      if (state.selectedIndex < state.items.length - 1) {
-        state.selectedIndex++;
-      }
-      resolveAll();
-      renderFileList(state, activeSide === 'local' ? _resolvedLocalList : _resolvedRemoteList,
-        activeSide === 'local' ? _resolvedLocalPath : _resolvedRemotePath,
-        activeSide === 'local' ? _resolvedLocalPanel : _resolvedRemotePanel, activeSide);
-      renderer.requestRender();
-      return;
-    }
-
-    // Enter — enter directory
-    if (key.name === 'enter' || key.name === 'return') {
-      await enterDirectory(activeSide);
-      return;
-    }
-
-    // Backspace — go up
-    if (key.name === 'backspace') {
-      await goUp(activeSide);
-      return;
-    }
-
-    // : — enter command mode
-    if (key.name === ':' && !key.ctrl && !key.shift) {
-      enterCommandMode();
-      return;
-    }
-
-    // Ctrl+U — pre-fill upload command
-    if (key.ctrl && key.name === 'u') {
-      const item = localState.items[localState.selectedIndex];
-      if (item && !item.isDirectory) {
-        const localPath = `${localState.currentPath}/${item.name}`;
-        const remotePath = `${remoteState.currentPath}/${item.name}`;
-        enterCommandMode(`upload ${localPath} ${remotePath}`);
-      } else {
-        renderStatus('Select a file in Local panel first', C.yellow);
-      }
-      return;
-    }
-
-    // Ctrl+D — pre-fill download command
-    if (key.ctrl && key.name === 'd') {
-      const item = remoteState.items[remoteState.selectedIndex];
-      if (item && !item.isDirectory) {
-        const remotePath = `${remoteState.currentPath}/${item.name}`;
-        const localPath = `${localState.currentPath}/${item.name}`;
-        enterCommandMode(`download ${remotePath} ${localPath}`);
-      } else {
-        renderStatus('Select a file in Remote panel first', C.yellow);
-      }
-      return;
     }
   }
 
@@ -1067,6 +1072,10 @@ export function createSftpTab(
       if (!item) return null;
       const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
       return `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${item.name}`;
+    },
+
+    isCommandMode(): boolean {
+      return cmdMode;
     },
 
     focus(): void {

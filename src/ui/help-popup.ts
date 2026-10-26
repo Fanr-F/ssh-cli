@@ -1,5 +1,6 @@
 import { Box, Text, ScrollBox, TextAttributes } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
+import { buildDocs } from '../keymap';
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -16,85 +17,6 @@ const C = {
   magenta: '#bb9af7',
 };
 
-interface Shortcut {
-  category: string;
-  keys: Array<{ key: string; action: string }>;
-}
-
-const SHORTCUTS: Shortcut[] = [
-  {
-    category: 'General',
-    keys: [
-      { key: 'Ctrl+Q', action: 'Quit application' },
-      { key: 'Ctrl+E', action: 'Open SFTP tab' },
-      { key: 'Alt+←/→', action: 'Switch focus (Sidebar ↔ Terminal)' },
-      { key: 'F1', action: 'Show this help' },
-    ],
-  },
-  {
-    category: 'Sidebar',
-    keys: [
-      { key: 'Alt+↑/↓', action: 'Navigate connections (global)' },
-      { key: '↑/↓', action: 'Navigate connections (when focused)' },
-      { key: 'Enter', action: 'Connect to selected server' },
-      { key: 'A', action: 'Add new connection' },
-      { key: 'E', action: 'Edit selected connection' },
-      { key: 'Delete', action: 'Delete selected connection' },
-    ],
-  },
-  {
-    category: 'Terminal',
-    keys: [
-      { key: 'Ctrl+C', action: 'Copy info or selection (none → SIGINT)' },
-      { key: 'Ctrl+V', action: 'Paste (to terminal or form)' },
-      { key: 'Ctrl+Shift+C', action: 'Close tab (legacy terminals: double-click)' },
-      { key: 'Ctrl+Shift+Tab', action: 'Cycle to next tab' },
-      { key: 'F2-F12', action: 'Switch to tab 1-11' },
-      { key: 'PageUp/PageDown', action: 'Scroll terminal output' },
-    ],
-  },
-  {
-    category: 'SFTP',
-    keys: [
-      { key: 'Tab', action: 'Switch panel (local ↔ remote)' },
-      { key: '↑/↓', action: 'Select file' },
-      { key: 'Enter', action: 'Enter directory' },
-      { key: 'Backspace', action: 'Go to parent directory' },
-      { key: ':', action: 'Open command line' },
-      { key: 'Ctrl+U', action: 'Pre-fill upload command' },
-      { key: 'Ctrl+D', action: 'Pre-fill download command' },
-    ],
-  },
-  {
-    category: 'SFTP Commands',
-    keys: [
-      { key: 'upload <src> [dest]', action: 'Upload local → remote' },
-      { key: 'download <src> [dest]', action: 'Download remote → local' },
-      { key: 'mkdir <name>', action: 'Create directory (active panel)' },
-      { key: 'rm [name]', action: 'Delete selected or named item (active panel)' },
-      { key: 'mv <src> <dst>', action: 'Move / rename (active panel)' },
-      { key: 'cd <path>', action: 'Change directory + refresh both' },
-      { key: 'refresh', action: 'Refresh both panels' },
-      { key: 'hidden [on|off]', action: 'Show/hide system files (local)' },
-    ],
-  },
-  {
-    category: 'Tab Bar',
-    keys: [
-      { key: 'Double-click', action: 'Close tab' },
-    ],
-  },
-  {
-    category: 'Form',
-    keys: [
-      { key: 'Tab', action: 'Next field' },
-      { key: 'Shift+Tab', action: 'Previous field' },
-      { key: 'Home', action: 'Move cursor to start' },
-      { key: 'End', action: 'Move cursor to end' },
-    ],
-  },
-];
-
 export interface HelpPopupAPI {
   /** Root Box renderable */
   readonly component: ReturnType<typeof Box>;
@@ -106,16 +28,14 @@ export interface HelpPopupAPI {
   toggle(): void;
   /** Check if visible */
   isVisible(): boolean;
-  /** Scroll content up */
-  scrollUp(): void;
-  /** Scroll content down */
-  scrollDown(): void;
+  /** Scroll content up by `step` lines */
+  scrollUp(step?: number): void;
+  /** Scroll content down by `step` lines */
+  scrollDown(step?: number): void;
 }
 
 export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
   let visible = false;
-  let scrollOffset = 0;
-  const maxScroll = 200; // Max scroll offset
 
   // Resolve real renderable
   let _instance: any = null;
@@ -142,6 +62,15 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
   let lastDragX = -1;
   let lastDragY = -1;
 
+  // 帮助内容来自 keymap 的唯一事实来源
+  const docs = buildDocs('en');
+
+  /** 键名列宽按实际内容计算，避免硬编码 padEnd 造成错位。 */
+  const keyWidth = docs.reduce(
+    (max, group) => group.rows.reduce((m, row) => Math.max(m, row.keys.length), max),
+    16,
+  ) + 3;
+
   // Build the help content
   function buildContent(): ReturnType<typeof Box>[] {
     const lines: ReturnType<typeof Box>[] = [];
@@ -159,42 +88,59 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
     sepBox.add(Text({ content: '─'.repeat(50), fg: C.border }));
     lines.push(sepBox);
 
-    // Shortcuts by category
-    for (let ci = 0; ci < SHORTCUTS.length; ci++) {
-      const category = SHORTCUTS[ci];
+    for (let ci = 0; ci < docs.length; ci++) {
+      const group = docs[ci];
 
       // Separator between categories
       if (ci > 0) {
-        const sepBox = Box({ height: 1, paddingX: 1 });
-        sepBox.add(Text({ content: '─'.repeat(50), fg: C.border }));
-        lines.push(sepBox);
+        const catSep = Box({ height: 1, paddingX: 1 });
+        catSep.add(Text({ content: '─'.repeat(50), fg: C.border }));
+        lines.push(catSep);
       }
 
       // Category header
       const catBox = Box({ paddingX: 1, paddingY: 1 });
-      catBox.add(Text({ content: category.category, fg: C.yellow, attributes: TextAttributes.BOLD }));
+      catBox.add(Text({ content: group.title, fg: C.yellow, attributes: TextAttributes.BOLD }));
       lines.push(catBox);
 
-      // Keys
-      for (const { key, action } of category.keys) {
-        const keyBox = Box({ height: 1, paddingX: 2, flexDirection: 'row' });
-        keyBox.add(Text({ content: key.padEnd(20), fg: C.green }));
-        keyBox.add(Text({ content: action, fg: C.text }));
-        lines.push(keyBox);
+      const keyBox = Box({ paddingX: 2, paddingY: 0 });
+      for (const row of group.rows) {
+        const rowBox = Box({ height: 1, flexDirection: 'row' });
+        rowBox.add(Text({ content: row.keys.padEnd(keyWidth), fg: C.green }));
+        rowBox.add(Text({ content: row.text, fg: C.text }));
+        keyBox.add(rowBox);
+      }
+      lines.push(keyBox);
+
+      if (group.note) {
+        const noteBox = Box({ paddingX: 2, paddingY: 0 });
+        noteBox.add(Text({ content: group.note, fg: C.textDim }));
+        lines.push(noteBox);
       }
     }
 
     // Footer
     const footBox = Box({ paddingX: 1, paddingY: 1 });
-    footBox.add(Text({ content: '\nPress F1 or Esc to close  |  Up/Down to scroll', fg: C.textDim }));
+    footBox.add(
+      Text({
+        content: 'F1 or Esc: close   ↑/↓: scroll   PgUp/PgDn: page',
+        fg: C.textDim,
+      }),
+    );
     lines.push(footBox);
 
     return lines;
   }
 
+  function maxScrollTop(): number {
+    const scrollBox = getScrollInstance();
+    if (!scrollBox) return 0;
+    const viewportHeight = Math.floor(scrollBox.viewport?.height ?? 0);
+    return Math.max(0, (scrollBox.scrollHeight ?? 0) - viewportHeight);
+  }
+
   function show(): void {
     visible = true;
-    scrollOffset = 0;
     const instance = getInstance();
     if (instance) {
       instance.visible = true;
@@ -216,18 +162,18 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
     }
   }
 
-  function scrollUp(): void {
+  function scrollUp(step = 2): void {
     const scrollBox = getScrollInstance();
     if (scrollBox) {
-      scrollBox.scrollTop = Math.max(0, scrollBox.scrollTop - 2);
+      scrollBox.scrollTop = Math.max(0, scrollBox.scrollTop - step);
       renderer.requestRender();
     }
   }
 
-  function scrollDown(): void {
+  function scrollDown(step = 2): void {
     const scrollBox = getScrollInstance();
     if (scrollBox) {
-      scrollBox.scrollTop = Math.min(maxScroll, scrollBox.scrollTop + 2);
+      scrollBox.scrollTop = Math.min(maxScrollTop(), scrollBox.scrollTop + step);
       renderer.requestRender();
     }
   }

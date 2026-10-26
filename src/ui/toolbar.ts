@@ -1,5 +1,6 @@
 import { Box, Text } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
+import type { FocusZone } from '../keymap';
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -24,10 +25,23 @@ export interface ToolbarCallbacks {
   onHelp?: () => void;
 }
 
+export interface ToolbarAPI {
+  component: ReturnType<typeof Box>;
+  /** 高亮当前焦点区域（与 App 的 focus 状态保持一致） */
+  setFocus(zone: FocusZone): void;
+}
+
+const FOCUS_LABELS: Array<{ zone: FocusZone; label: string }> = [
+  { zone: 'sidebar', label: ' sidebar ' },
+  { zone: 'terminal', label: ' terminal ' },
+  { zone: 'sftp', label: ' sftp ' },
+  { zone: 'form', label: ' form ' },
+];
+
 export function createToolbar(
-  _renderer: CliRenderer,
+  renderer: CliRenderer,
   callbacks: ToolbarCallbacks,
-): ReturnType<typeof Box> {
+): ToolbarAPI {
   const toolbar = Box({
     id: 'toolbar',
     flexDirection: 'row',
@@ -76,19 +90,33 @@ export function createToolbar(
 
   // Focus mode indicator
   const focusHint = Box({ paddingX: 1 });
-
-  const sbText = Text({ content: ' sidebar ', fg: C.textDim });
-  const tabText = Text({ content: ' tab ', fg: C.cyan });
-  const termText = Text({ content: ' terminal ', fg: C.textDim });
-  const sep1 = Text({ content: '│', fg: C.textMuted });
-  const sep2 = Text({ content: '│', fg: C.textMuted });
-
-  focusHint.add(sbText);
-  focusHint.add(sep1);
-  focusHint.add(tabText);
-  focusHint.add(sep2);
-  focusHint.add(termText);
+  for (let i = 0; i < FOCUS_LABELS.length; i++) {
+    if (i > 0) focusHint.add(Text({ content: '│', fg: C.textMuted }));
+    focusHint.add(
+      Text({
+        id: `focus-${FOCUS_LABELS[i].zone}`,
+        content: FOCUS_LABELS[i].label,
+        fg: C.textDim,
+      }),
+    );
+  }
   toolbar.add(focusHint);
 
-  return toolbar;
+  const resolved = new Map<FocusZone, any>();
+
+  return {
+    component: toolbar,
+
+    setFocus(zone: FocusZone): void {
+      for (const { zone: labelZone } of FOCUS_LABELS) {
+        let node = resolved.get(labelZone);
+        if (!node) {
+          node = renderer.root.findDescendantById(`focus-${labelZone}`);
+          if (node) resolved.set(labelZone, node);
+        }
+        if (node) node.fg = labelZone === zone ? C.cyan : C.textDim;
+      }
+      renderer.requestRender();
+    },
+  };
 }
