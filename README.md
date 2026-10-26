@@ -82,8 +82,8 @@ Command mode is persistent — `Enter` executes the command but stays in the pro
 | `:upload <local> [remote]` | Upload a local file to remote path (defaults to file name) |
 | `:download <remote> [local]` | Download a remote file to local path (defaults to file name) |
 | `:mkdir <name>` | Create directory on the active panel |
-| `:rm [name]` | Delete the selected item, or the named one (active panel) |
-| `:rename <old> <new>` | Rename on the active panel |
+| `:rm [path]` | Delete the selected item, or the given path (active panel) |
+| `:mv <src> <dst>` | Move / rename on the active panel (paths allowed) |
 | `:cd <path>` | Change directory and refresh both panels |
 | `:refresh` | Refresh both panels |
 | `:hidden [on|off]` | Show or hide Windows system-protected files |
@@ -277,8 +277,8 @@ Press `Ctrl+E` from a terminal tab to open the SFTP file manager:
 - **Independent SSH connections**: Each SFTP tab creates its own SSH connection
 - **Navigate**: Use `↑`/`↓` to select files, `Enter` to open directories, `Backspace` to go up
 - **Switch panels**: Press `Tab` to switch between local and remote panels
-- **Command line**: Press `:` to enter command mode, then type commands like `upload`, `download`, `cd`, `mkdir`, `rm`, `rename`, `refresh`, `hidden` (`Tab` autocompletes, `↑/↓` browse history, `Esc` exits)
-- **Shortcuts**: `Ctrl+U` to pre-fill an upload command, `Ctrl+D` to pre-fill download — everything else (mkdir, delete, rename, refresh, hidden files) goes through the command line
+- **Command line**: Press `:` to enter command mode, then type commands like `upload`, `download`, `cd`, `mkdir`, `rm`, `mv`, `refresh`, `hidden` (`Tab` autocompletes, `↑/↓` browse history, `Esc` exits)
+- **Shortcuts**: `Ctrl+U` to pre-fill an upload command, `Ctrl+D` to pre-fill download — everything else (mkdir, rm, mv, refresh, hidden) goes through the command line
 - **Close**: Press `Esc` in command mode to exit it, or close the tab via `Ctrl+Shift+C` / double-click
 
 #### 6. Disconnect / Switch Sessions

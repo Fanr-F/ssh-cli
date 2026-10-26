@@ -72,7 +72,7 @@ const SHORTCUTS: Shortcut[] = [
       { key: 'download <src> [dest]', action: 'Download remote → local' },
       { key: 'mkdir <name>', action: 'Create directory (active panel)' },
       { key: 'rm [name]', action: 'Delete selected or named item (active panel)' },
-      { key: 'rename <old> <new>', action: 'Rename (active panel)' },
+      { key: 'mv <src> <dst>', action: 'Move / rename (active panel)' },
       { key: 'cd <path>', action: 'Change directory + refresh both' },
       { key: 'refresh', action: 'Refresh both panels' },
       { key: 'hidden [on|off]', action: 'Show/hide system files (local)' },

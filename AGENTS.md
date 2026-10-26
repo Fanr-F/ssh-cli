@@ -126,7 +126,7 @@ onMouseDrag: (e: MouseEvent) => {
 - **Dual-panel layout**: Local (left) / Remote (right)
 - **Independent SSH connections**: Each SFTP tab creates its own SSH connection
 - **Command line mode** (`:`): persistent mode, Enter executes but stays in mode, Esc exits
-- **Commands**: `upload <local> <remote>`, `download <remote> <local>`, `mkdir <path>`, `rm <path>`, `rename <old> <new>`, `cd <path>`
+- **Commands**: `upload <local> <remote>`, `download <remote> <local>`, `mkdir <path>`, `rm [path]`, `mv <src> <dst>`, `cd <path>`, `refresh`, `hidden [on|off]`
 - **ScrollBox scrolling**: Each list is a `ScrollBox` (built-in scrollbar / wheel / auto-hide); `ensureIndexVisible()` calls `scrollTo()` to keep the selected row in view
 - **Remote cd resolution**: Relative paths resolved against `remoteState.currentPath`
 - **Tab close independence**: Closing one tab doesn't affect others

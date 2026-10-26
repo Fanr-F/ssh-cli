@@ -4,11 +4,11 @@ import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
 import { toRGBA } from '../color';
-import { basename, isAbsolute, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 
 const log = createLogger('sftp-tab');
 
-const KNOWN_COMMANDS = ['upload', 'download', 'mkdir', 'rm', 'rename', 'cd', 'refresh', 'hidden'];
+const KNOWN_COMMANDS = ['upload', 'download', 'mkdir', 'rm', 'mv', 'cd', 'refresh', 'hidden'];
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -236,7 +236,7 @@ export function createSftpTab(
 
   // Help line
   const helpLine = Text({
-    content: ' :命令  upload download mkdir rm rename cd refresh hidden',
+    content: ' :命令  upload download mkdir rm mv cd refresh hidden',
     fg: C.textDim,
     id: 'sftp-help-line',
     height: 1,
@@ -469,6 +469,30 @@ export function createSftpTab(
     renderer.requestRender();
   }
 
+  // ── 路径解析（rm / mv 共用）─────────────────────────────────────
+  /** 把命令参数解析成绝对路径：本地走 node:path，远端按 '/' 拼接 */
+  function toAbsPath(p: string): string {
+    const state = activeSide === 'local' ? localState : remoteState;
+    if (activeSide === 'local') return isAbsolute(p) ? p : resolve(state.currentPath, p);
+    return p.startsWith('/') ? p : `${state.currentPath.replace(/\/+$/, '')}/${p}`;
+  }
+
+  /** 取路径最后一段，用于提示文案 */
+  function pathName(p: string): string {
+    if (activeSide === 'local') return basename(p);
+    return p.split('/').filter(Boolean).pop() ?? p;
+  }
+
+  /** 判断路径是否为目录；不依赖列表缓存，因此支持当前目录之外的路径 */
+  async function isDirectoryPath(p: string): Promise<boolean> {
+    if (activeSide === 'remote') {
+      const attrs = await sftpClient.stat(p);
+      return attrs.isDirectory();
+    }
+    const { stat } = await import('node:fs/promises');
+    return (await stat(p)).isDirectory();
+  }
+
   async function executeCommand(input: string): Promise<boolean> {
     const parts = input.trim().split(/\s+/);
     const cmd = parts[0];
@@ -561,27 +585,38 @@ export function createSftpTab(
         break;
       }
       case 'rm': {
-        const state = activeSide === 'local' ? localState : remoteState;
-        const item = args.length > 0
-          ? state.items.find(i => i.name === args[0])
-          : state.items[state.selectedIndex];
-        if (!item) {
-          renderStatus(args.length > 0 ? `Not found: ${args[0]}` : 'Nothing selected', C.red);
+        if (args.length > 1) {
+          renderStatus('Usage: rm [path]', C.red);
           return false;
         }
-        const name = item.name;
-        const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
-        const fullPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${name}`;
+        const state = activeSide === 'local' ? localState : remoteState;
+        let fullPath: string;
+        let name: string;
+        let isDirHint: boolean | undefined;
+        if (args.length === 0) {
+          const item = state.items[state.selectedIndex];
+          if (!item) {
+            renderStatus('Nothing selected', C.red);
+            return false;
+          }
+          fullPath = toAbsPath(item.name);
+          name = item.name;
+          isDirHint = item.isDirectory;
+        } else {
+          fullPath = toAbsPath(args[0]);
+          name = pathName(fullPath);
+        }
         try {
+          const isDir = isDirHint ?? await isDirectoryPath(fullPath);
           if (activeSide === 'remote') {
-            if (item.isDirectory) {
+            if (isDir) {
               await sftpClient.rmdir(fullPath);
             } else {
               await sftpClient.unlink(fullPath);
             }
           } else {
             const { unlink, rmdir } = await import('node:fs/promises');
-            if (item.isDirectory) {
+            if (isDir) {
               await rmdir(fullPath);
             } else {
               await unlink(fullPath);
@@ -596,22 +631,41 @@ export function createSftpTab(
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Delete failed';
           log.error(`[SFTP RM] ${fullPath}: ${msg}`);
-          renderStatus(`Delete failed: ${msg}`, C.red);
+          renderStatus(`rm failed: ${msg}`, C.red);
           ok = false;
         }
         break;
       }
-      case 'rename': {
-        if (args.length < 2) {
-          renderStatus('Usage: rename <old> <new>', C.red);
+      case 'mv': {
+        if (args.length !== 2) {
+          renderStatus('Usage: mv <src> <dst>', C.red);
           return false;
         }
-        const oldName = args[0];
-        const newName = args[1];
-        const state = activeSide === 'local' ? localState : remoteState;
-        const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
-        const oldPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${oldName}`;
-        const newPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${newName}`;
+        const oldPath = toAbsPath(args[0]);
+        let newPath = toAbsPath(args[1]);
+        // dst 是已存在的目录（或以分隔符结尾）→ 移入该目录，保留原文件名
+        let dstIsDir = /[\\/]$/.test(args[1]);
+        if (!dstIsDir) {
+          try {
+            dstIsDir = await isDirectoryPath(newPath);
+          } catch {
+            // dst 不存在 → 按改名处理
+          }
+        }
+        if (dstIsDir) {
+          newPath = activeSide === 'local'
+            ? join(newPath, pathName(oldPath))
+            : `${newPath.replace(/\/+$/, '')}/${pathName(oldPath)}`;
+        }
+        if (oldPath === newPath) {
+          renderStatus('Source and destination are the same', C.red);
+          return false;
+        }
+        const sep = activeSide === 'local' ? (oldPath.includes('\\') ? '\\' : '/') : '/';
+        if (newPath.startsWith(oldPath + sep)) {
+          renderStatus('Cannot move a directory into itself', C.red);
+          return false;
+        }
         try {
           if (activeSide === 'remote') {
             await sftpClient.rename(oldPath, newPath);
@@ -619,16 +673,16 @@ export function createSftpTab(
             const { rename } = await import('node:fs/promises');
             await rename(oldPath, newPath);
           }
-          renderStatus(`Renamed: ${oldName} → ${newName}`, C.green);
+          renderStatus(`Moved: ${pathName(oldPath)} → ${pathName(newPath)}`, C.green);
           if (activeSide === 'local') {
             await loadLocalDir(localState.currentPath);
           } else {
             await loadRemoteDir(remoteState.currentPath);
           }
         } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Rename failed';
-          log.error(`[SFTP RENAME] ${oldPath} → ${newPath}: ${msg}`);
-          renderStatus(`Rename failed: ${msg}`, C.red);
+          const msg = err instanceof Error ? err.message : 'mv failed';
+          log.error(`[SFTP MV] ${oldPath} → ${newPath}: ${msg}`);
+          renderStatus(`mv failed: ${msg}`, C.red);
           ok = false;
         }
         break;
