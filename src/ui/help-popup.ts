@@ -26,6 +26,7 @@ const SHORTCUTS: Shortcut[] = [
     category: 'General',
     keys: [
       { key: 'Ctrl+Q', action: 'Quit application' },
+      { key: 'Ctrl+E', action: 'Open SFTP tab' },
       { key: 'Alt+←/→', action: 'Switch focus (Sidebar ↔ Terminal)' },
       { key: 'F1', action: 'Show this help' },
     ],
@@ -44,7 +45,7 @@ const SHORTCUTS: Shortcut[] = [
   {
     category: 'Terminal',
     keys: [
-      { key: 'Ctrl+C', action: 'Copy (sidebar: info, terminal: last line)' },
+      { key: 'Ctrl+C', action: 'Copy info or selection (none → SIGINT)' },
       { key: 'Ctrl+V', action: 'Paste (to terminal or form)' },
       { key: 'Ctrl+Shift+C', action: 'Close tab (legacy terminals: double-click)' },
       { key: 'Ctrl+Shift+Tab', action: 'Cycle to next tab' },
@@ -55,18 +56,13 @@ const SHORTCUTS: Shortcut[] = [
   {
     category: 'SFTP',
     keys: [
-      { key: 'Ctrl+E', action: 'Open SFTP tab' },
       { key: 'Tab', action: 'Switch panel (local ↔ remote)' },
       { key: '↑/↓', action: 'Select file' },
       { key: 'Enter', action: 'Enter directory' },
       { key: 'Backspace', action: 'Go to parent directory' },
       { key: ':', action: 'Open command line' },
-      { key: 'Ctrl+U', action: 'Upload (pre-fill command)' },
-      { key: 'Ctrl+D', action: 'Download (pre-fill command)' },
-      { key: 'F7/N', action: 'New directory (remote)' },
-      { key: 'F8/Delete', action: 'Delete file/directory' },
-      { key: 'F2', action: 'Rename' },
-      { key: 'R', action: 'Refresh' },
+      { key: 'Ctrl+U', action: 'Pre-fill upload command' },
+      { key: 'Ctrl+D', action: 'Pre-fill download command' },
     ],
   },
   {
@@ -75,9 +71,11 @@ const SHORTCUTS: Shortcut[] = [
       { key: 'upload <src> [dest]', action: 'Upload local → remote' },
       { key: 'download <src> [dest]', action: 'Download remote → local' },
       { key: 'mkdir <name>', action: 'Create directory (active panel)' },
-      { key: 'rm <name>', action: 'Delete file/directory (active panel)' },
+      { key: 'rm [name]', action: 'Delete selected or named item (active panel)' },
       { key: 'rename <old> <new>', action: 'Rename (active panel)' },
       { key: 'cd <path>', action: 'Change directory + refresh both' },
+      { key: 'refresh', action: 'Refresh both panels' },
+      { key: 'hidden [on|off]', action: 'Show/hide system files (local)' },
     ],
   },
   {

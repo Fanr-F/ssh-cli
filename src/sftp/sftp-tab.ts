@@ -8,7 +8,7 @@ import { basename, isAbsolute, resolve } from 'node:path';
 
 const log = createLogger('sftp-tab');
 
-const KNOWN_COMMANDS = ['upload', 'download', 'mkdir', 'rm', 'rename', 'cd'];
+const KNOWN_COMMANDS = ['upload', 'download', 'mkdir', 'rm', 'rename', 'cd', 'refresh', 'hidden'];
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -236,7 +236,7 @@ export function createSftpTab(
 
   // Help line
   const helpLine = Text({
-    content: ' :命令  upload download mkdir rm rename cd',
+    content: ' :命令  upload download mkdir rm rename cd refresh hidden',
     fg: C.textDim,
     id: 'sftp-help-line',
     height: 1,
@@ -406,6 +406,14 @@ export function createSftpTab(
     }
   }
 
+  /** 刷新两个面板；verbose=false 用于切标签页时的静默刷新 */
+  async function refreshBoth(verbose = true): Promise<void> {
+    if (verbose) renderStatus('Refreshing...');
+    await loadLocalDir(localState.currentPath);
+    await loadRemoteDir(remoteState.currentPath);
+    if (verbose) renderStatus('Refreshed', C.green);
+  }
+
   // ── Navigation ────────────────────────────────────────────────
   async function enterDirectory(side: PanelSide): Promise<void> {
     const state = side === 'local' ? localState : remoteState;
@@ -450,19 +458,6 @@ export function createSftpTab(
       renderStatus(`Going to ${newPath}...`);
       await loadRemoteDir(newPath);
     }
-  }
-
-  // ── Simple input helper ────────────────────────────────────────
-  let inputResolve: ((value: string) => void) | null = null;
-  let inputBuffer = '';
-
-  function waitForInput(initialValue: string = ''): Promise<string> {
-    return new Promise((resolve) => {
-      inputResolve = resolve;
-      inputBuffer = initialValue;
-      renderStatus(`Input: ${inputBuffer}_`);
-      renderer.requestRender();
-    });
   }
 
   // ── Command mode ──────────────────────────────────────────────
@@ -566,17 +561,15 @@ export function createSftpTab(
         break;
       }
       case 'rm': {
-        if (args.length < 1) {
-          renderStatus('Usage: rm <name>', C.red);
-          return false;
-        }
-        const name = args[0];
         const state = activeSide === 'local' ? localState : remoteState;
-        const item = state.items.find(i => i.name === name);
+        const item = args.length > 0
+          ? state.items.find(i => i.name === args[0])
+          : state.items[state.selectedIndex];
         if (!item) {
-          renderStatus(`Not found: ${name}`, C.red);
+          renderStatus(args.length > 0 ? `Not found: ${args[0]}` : 'Nothing selected', C.red);
           return false;
         }
+        const name = item.name;
         const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
         const fullPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${name}`;
         try {
@@ -672,6 +665,16 @@ export function createSftpTab(
           renderStatus(`cd failed: ${msg}`, C.red);
           ok = false;
         }
+        break;
+      }
+      case 'refresh': {
+        await refreshBoth();
+        break;
+      }
+      case 'hidden': {
+        showSystemFiles = args[0] !== 'off';
+        renderStatus(showSystemFiles ? 'System files: shown' : 'System files: hidden', C.yellow);
+        await loadLocalDir(localState.currentPath);
         break;
       }
       default:
@@ -787,48 +790,13 @@ export function createSftpTab(
       cmdCursorPos += text.length;
       renderStatus(`> ${cmdBuffer}_`);
       renderer.requestRender();
-    } else if (inputResolve) {
-      inputBuffer += text;
-      renderStatus(`Input: ${inputBuffer}_`);
-      renderer.requestRender();
     }
   }
 
   // ── Keyboard handling ─────────────────────────────────────────
   async function handleKey(key: KeyEvent): Promise<void> {
-    log.debug(`[SFTP KEY] name:${key.name} ctrl:${key.ctrl} shift:${key.shift} destroyed:${destroyed} inputResolve:${!!inputResolve}`);
+    log.debug(`[SFTP KEY] name:${key.name} ctrl:${key.ctrl} shift:${key.shift} destroyed:${destroyed}`);
     if (destroyed) return;
-
-    // If we're waiting for input, handle that first
-    if (inputResolve) {
-      if (key.name === 'enter' || key.name === 'return') {
-        const value = inputBuffer;
-        inputResolve(value);
-        inputResolve = null;
-        inputBuffer = '';
-        return;
-      }
-      if (key.name === 'backspace') {
-        inputBuffer = inputBuffer.slice(0, -1);
-        renderStatus(`Input: ${inputBuffer}_`);
-        renderer.requestRender();
-        return;
-      }
-      if (key.name === 'escape') {
-        inputResolve('');
-        inputResolve = null;
-        inputBuffer = '';
-        renderStatus('Cancelled');
-        return;
-      }
-      // NOTE: KeyEvent has no `alt` field (ParsedKey exposes `meta`/`option`); `!key.meta` is the real Alt guard.
-      if (key.sequence && !key.ctrl && !key.meta) {
-        inputBuffer += key.sequence;
-        renderStatus(`Input: ${inputBuffer}_`);
-        renderer.requestRender();
-      }
-      return;
-    }
 
     // If we're in command mode, handle that
     if (cmdMode) {
@@ -1007,122 +975,6 @@ export function createSftpTab(
       }
       return;
     }
-
-    // Ctrl+H — toggle showing Windows system-protected files
-    if (key.ctrl && key.name === 'h') {
-      showSystemFiles = !showSystemFiles;
-      renderStatus(showSystemFiles ? 'Show system files (Ctrl+H to hide)' : 'Hide system files (Ctrl+H to show)', C.yellow);
-      await loadLocalDir(localState.currentPath);
-      return;
-    }
-
-    // R or Ctrl+R — refresh
-    if (key.name === 'r' || (key.ctrl && key.name === 'r')) {
-      renderStatus('Refreshing...');
-      await loadLocalDir(localState.currentPath);
-      await loadRemoteDir(remoteState.currentPath);
-      renderStatus('Refreshed', C.green);
-      return;
-    }
-
-    // F7 or n — new directory (remote only)
-    if (key.name === 'f7' || (key.name === 'n' && !key.ctrl)) {
-      if (activeSide === 'remote') {
-        // Prompt for directory name via status bar
-        renderStatus('Enter directory name, then press Enter:', C.yellow);
-        // Simple input: wait for next key as directory name
-        const inputName = await waitForInput();
-        if (inputName) {
-          const newPath = `${remoteState.currentPath}/${inputName}`;
-          try {
-            await sftpClient.mkdir(newPath);
-            renderStatus(`Created directory: ${inputName}`, C.green);
-            await loadRemoteDir(remoteState.currentPath);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Mkdir failed';
-            renderStatus(`Mkdir failed: ${msg}`, C.red);
-          }
-        }
-      }
-      return;
-    }
-
-    // F8 or Delete — delete file/directory
-    if (key.name === 'f8' || key.name === 'delete') {
-      const state = activeSide === 'local' ? localState : remoteState;
-      const item = state.items[state.selectedIndex];
-      if (item) {
-        const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
-        const fullPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${item.name}`;
-        renderStatus(`Delete ${item.name}? (y/n)`, C.yellow);
-        const confirm = await waitForInput();
-        if (confirm === 'y' || confirm === 'Y') {
-          try {
-            if (activeSide === 'remote') {
-              if (item.isDirectory) {
-                await sftpClient.rmdir(fullPath);
-              } else {
-                await sftpClient.unlink(fullPath);
-              }
-            } else {
-              const { unlink, rmdir } = await import('node:fs/promises');
-              if (item.isDirectory) {
-                await rmdir(fullPath);
-              } else {
-                await unlink(fullPath);
-              }
-            }
-            renderStatus(`Deleted: ${item.name}`, C.green);
-            if (activeSide === 'local') {
-              await loadLocalDir(localState.currentPath);
-            } else {
-              await loadRemoteDir(remoteState.currentPath);
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Delete failed';
-            renderStatus(`Delete failed: ${msg}`, C.red);
-          }
-        } else {
-          renderStatus('Cancelled');
-        }
-      }
-      return;
-    }
-
-    // F2 — rename
-    if (key.name === 'f2') {
-      const state = activeSide === 'local' ? localState : remoteState;
-      const item = state.items[state.selectedIndex];
-      if (item) {
-        renderStatus(`Rename ${item.name} to:`, C.yellow);
-        const newName = await waitForInput();
-        if (newName && newName !== item.name) {
-          const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
-          const oldPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${item.name}`;
-          const newPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${newName}`;
-          try {
-            if (activeSide === 'remote') {
-              await sftpClient.rename(oldPath, newPath);
-            } else {
-              const { rename } = await import('node:fs/promises');
-              await rename(oldPath, newPath);
-            }
-            renderStatus(`Renamed to: ${newName}`, C.green);
-            if (activeSide === 'local') {
-              await loadLocalDir(localState.currentPath);
-            } else {
-              await loadRemoteDir(remoteState.currentPath);
-            }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Rename failed';
-            renderStatus(`Rename failed: ${msg}`, C.red);
-          }
-        } else {
-          renderStatus('Cancelled');
-        }
-      }
-      return;
-    }
   }
 
   // ── Initial load ──────────────────────────────────────────────
@@ -1176,8 +1028,7 @@ export function createSftpTab(
     },
 
     async refresh(): Promise<void> {
-      await loadLocalDir(localState.currentPath);
-      await loadRemoteDir(remoteState.currentPath);
+      await refreshBoth(false);
     },
   };
 }
