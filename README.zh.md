@@ -55,7 +55,7 @@
 |---|---|
 | `Ctrl+C` | 复制（侧边栏：连接信息；终端：选中文本或最后一行；无内容可复制时向 shell 发送 SIGINT） |
 | `Ctrl+V` | 粘贴（剪贴板内容粘贴到终端/表单/SFTP 输入） |
-| `Ctrl+Shift+C` | 关闭当前标签页 |
+| `Ctrl+Shift+C` | 关闭当前标签页（⚠️ 传统终端下无效，见[已知问题](#已知问题)） |
 | `Ctrl+Shift+Tab` | 循环切换到下一个标签页 |
 | `PageUp/PageDown` | 滚动终端输出 |
 
@@ -126,6 +126,24 @@
 | 鼠标支持（选中、复制、拖动） | ✅ 完成 |
 | 验证与 QA | ✅ 完成 |
 
+### 已知问题
+
+#### `Ctrl+Shift+C` 在部分终端无法关闭标签页
+
+**现象**：在 Windows Terminal、VS Code 集成终端等传统终端中按 `Ctrl+Shift+C` 不会关闭标签页，而是触发 `Ctrl+C`（复制或向远端 shell 发送 SIGINT）。
+
+**原因**：传统终端把 `Ctrl+Shift+字母` 编码成与 `Ctrl+字母` 相同的控制字符，Shift 信息在应用收到按键之前就已经丢失。应用日志中可以观察到：
+
+```
+[KEY] name=c ctrl=true shift=false seqHex=[0x03] raw="\u0003"
+```
+
+另外 Windows Terminal / VS Code 默认把 `Ctrl+Shift+C` 绑定为"复制"，可能直接在终端层拦截该按键。
+
+**当前状态**：应用内的按键判断顺序已修正（关闭标签优先于复制），因此支持 [Kitty 键盘协议](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) 的终端可以正常使用；但在传统终端下无法从应用层恢复 Shift 信息。替代快捷键方案（`Alt+W` / `Ctrl+W` / `Shift+F4`）尚未确定，暂缓处理。
+
+**临时方案**：双击标签页关闭；或按 `Ctrl+Shift+Tab` 切换标签，用 `F2-F12` 跳转。
+
 ### 架构
 
 ```
@@ -187,6 +205,8 @@ bun run build:win
 ### 日志
 
 所有日志写入项目根目录的 `ssh-cli.log` 文件，控制台无输出（TUI 安全）。
+
+日志文件超过 2MB 时，会在下次启动时自动轮转为 `ssh-cli.log.1`（只保留一份备份）。`debug` 级别下的 SSH 输入/输出预览只在启用 debug 时才会格式化，`info` 级别下不产生额外分配。
 
 | 参数 | 说明 |
 |---|---|

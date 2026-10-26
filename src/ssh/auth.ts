@@ -1,18 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { utils } from 'ssh2-no-cpu-features';
 import { ConnectionConfig } from '../types/connection';
 
-// ssh2 connection config type (we don't import it directly to avoid issues)
-type ParsedKey = Exclude<ReturnType<typeof utils.parseKey>, Error>;
-
+// ssh2 is imported lazily (only when a key actually needs parsing) so that
+// merely loading this module does not pull in the whole ssh2 library.
 interface SshConnectConfig {
   host: string;
   port: number;
   username: string;
   password?: string;
-  privateKey?: Buffer | string | ParsedKey;
+  privateKey?: Buffer | string;
   passphrase?: string;
   readyTimeout?: number;
   hostHash?: string;
@@ -104,6 +102,7 @@ export async function validateKey(keyPath: string): Promise<boolean> {
       ? path.join(os.homedir(), keyPath.slice(1))
       : keyPath;
     const keyData = fs.readFileSync(resolvedPath);
+    const { utils } = await import('ssh2-no-cpu-features');
     const parsedKey = utils.parseKey(keyData);
     return !(parsedKey instanceof Error);
   } catch {

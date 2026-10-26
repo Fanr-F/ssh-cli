@@ -154,6 +154,7 @@ No test suite, no linter, no formatter configured. TypeScript strict mode enforc
 ## Important Notes
 
 - **Ctrl+C does NOT exit** — `exitOnCtrlC: false` in index.ts. Ctrl+C is forwarded to SSH shell when connected, copies text when terminal has selection.
+- **Ctrl+Shift+C is unreliable** — legacy terminals (Windows Terminal / VS Code) encode `Ctrl+Shift+<letter>` as `Ctrl+<letter>`, so the app receives `shift=false` (`0x03`) and cannot distinguish it from Ctrl+C. Close-tab is checked before copy in `app.ts`, which only helps terminals supporting the Kitty keyboard protocol. Double-clicking a tab is the reliable workaround; a replacement shortcut is still undecided. See README "Known Issues".
 - **ssh2-no-cpu-features** — Used over ssh2 because native cpu-features module fails on Bun.
 - **Native VT** — Terminal emulation is `EmbeddedTerminalRenderable` from `@opentui/core` (Ghostty VT), NOT a custom ANSI parser. Scrollback lives inside the native terminal (`maxScrollback`).
 - **No public scroll API** — PageUp/PageDown call the zig binding `contextEmbeddedTerminalScroll` via `(term as any).lib` (negative = older lines); mouse wheel scrolling is built in.

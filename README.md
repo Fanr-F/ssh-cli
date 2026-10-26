@@ -60,7 +60,7 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 |---|---|
 | `Ctrl+C` | Copy (sidebar: connection info; terminal: selection or last line; sends SIGINT to shell if nothing to copy) |
 | `Ctrl+V` | Paste (clipboard content to terminal, form, or SFTP input) |
-| `Ctrl+Shift+C` | Close current tab |
+| `Ctrl+Shift+C` | Close current tab (⚠️ does not work in legacy terminals, see [Known Issues](#known-issues)) |
 | `Ctrl+Shift+Tab` | Cycle to next tab |
 | `PageUp/PageDown` | Scroll terminal output |
 
@@ -131,6 +131,24 @@ All core layers are implemented and integrated.
 | Mouse Support (selection, copy, drag) | ✅ Complete |
 | Verification & QA | ✅ Complete |
 
+### Known Issues
+
+#### `Ctrl+Shift+C` does not close tabs in some terminals
+
+**Symptom**: In legacy terminals such as Windows Terminal or the VS Code integrated terminal, pressing `Ctrl+Shift+C` does not close the active tab; it behaves like `Ctrl+C` (copy, or SIGINT to the remote shell).
+
+**Cause**: Legacy terminals encode `Ctrl+Shift+<letter>` as the same control character as `Ctrl+<letter>`, so the Shift modifier is lost before the app receives the key. The app log shows:
+
+```
+[KEY] name=c ctrl=true shift=false seqHex=[0x03] raw="\u0003"
+```
+
+Windows Terminal and VS Code also bind `Ctrl+Shift+C` to "Copy" by default, so the key may be intercepted at the terminal layer.
+
+**Status**: The in-app key handling order has been fixed (close-tab is checked before copy), so terminals that support the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) work correctly. Legacy terminals cannot recover the Shift modifier at the application level. A replacement shortcut (`Alt+W` / `Ctrl+W` / `Shift+F4`) has not been chosen yet; this is deferred.
+
+**Workaround**: double-click the tab to close it, or cycle with `Ctrl+Shift+Tab` and jump with `F2-F12`.
+
 ### Architecture
 
 ```
@@ -192,6 +210,8 @@ bun run build:win
 ### Logging
 
 All logs are written to `ssh-cli.log` in the project root. No console output (TUI safe).
+
+When the log exceeds 2 MB, it is rotated to `ssh-cli.log.1` on the next startup (one backup is kept). SSH I/O previews are only formatted when `debug` logging is enabled; on the default `info` level this path allocates nothing.
 
 | Flag | Description |
 |---|---|
@@ -354,7 +374,7 @@ Press `Ctrl+Q` to quit the application.
 |---|---|
 | `Ctrl+C` | 复制（侧边栏：连接信息；终端：选中文本或最后一行；无内容可复制时向 shell 发送 SIGINT） |
 | `Ctrl+V` | 粘贴（剪贴板内容粘贴到终端/表单/SFTP 输入） |
-| `Ctrl+Shift+C` | 关闭当前标签页 |
+| `Ctrl+Shift+C` | 关闭当前标签页（⚠️ 传统终端下无效，见[已知问题](#已知问题)） |
 | `Ctrl+Shift+Tab` | 循环切换到下一个标签页 |
 | `PageUp/PageDown` | 滚动终端输出 |
 
@@ -424,6 +444,24 @@ Press `Ctrl+Q` to quit the application.
 | 应用编排（布局、键盘路由、SSH 生命周期、多标签页） | ✅ 完成 |
 | 鼠标支持（选中、复制、拖动） | ✅ 完成 |
 | 验证与 QA | ✅ 完成 |
+
+### 已知问题
+
+#### `Ctrl+Shift+C` 在部分终端无法关闭标签页
+
+**现象**：在 Windows Terminal、VS Code 集成终端等传统终端中按 `Ctrl+Shift+C` 不会关闭标签页，而是触发 `Ctrl+C`（复制或向远端 shell 发送 SIGINT）。
+
+**原因**：传统终端把 `Ctrl+Shift+字母` 编码成与 `Ctrl+字母` 相同的控制字符，Shift 信息在应用收到按键之前就已经丢失。应用日志中可以观察到：
+
+```
+[KEY] name=c ctrl=true shift=false seqHex=[0x03] raw="\u0003"
+```
+
+另外 Windows Terminal / VS Code 默认把 `Ctrl+Shift+C` 绑定为"复制"，可能直接在终端层拦截该按键。
+
+**当前状态**：应用内的按键判断顺序已修正（关闭标签优先于复制），因此支持 [Kitty 键盘协议](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) 的终端可以正常使用；但在传统终端下无法从应用层恢复 Shift 信息。替代快捷键方案（`Alt+W` / `Ctrl+W` / `Shift+F4`）尚未确定，暂缓处理。
+
+**临时方案**：双击标签页关闭；或按 `Ctrl+Shift+Tab` 切换标签，用 `F2-F12` 跳转。
 
 ### 架构
 

@@ -1,4 +1,4 @@
-import { Client, ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2-no-cpu-features';
+import type { Client, ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2-no-cpu-features';
 import { EventEmitter } from 'node:events';
 import { ShellOptions, SshConnectionState, AuthenticationError, ConnectionTimeoutError, HostKeyError } from './types';
 import { ConnectionConfig } from '../types/connection';
@@ -15,16 +15,12 @@ interface SshConnectionEvents {
 }
 
 export class SshConnection extends EventEmitter<SshConnectionEvents> {
-  private client: Client;
+  // ssh2 is loaded lazily on the first `connect()` call: importing it eagerly
+  // costs ~20 MB RSS at startup, which matters for a TUI that starts offline.
+  private client: Client | null = null;
   private _state: SshConnectionState = SshConnectionState.Disconnected;
   private shellChannel: ClientChannel | null = null;
   private _lastError: Error | null = null;
-
-  constructor() {
-    super();
-    this.client = new Client();
-    this.setupClientHandlers();
-  }
 
   get state(): SshConnectionState {
     return this._state;
@@ -39,47 +35,53 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     this.emit('stateChange', state);
   }
 
-  private setupClientHandlers(): void {
-    this.client.on('ready', () => {
+  private setupClientHandlers(client: Client): void {
+    client.on('ready', () => {
       log.info('SSH connection ready');
       this.setState(SshConnectionState.Connected);
       this._lastError = null; // Clear error on successful connection
       this.emit('ready');
     });
 
-    this.client.on('close', () => {
+    client.on('close', () => {
       log.info('SSH connection closed');
       this.setState(SshConnectionState.Disconnected);
       this.shellChannel = null;
+      if (this.client === client) this.client = null;
       this.emit('close');
     });
 
-    this.client.on('error', (err: Error) => {
+    client.on('error', (err: Error) => {
       log.error('SSH connection error: {error}', { error: err.message });
       this._lastError = err; // Track the error
       this.emit('error', err);
     });
 
-    this.client.on('end', () => {
+    client.on('end', () => {
       log.debug('SSH connection ended');
       this.setState(SshConnectionState.Disconnected);
       this.shellChannel = null;
     });
   }
 
-  connect(config: ConnectionConfig): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (this._state !== SshConnectionState.Disconnected) {
-        reject(new Error('Already connected or connecting'));
-        return;
-      }
+  async connect(config: ConnectionConfig): Promise<void> {
+    if (this._state !== SshConnectionState.Disconnected) {
+      throw new Error('Already connected or connecting');
+    }
 
-      log.info('Connecting to SSH server: {host}:{port} as {username}', {
-        host: config.host,
-        port: config.port,
-        username: config.username,
-      });
-      this.setState(SshConnectionState.Connecting);
+    log.info('Connecting to SSH server: {host}:{port} as {username}', {
+      host: config.host,
+      port: config.port,
+      username: config.username,
+    });
+    this.setState(SshConnectionState.Connecting);
+
+    try {
+      // Lazy-load the heavy SSH implementation only when actually connecting.
+      const { Client } = await import('ssh2-no-cpu-features');
+      const client = new Client();
+      this.client = client;
+      this.setupClientHandlers(client);
 
       // Build config using auth.ts (handles both key and password auth)
       const connectConfig = buildConnectConfig(config) as ConnectConfig;
@@ -107,34 +109,39 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
         return true;
       };
 
-      // Handle errors during connection
-      const onError = (err: Error) => {
-        this.cleanup();
-        if (err.message?.includes('Authentication') || err.message?.includes('password') || err.message?.includes('auth')) {
-          reject(new AuthenticationError(err.message));
-        } else if (err.message?.includes('timed out') || err.message?.includes('timeout')) {
-          reject(new ConnectionTimeoutError(err.message));
-        } else if (err.message?.includes('host key')) {
-          reject(new HostKeyError(err.message));
-        } else {
-          reject(err);
-        }
-      };
+      await new Promise<void>((resolve, reject) => {
+        // Handle errors during connection
+        const onError = (err: Error) => {
+          if (err.message?.includes('Authentication') || err.message?.includes('password') || err.message?.includes('auth')) {
+            reject(new AuthenticationError(err.message));
+          } else if (err.message?.includes('timed out') || err.message?.includes('timeout')) {
+            reject(new ConnectionTimeoutError(err.message));
+          } else if (err.message?.includes('host key')) {
+            reject(new HostKeyError(err.message));
+          } else {
+            reject(err);
+          }
+        };
 
-      this.client.once('error', onError);
+        client.once('error', onError);
 
-      this.client.once('ready', () => {
-        this.client.removeListener('error', onError);
-        resolve();
+        client.once('ready', () => {
+          client.removeListener('error', onError);
+          resolve();
+        });
+
+        client.connect(connectConfig);
       });
-
-      this.client.connect(connectConfig);
-    });
+    } catch (err) {
+      this.cleanup();
+      throw err;
+    }
   }
 
   startShell(options?: ShellOptions): Promise<ClientChannel> {
     return new Promise((resolve, reject) => {
-      if (this._state !== SshConnectionState.Connected) {
+      const client = this.client;
+      if (this._state !== SshConnectionState.Connected || !client) {
         reject(new Error('Not connected'));
         return;
       }
@@ -143,7 +150,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
       const rows = options?.rows ?? 24;
       const term = options?.term ?? 'xterm-256color';
 
-      this.client.shell(
+      client.shell(
         { cols, rows, term },
         (err: Error | undefined, channel: ClientChannel) => {
           if (err) {
@@ -165,7 +172,9 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
 
   disconnect(): Promise<void> {
     return new Promise((resolve) => {
-      if (this._state === SshConnectionState.Disconnected) {
+      const client = this.client;
+      if (this._state === SshConnectionState.Disconnected || !client) {
+        this.setState(SshConnectionState.Disconnected);
         resolve();
         return;
       }
@@ -176,13 +185,13 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
         resolve();
       };
 
-      this.client.once('close', onClose);
+      client.once('close', onClose);
 
       if (this.shellChannel) {
         this.shellChannel.close();
         this.shellChannel = null;
       }
-      this.client.end();
+      client.end();
     });
   }
 
@@ -199,12 +208,13 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
   /** Open an SFTP session over the existing SSH connection. */
   startSftp(): Promise<SFTPWrapper> {
     return new Promise((resolve, reject) => {
-      if (this._state !== SshConnectionState.Connected) {
+      const client = this.client;
+      if (this._state !== SshConnectionState.Connected || !client) {
         reject(new Error('Not connected'));
         return;
       }
 
-      this.client.sftp((err: Error | undefined, sftp: SFTPWrapper) => {
+      client.sftp((err: Error | undefined, sftp: SFTPWrapper) => {
         if (err) {
           reject(err);
           return;
@@ -236,7 +246,9 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
   private cleanup(): void {
     this.shellChannel = null;
     this.setState(SshConnectionState.Disconnected);
-    try { this.client.end(); } catch (err) {
+    const client = this.client;
+    this.client = null;
+    try { client?.end(); } catch (err) {
       // Ignore errors during cleanup — client may already be closed
     }
   }

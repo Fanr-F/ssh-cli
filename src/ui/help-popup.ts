@@ -46,7 +46,7 @@ const SHORTCUTS: Shortcut[] = [
     keys: [
       { key: 'Ctrl+C', action: 'Copy (sidebar: info, terminal: last line)' },
       { key: 'Ctrl+V', action: 'Paste (to terminal or form)' },
-      { key: 'Ctrl+Shift+C', action: 'Close current tab' },
+      { key: 'Ctrl+Shift+C', action: 'Close tab (legacy terminals: double-click)' },
       { key: 'Ctrl+Shift+Tab', action: 'Cycle to next tab' },
       { key: 'F2-F12', action: 'Switch to tab 1-11' },
       { key: 'PageUp/PageDown', action: 'Scroll terminal output' },

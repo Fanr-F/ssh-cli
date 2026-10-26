@@ -183,8 +183,17 @@ export class App {
       // Global: Ctrl+Q → quit
       if (key.ctrl && key.name === 'q') { this.shutdown(); return; }
 
+      // Global: Ctrl+Shift+C → close current tab
+      // Must be checked before plain Ctrl+C, otherwise the copy branch below
+      // swallows it (Ctrl+Shift+C also matches ctrl && name === 'c').
+      if (key.ctrl && key.shift && key.name === 'c') {
+        const activeId = this.tabBar.getActiveTabId();
+        if (activeId) this.closeTab(activeId);
+        key.preventDefault(); return;
+      }
+
       // Global: Ctrl+C → copy
-      if (key.ctrl && key.name === 'c') {
+      if (key.ctrl && !key.shift && key.name === 'c') {
         key.preventDefault();
         await this.handleCopy();
         return;
@@ -195,13 +204,6 @@ export class App {
         key.preventDefault();
         await this.handlePaste();
         return;
-      }
-
-      // Global: Ctrl+Shift+C → close current tab
-      if (key.ctrl && key.shift && key.name === 'c') {
-        const activeId = this.tabBar.getActiveTabId();
-        if (activeId) this.closeTab(activeId);
-        key.preventDefault(); return;
       }
 
       // Global: Ctrl+Shift+Tab → cycle to next tab
