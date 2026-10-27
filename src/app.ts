@@ -2,11 +2,12 @@ import {
   Box,
   ScrollBox,
   EmbeddedTerminalRenderable,
+  CliRenderEvents,
   createClipboard,
   createHostClipboard,
   createRendererClipboardAdapter,
 } from '@opentui/core';
-import type { CliRenderer, ClipboardService, KeyEvent, PasteEvent } from '@opentui/core';
+import type { CliRenderer, ClipboardService, KeyEvent, PasteEvent, Selection } from '@opentui/core';
 import type { ConnectionConfig } from './types/connection';
 import { ConnectionStore } from './storage/connections';
 import { createSidebar, type SidebarAPI } from './ui/sidebar';
@@ -40,35 +41,6 @@ interface TabState {
   altScreen: AltScreenTracker;
   sftpClient?: SftpClient;
   sftpTab?: SftpTabAPI;
-}
-
-/** Create a minimal KeyEvent-like object for injecting characters into forms. */
-function createFakeKeyEvent(ch: string) {
-  let defaultPrevented = false;
-  let propagationStopped = false;
-  return {
-    name: ch,
-    ctrl: false,
-    meta: false,
-    shift: false,
-    sequence: ch,
-    raw: ch,
-    option: false,
-    super: false,
-    hyper: false,
-    capsLock: false,
-    numLock: false,
-    baseCode: 0,
-    repeated: false,
-    code: '',
-    eventType: 'press' as const,
-    source: 'raw' as const,
-    number: false,
-    get defaultPrevented() { return defaultPrevented; },
-    get propagationStopped() { return propagationStopped; },
-    preventDefault() { defaultPrevented = true; },
-    stopPropagation() { propagationStopped = true; },
-  };
 }
 
 export class App {
@@ -227,6 +199,25 @@ export class App {
       void this.dispatchKey(key);
     });
 
+    // 选中即复制：OpenTUI 在左键拖选结束时 emit SELECTION（finishSelection），
+    // 文本由 Selection 聚合所有被选中的 renderable（终端 / SFTP 列表 / 表单 / 帮助）。
+    this.renderer.on(CliRenderEvents.SELECTION, (selection: Selection) => {
+      // 单击也会创建一个「一个单元格」的选区（anchor == focus），那不属于拖选；
+      // 否则每点一下终端或表单字段就会往剪贴板里塞一个字符。
+      const anchor = selection.anchor;
+      const focus = selection.focus;
+      if (selection.behavior === 'cell' && anchor.x === focus.x && anchor.y === focus.y) return;
+
+      let text = '';
+      try {
+        text = selection.getSelectedText();
+      } catch (err) {
+        logDebug(`[COPY] getSelectedText failed: ${err}`);
+      }
+      if (!text) return;
+      void this.copyText(text);
+    });
+
     // Handle terminal-initiated paste (bracketed paste from Windows Terminal, etc.)
     this.renderer.keyInput.on('paste', async (event: PasteEvent) => {
       const text = Buffer.from(event.bytes).toString('utf-8');
@@ -239,12 +230,10 @@ export class App {
           this.statusBar.setStatus('Pasted to terminal');
         }
       } else if (this.focus === 'form' && this.form) {
-        // 阻止已聚焦的 InputRenderable 再处理一次同一个 paste 事件
+        // 表单统一走 FormAPI.pasteText()：普通字段用 InputRenderable.insertText()，
+        // 密码框（手写渲染）按光标位置插入，行为一致且不会漏字符。
         event.preventDefault();
-        for (const ch of text) {
-          const fakeKey = createFakeKeyEvent(ch);
-          this.form.handleKey(fakeKey);
-        }
+        this.form.pasteText(text);
         this.statusBar.setStatus('Pasted to form');
       } else if (this.focus === 'sftp') {
         const activeId = this.tabBar.getActiveTabId();
@@ -314,19 +303,9 @@ export class App {
       const conn = this.sidebar.getSelectedConnection();
       if (conn) return this.deleteConnection(conn);
     },
-    'sidebar.copy': () => this.handleCopy(),
 
-    'terminal.copy': () => this.handleCopy(),
-    'terminal.paste': () => this.handlePaste(),
     'terminal.pageUp': (raw, key) => this.handlePageKey(raw, key, -1),
     'terminal.pageDown': (raw, key) => this.handlePageKey(raw, key, 1),
-
-    // 剪贴板服务在 App 侧（要访问 clipboard 后端），所以这两个 id 虽然
-    // 声明在 form / sftp 层，动作仍然由 App 执行。
-    'form.copy': () => this.handleCopy(),
-    'form.paste': () => this.handlePaste(),
-    'sftp.copy': () => this.handleCopy(),
-    'sftp.paste': () => this.handlePaste(),
   };
 
   /** 当前 UI 状态快照，供绑定表的 `when` 与动作使用。 */
@@ -365,11 +344,21 @@ export class App {
       const binding = findBinding(scope, key, ctx);
 
       if (!binding) {
-        // 组件自管的 scope（表单输入、SFTP 命令行输入）需要拿到所有按键
-        if (scope === 'form' || scope === 'sftp') {
+        if (scope === 'sftp') {
+          // SFTP 命令行模式的自由输入由组件自己收键
           this.delegateKey(scope, raw);
           raw.preventDefault();
           return;
+        }
+        if (scope === 'form') {
+          // 表单里只有密码框还是手写编辑（InputRenderable 没有遮罩能力），
+          // 需要组件自己处理原始按键；其余字段放行给聚焦的 InputRenderable 原生处理，
+          // 这样光标、拖选、Shift+方向键、Ctrl+A、撤销才真正可用。
+          if (this.form?.captureRawKeys?.()) {
+            this.delegateKey(scope, raw);
+            raw.preventDefault();
+            return;
+          }
         }
         continue;
       }
@@ -510,6 +499,33 @@ export class App {
     };
     // Yoga 布局尺寸变化 → 同步远端 PTY
     term.onTerminalResize = (c, r) => ssh.resizePty(c, r);
+
+    // ── 右键 = 粘贴 ──────────────────────────────────────────────
+    // EmbeddedTerminalRenderable 的 setupMouse() 把鼠标处理器换成了
+    // 「先转发给远端、再调回调」的包装，所以必须在构造之后整体接管按下/抬起：
+    // 右键留在本地粘贴，其他按键继续走它原本的转发逻辑（鼠标上报、选区等）。
+    {
+      const termAny = term as any;
+      const forwardMouse = termAny.forwardMouse.bind(term);
+      term.onMouseDown = (e) => {
+        if (e.button === 2) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.focusTerminal();
+          void this.handlePaste();
+          return;
+        }
+        forwardMouse(e, 'press');
+      };
+      term.onMouseUp = (e) => {
+        if (e.button === 2) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        forwardMouse(e, 'release');
+      };
+    }
 
     // Register with terminal panel
     logDebug(`[CONNECT] registering terminal ${tabId}`);
@@ -757,6 +773,8 @@ export class App {
         this.terminalPanel.showError('Delete failed: ' + msg); this.renderer.requestRender();
       }
     });
+    // 右键粘贴：剪贴板后端在 App 侧，表单只发请求
+    form.onPasteRequest(() => { void this.handlePaste(); });
     this.form = form;
     this.renderer.root.add(form);
     // Activate keyboard input for the form
@@ -809,82 +827,32 @@ export class App {
 
   // ── Clipboard handlers ─────────────────────────────────────────
 
-  private async handleCopy(): Promise<void> {
-    let text = '';
-
-    logDebug(`[COPY] handleCopy called, focus=${this.focus}`);
-
-    if (this.focus === 'sidebar') {
-      // Copy selected connection info
-      const conn = this.sidebar.getSelectedConnection();
-      if (conn) {
-        text = `${conn.username}@${conn.host}:${conn.port}`;
-        logDebug(`[COPY] sidebar: copied connection info="${text}"`);
-      }
-    } else if (this.focus === 'terminal') {
-      // 终端选区 → 复制；没有选区则直接发 SIGINT（旧行为）
-      const tab = this.getActiveTab();
-      if (tab?.term?.hasSelection()) {
-        text = tab.term.getSelectedText();
-        logDebug(`[COPY] terminal: copied selection="${text.substring(0, 100)}"`);
-        // 传 null 走组件的 clear 分支（公开 API，不用碰内部绑定）
-        tab.term.onSelectionChanged(null as any);
-      }
-
-      // 没有选中内容 → 发送 SIGINT
-      if (!text) {
-        if (tab?.ssh.isConnected()) {
-          tab.ssh.writeToShell('\x03');
-          this.statusBar.setStatus('Sent interrupt (Ctrl+C)');
-          logDebug(`[COPY] terminal: sent SIGINT`);
-        }
-        this.renderer.requestRender();
-        return;
-      }
-    } else if (this.focus === 'form' && this.form) {
-      // Copy the content of the currently focused form field
-      text = this.form.getFocusedFieldContent();
-      logDebug(`[COPY] form: copied field content="${text?.substring(0, 50)}"`);
-    } else if (this.focus === 'sftp') {
-      // Copy selected file path in SFTP
-      const activeId = this.tabBar.getActiveTabId();
-      if (activeId) {
-        const tab = this.tabs.get(activeId);
-        if (tab?.sftpTab) {
-          const filePath = tab.sftpTab.getSelectedFilePath();
-          if (filePath) {
-            text = filePath;
-            logDebug(`[COPY] sftp: copied file path="${text}"`);
-          }
-        }
-      }
+  /**
+   * 复制任意文本到剪贴板（OSC52 + 系统剪贴板）。
+   * 唯一入口：选中即复制（renderer 的 SELECTION 事件）。
+   */
+  private async copyText(text: string): Promise<void> {
+    if (!text) return;
+    logDebug(`[COPY] copying ${text.length} chars: "${text.substring(0, 100)}"`);
+    const result = await this.clipboard
+      .writeText(text, {
+        destination: 'all-available',
+        selection: 'clipboard',
+        // 终端能力尚未探测完时 capabilities 为 null，adapter 会把 remote 默认为 true
+        // 并跳过本机剪贴板写入；这里显式允许，保证本机绑定永远生效。
+        allowRemoteHost: true,
+      })
+      .catch((err) => {
+        logDebug(`[COPY] writeText failed: ${err}`);
+        return null;
+      });
+    if (result) {
+      logDebug(
+        `[COPY] writeText: host=${result.host.status}, terminal=${result.terminal.status}/${result.terminal.capability}`,
+      );
     }
-
-    if (text) {
-      logDebug(`[COPY] copying to clipboard: "${text.substring(0, 100)}"`);
-      const result = await this.clipboard
-        .writeText(text, {
-          destination: 'all-available',
-          selection: 'clipboard',
-          // 终端能力尚未探测完时 capabilities 为 null，adapter 会把 remote 默认为 true
-          // 并跳过本机剪贴板写入；这里显式允许，保证本机绑定永远生效。
-          allowRemoteHost: true,
-        })
-        .catch((err) => {
-          logDebug(`[COPY] writeText failed: ${err}`);
-          return null;
-        });
-      if (result) {
-        logDebug(
-          `[COPY] writeText: host=${result.host.status}, terminal=${result.terminal.status}/${result.terminal.capability}`,
-        );
-      }
-      const ok = !!result && (result.host.status === 'written' || result.terminal.status === 'attempted');
-      this.statusBar.setStatus(ok ? 'Copied to clipboard' : 'Copy failed');
-    } else {
-      logDebug(`[COPY] no text to copy`);
-      this.statusBar.setStatus('Nothing to copy');
-    }
+    const ok = !!result && (result.host.status === 'written' || result.terminal.status === 'attempted');
+    this.statusBar.setStatus(ok ? 'Copied to clipboard' : 'Copy failed');
     this.renderer.requestRender();
   }
 
@@ -943,11 +911,8 @@ export class App {
         this.statusBar.setStatus('Not connected');
       }
     } else if (this.focus === 'form' && this.form) {
-      // Insert each character into the form's active field
-      for (const ch of text) {
-        const fakeKey = createFakeKeyEvent(ch);
-        this.form.handleKey(fakeKey);
-      }
+      // 插入到当前字段（普通字段 → InputRenderable，密码框 → 手写光标）
+      this.form.pasteText(text);
       this.statusBar.setStatus('Pasted to form');
     } else if (this.focus === 'sftp') {
       // Paste to SFTP command/input buffer
@@ -994,7 +959,11 @@ export class App {
       const tabId = `sftp-${Date.now()}`;
       const tabTitle = `SFTP: ${config.username}@${config.host}`;
 
-      const sftpTabComponent = createSftpTab(tabId, this.renderer, sftpClient, remotePwd, localPwd);
+      const sftpTabComponent = createSftpTab(tabId, this.renderer, sftpClient, remotePwd, localPwd, () => {
+        // 右键粘贴：仅命令行模式会触发（浏览模式没有输入目标）
+        this.focusSftp();
+        void this.handlePaste();
+      });
 
       this.tabs.set(tabId, {
         term: tab.term,

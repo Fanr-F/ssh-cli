@@ -68,14 +68,17 @@ Adding a shortcut:
 3. run `bun run docs`.
 
 Key behaviors that are easy to break:
-- `Ctrl+C` is **not** a global binding: it is declared once per scope (sidebar / terminal / form / sftp) with different meanings.
+- **There is no copy/paste key binding.** Copying happens on mouse text selection (`renderer` emits `CliRenderEvents.SELECTION`, `App.copyText()` writes the clipboard); pasting is right-click only. `Ctrl+C` / `Ctrl+V` therefore reach whatever has focus: the remote shell in `terminal`, the native `InputRenderable` in `form`, etc. Do not re-add copy/paste shortcuts.
 - When the help popup or the form is open, only `system` bindings (`Ctrl+Q`, `F1`) plus that modal's own scope are active.
 - Unmatched keys in `terminal` scope must **not** be `preventDefault()`-ed — they are encoded by the native terminal and sent to the remote shell.
+- Unmatched keys in `form` scope are **passed through** (no `preventDefault`, no delegation) so the focused `InputRenderable` handles them natively (cursor, drag-select, `Shift+←/→`, `Ctrl+A`, undo). The only exception is `form.captureRawKeys()` → `true` for the hand-rendered password field.
 - Closing a tab is mouse-only for now (double-click); the old `Ctrl+Shift+C` binding was removed — see README "Known Issues".
 
 ### Mouse Support
 - Mouse support enabled via `useMouse: true` in index.ts renderer config
 - **Sidebar items**: `onMouseDown` handles single-click (select) and double-click (connect)
+- **Text selection**: handled by OpenTUI; `App` listens for `CliRenderEvents.SELECTION` and copies automatically
+- **Right-click = paste**: terminal (`App.connectTo()` overrides `term.onMouseDown/onMouseUp`, keeping `forwardMouse` for other buttons), SFTP root container (command mode only), form fields (`onPasteRequest`)
 - **Help popup**: `onMouseDrag` for dragging (no onMouseDown/onMouseUp needed)
 - **Tab bar**: Double-click to close tab
 - **Divider**: Drag to resize sidebar width
@@ -160,7 +163,9 @@ No test suite, no linter, no formatter configured. TypeScript strict mode enforc
 
 ## Important Notes
 
-- **Ctrl+C does NOT exit** — `exitOnCtrlC: false` in index.ts. Ctrl+C is forwarded to SSH shell when connected, copies text when terminal has selection.
+- **Ctrl+C does NOT exit** — `exitOnCtrlC: false` in index.ts. It is no longer bound: it reaches the remote shell (`SIGINT`) when the terminal has focus. Copying is done by selecting text (auto-copy), pasting by right-click.
+- **Form inputs are real `InputRenderable`s** — `App.dispatchKey()` only consumes keys that match a `form` binding (`Tab` / `Esc` / `Enter` / `↑↓` / auth `←→`); everything else falls through to the focused input so cursor / selection / undo work natively. `focusCurrentInput()` calls `selectAll()` so keyboard field switching keeps the "typing replaces the value" behavior; mouse clicks pass `false` so the click places the caret instead. The password field stays hand-rendered (no mask support in OpenTUI) and is fed raw keys via `FormAPI.captureRawKeys()`. Paste (right-click and bracketed paste) goes through `FormAPI.pasteText()`, never through fake key events.
+- **Form mouse handlers call `e.preventDefault()`** — the renderer's `autoFocus` walks up from the clicked renderable and would otherwise focus the overlay, blurring the `InputRenderable` (no caret, keys lost).
 - **Close-tab has no keyboard shortcut** — `Ctrl+Shift+C` was removed: legacy terminals (Windows Terminal / VS Code) drop the Shift modifier (`0x03`), and host terminals bind it to "Copy". Double-clicking a tab is the only way for now. The `tab.close` action is still registered in `app.ts` so a future binding only needs a new row in `src/keymap/bindings.ts`.
 - **ssh2-no-cpu-features** — Used over ssh2 because native cpu-features module fails on Bun.
 - **Native VT** — Terminal emulation is `EmbeddedTerminalRenderable` from `@opentui/core` (Ghostty VT), NOT a custom ANSI parser. Scrollback lives inside the native terminal (`maxScrollback`).

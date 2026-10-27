@@ -55,14 +55,11 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 | `A` | Add new connection |
 | `E` | Edit selected connection |
 | `Delete` | Delete selected connection (no confirmation) |
-| `Ctrl+C` | Copy connection info |
 
 #### Terminal
 
 | Key | Action |
 |---|---|
-| `Ctrl+C` | Copy selection; with nothing selected, send SIGINT to the shell |
-| `Ctrl+V` | Paste clipboard into the terminal |
 | `PageUp` | Scroll output up (or page the remote full-screen program) |
 | `PageDown` | Scroll output down (or page the remote full-screen program) |
 
@@ -70,8 +67,6 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 
 | Key | Action |
 |---|---|
-| `Ctrl+C` | Copy selected path |
-| `Ctrl+V` | Paste into the command line |
 | `PageUp` | Page up in the active panel |
 | `PageDown` | Page down in the active panel |
 | `Tab` | Switch panel (local ↔ remote) |
@@ -119,8 +114,6 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 
 | Key | Action |
 |---|---|
-| `Ctrl+C` | Copy focused field |
-| `Ctrl+V` | Paste into focused field |
 | `Esc` | Cancel and close form |
 | `Enter` | Save connection |
 | `Tab` | Next field |
@@ -136,12 +129,14 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 |---|---|
 | Single-click (sidebar) | Select connection |
 | Double-click (sidebar) | Connect to selected server |
+| Drag to select (any text) | Copy the selection to the clipboard |
+| Right-click (terminal / SFTP command line / form field) | Paste the clipboard |
 | Toolbar buttons | new / edit / connect / delete / quit / help |
 | Single-click (tab) | Switch to that tab |
 | Double-click (tab) | Close tab |
 | Drag divider | Resize sidebar |
 | Drag help window | Move help popup |
-| Click form field | Focus that field |
+| Click form field | Focus that field (click places the caret) |
 | Hold eye icon | Reveal password |
 
 <!-- shortcuts:end -->
@@ -287,7 +282,7 @@ Press `a` to open the connection form. Fill in:
 | **Key Path** | (only for key auth) Path to private key | `~/.ssh/id_rsa` |
 | **Password** | (only for password auth) Login password | — |
 
-Press `Tab` to move between fields, `Enter` to save, `Esc` to cancel.
+Press `Tab` to move between fields (the value is selected, so typing replaces it), `Enter` to save, `Esc` to cancel. Inside a field: `←/→` moves the caret, `Shift+←/→` selects, `Ctrl+A` selects the whole value. Clicking a field places the caret; drag over text to copy it, right-click to paste.
 
 #### 3. Connect to a Server
 Select a connection in the sidebar and press `Enter`. The terminal panel will show live output from the remote shell.
@@ -296,7 +291,7 @@ Select a connection in the sidebar and press `Enter`. The terminal panel will sh
 - The terminal renders ANSI escape sequences (colors, cursor movement, etc.)
 - Resize your terminal window — the PTY size is automatically updated
 - `PageUp`/`PageDown` scroll the local scrollback at a prompt; when a full-screen program is running remotely (`vim`, `less`, `htop`, `mc`, `tmux`, …) they are forwarded to it instead — detected via the alternate-screen sequence `ESC[?1049h/l`, no configuration needed. `Shift+PageUp`/`Shift+PageDown` always scroll locally.
-- `Ctrl+C` copies the terminal selection; when there is nothing selected it sends an interrupt (`SIGINT`) to the shell instead
+- Drag over text to copy it; right-click to paste. `Ctrl+C` is passed straight to the shell (`SIGINT`) and `Ctrl+V` is left to the remote program (`quoted-insert` in bash, visual block in vim)
 
 #### 4. Multi-Tab Support
 - Open multiple SSH sessions in separate tabs

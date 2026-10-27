@@ -151,6 +151,8 @@ export function createSftpTab(
   sftpClient: SftpClient,
   remote初始Path: string,
   local初始Path: string,
+  /** 右键粘贴请求（剪贴板后端在 App 侧）；仅在命令行模式触发。 */
+  requestPaste?: () => void,
 ): SftpTabAPI {
   const localState: FileListState = {
     currentPath: local初始Path,
@@ -246,8 +248,20 @@ export function createSftpTab(
   });
 
   // Main container
+  // 右键 = 粘贴到命令行；浏览模式没有输入目标，直接无动作
   const mainBox = Box(
-    { id: tabId, flexDirection: 'column', width: '100%', flexGrow: 1 },
+    {
+      id: tabId,
+      flexDirection: 'column',
+      width: '100%',
+      flexGrow: 1,
+      onMouseDown: (e: any) => {
+        if (e.button !== 2) return;
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        if (cmdMode) requestPaste?.();
+      },
+    },
     headerBox,
     Box(
       { flexDirection: 'row', width: '100%', flexGrow: 1 },
@@ -1019,10 +1033,6 @@ export function createSftpTab(
         }
         return;
       }
-      // 剪贴板动作由 App 执行（需要 clipboard 后端），组件不处理
-      case 'sftp.copy':
-      case 'sftp.paste':
-        return;
       default:
         break;
     }

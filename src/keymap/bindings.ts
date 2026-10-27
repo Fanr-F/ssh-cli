@@ -11,8 +11,6 @@ import { matchesKey } from './matcher';
  *   3. 帮助弹窗与 README 会从这张表自动生成，无需手改文档。
  */
 
-const CTRL_C: KeyPattern = { name: 'c', ctrl: true, shift: false };
-const CTRL_V: KeyPattern = { name: 'v', ctrl: true, shift: false };
 const ENTER: KeyPattern[] = [{ name: 'enter' }, { name: 'return' }];
 /** F 键只接受“裸按”，带任何修饰键都不算标签切换。 */
 const FKEY = (name: string): KeyPattern => ({ name, ctrl: false, shift: false, meta: false });
@@ -140,32 +138,8 @@ export const BINDINGS: Binding[] = [
     en: 'Delete selected connection (no confirmation)',
     zh: '删除选中的连接（无二次确认）',
   },
-  {
-    id: 'sidebar.copy',
-    scope: 'sidebar',
-    key: CTRL_C,
-    group: 'sidebar',
-    en: 'Copy connection info',
-    zh: '复制连接信息',
-  },
 
   // ── terminal：仅在终端聚焦时生效 ────────────────────────────────
-  {
-    id: 'terminal.copy',
-    scope: 'terminal',
-    key: CTRL_C,
-    group: 'terminal',
-    en: 'Copy selection; with nothing selected, send SIGINT to the shell',
-    zh: '复制选中文本；没有选区时向 shell 发送 SIGINT',
-  },
-  {
-    id: 'terminal.paste',
-    scope: 'terminal',
-    key: CTRL_V,
-    group: 'terminal',
-    en: 'Paste clipboard into the terminal',
-    zh: '把剪贴板内容粘贴到终端',
-  },
   {
     id: 'terminal.pageUp',
     scope: 'terminal',
@@ -184,22 +158,6 @@ export const BINDINGS: Binding[] = [
   },
 
   // ── sftp：两种子状态（命令模式 / 浏览模式）──────────────────────
-  {
-    id: 'sftp.copy',
-    scope: 'sftp',
-    key: CTRL_C,
-    group: 'sftp',
-    en: 'Copy selected path',
-    zh: '复制选中项的路径',
-  },
-  {
-    id: 'sftp.paste',
-    scope: 'sftp',
-    key: CTRL_V,
-    group: 'sftp',
-    en: 'Paste into the command line',
-    zh: '粘贴到命令行',
-  },
   {
     id: 'sftp.cmd.execute',
     scope: 'sftp',
@@ -403,22 +361,6 @@ export const BINDINGS: Binding[] = [
 
   // ── form：仅在连接表单内生效 ────────────────────────────────────
   {
-    id: 'form.copy',
-    scope: 'form',
-    key: CTRL_C,
-    group: 'form',
-    en: 'Copy focused field',
-    zh: '复制当前字段',
-  },
-  {
-    id: 'form.paste',
-    scope: 'form',
-    key: CTRL_V,
-    group: 'form',
-    en: 'Paste into focused field',
-    zh: '粘贴到当前字段',
-  },
-  {
     id: 'form.cancel',
     scope: 'form',
     key: { name: 'escape' },
@@ -541,12 +483,14 @@ export const MANUAL_ENTRIES: ManualEntry[] = [
   // 鼠标
   { group: 'mouse', keys: 'Single-click (sidebar)', keysZh: '单击（侧边栏）', en: 'Select connection', zh: '选中连接' },
   { group: 'mouse', keys: 'Double-click (sidebar)', keysZh: '双击（侧边栏）', en: 'Connect to selected server', zh: '连接选中的服务器' },
+  { group: 'mouse', keys: 'Drag to select (any text)', keysZh: '拖动选中文本', en: 'Copy the selection to the clipboard', zh: '把选中的文本复制到剪贴板' },
+  { group: 'mouse', keys: 'Right-click (terminal / SFTP command line / form field)', keysZh: '右键（终端 / SFTP 命令行 / 表单字段）', en: 'Paste the clipboard', zh: '粘贴剪贴板内容' },
   { group: 'mouse', keys: 'Toolbar buttons', keysZh: '工具栏按钮', en: 'new / edit / connect / delete / quit / help', zh: '新建 / 编辑 / 连接 / 删除 / 退出 / 帮助' },
   { group: 'mouse', keys: 'Single-click (tab)', keysZh: '单击（标签页）', en: 'Switch to that tab', zh: '切换到该标签页' },
   { group: 'mouse', keys: 'Double-click (tab)', keysZh: '双击（标签页）', en: 'Close tab', zh: '关闭标签页' },
   { group: 'mouse', keys: 'Drag divider', keysZh: '拖动分隔线', en: 'Resize sidebar', zh: '调整侧边栏宽度' },
   { group: 'mouse', keys: 'Drag help window', keysZh: '拖动帮助窗', en: 'Move help popup', zh: '拖动帮助弹窗' },
-  { group: 'mouse', keys: 'Click form field', keysZh: '点击表单字段', en: 'Focus that field', zh: '聚焦该字段' },
+  { group: 'mouse', keys: 'Click form field', keysZh: '点击表单字段', en: 'Focus that field (click places the caret)', zh: '聚焦该字段（光标落在点击处）' },
   { group: 'mouse', keys: 'Hold eye icon', keysZh: '按住眼睛图标', en: 'Reveal password', zh: '按住显示密码' },
 
   // SFTP 命令

@@ -55,8 +55,16 @@ export interface FormAPI {
   focus(): void;
   /** Handle a key event (used when form has keyboard focus) */
   handleKey(key: KeyEvent): void;
-  /** Get the content of the currently focused field */
-  getFocusedFieldContent(): string;
+  /**
+   * 表单是否需要拦截原始按键。
+   * 只有密码框（InputRenderable 没有遮罩能力，仍是手写编辑）返回 true；
+   * 其他字段放行给聚焦的 InputRenderable，由它原生处理光标 / 选区 / 撤销。
+   */
+  captureRawKeys(): boolean;
+  /** Register a callback for paste requests (the clipboard backend lives in App) */
+  onPasteRequest(cb: () => void): void;
+  /** Insert text into the focused field (right-click paste / bracketed paste) */
+  pasteText(text: string): void;
   /** Index of the focused field (used by the shared keymap context) */
   getFocusedFieldIndex(): number;
   /** Remove the form from the renderer and clean up */
@@ -126,6 +134,7 @@ export function createConnectionForm(
   let onSubmitCb: ((data: ConnectionConfig) => void) | null = null;
   let onCancelCb: (() => void) | null = null;
   let onDeleteCb: ((id: string) => void) | null = null;
+  let onPasteRequestCb: (() => void) | null = null;
 
   let hasFocus = false;
   let focusedField = 0;
@@ -133,7 +142,7 @@ export function createConnectionForm(
 
   // 光标位置只剩密码框还需要手写维护（其余字段由 InputRenderable 管理）
   let passwordCursor = 0;
-  // Tab / ↑↓ 进入字段后，第一次可打印输入是否覆盖原值
+  // 密码框的「第一次输入覆盖原值」（普通字段改用 InputRenderable.selectAll()）
   let replaceOnType = true;
 
   // ── Renderable references (stored for direct updates) ──
@@ -171,15 +180,24 @@ export function createConnectionForm(
     return !!key.sequence && key.name.length === 1 && !key.ctrl && !key.meta && !key.option;
   }
 
-  /** 让当前聚焦字段对应的输入框获得光标（其余失焦） */
-  function focusCurrentInput(): void {
+  /**
+   * 让当前聚焦字段对应的输入框获得光标（其余失焦）。
+   * `selectContent` 为 true 时顺带全选原内容——键盘切换字段（Tab / ↑↓ / 打开表单）
+   * 用它，于是「第一个字符替换原值」；鼠标点击时传 false，
+   * 让 OpenTUI 自己的单元格选区把光标落到点击处。
+   */
+  function focusCurrentInput(selectContent = true): void {
     for (const input of textInputs) input.blur();
     keyPathInput.blur();
+    let active: InputRenderable | null = null;
     if (focusedField >= 0 && focusedField < 4) {
-      textInputs[focusedField].focus();
+      active = textInputs[focusedField];
     } else if (focusedField === 5 && state.authType === "key") {
-      keyPathInput.focus();
+      active = keyPathInput;
     }
+    if (!active) return;
+    active.focus();
+    if (selectContent) active.selectAll();
   }
 
   /** Tab / ↑↓ 切换字段 */
@@ -244,31 +262,28 @@ export function createConnectionForm(
         focusCurrentInput();
         return;
 
-      // 剪贴板动作由 App 执行（需要 clipboard 后端）
-      case "form.copy":
-      case "form.paste":
-        return;
-
       default:
         break;
     }
 
-    // 字段 0-3 — 交给 InputRenderable
+    // 走到这里只剩两种情况：
+    //   1. 密码框（captureRawKeys() 为 true，App 把原始按键转进来）；
+    //   2. 焦点落在 overlay 上（点到了标签 / 边框空白），此时输入框没聚焦，
+    //      只能由这里直接把按键喂给 edit buffer（光标不可见，但输入不丢）。
+    // 输入框聚焦时按键由它原生处理，不会到这里。
+
+    // 字段 0-3
     if (focusedField >= 0 && focusedField < 4) {
       const input = textInputs[focusedField];
       key.preventDefault();
-      if (replaceOnType && isPrintable(key)) input.value = "";
-      replaceOnType = false;
       input.handleKeyPress(key);
       state[textFieldKeys[focusedField]] = input.value;
       return;
     }
 
-    // 字段 5（Key Path）— 交给 InputRenderable
+    // 字段 5（Key Path）
     if (focusedField === 5 && state.authType === "key") {
       key.preventDefault();
-      if (replaceOnType && isPrintable(key)) keyPathInput.value = "";
-      replaceOnType = false;
       keyPathInput.handleKeyPress(key);
       state.privateKeyPath = keyPathInput.value;
       return;
@@ -338,6 +353,15 @@ export function createConnectionForm(
     justifyContent: "center",
     focusable: true,
     onKeyDown: handleKeyDown,
+    onMouseDown: (e: MouseEvent) => {
+      // 点到空白处时把焦点还给当前字段，否则按键会落到没有输入框的 overlay 上。
+      // preventDefault 阻止 renderer 的 autoFocus 反过来把焦点抢到 overlay。
+      if (e.button !== 0) return;
+      e.preventDefault();
+      hasFocus = true;
+      focusCurrentInput(false);
+      updateFocusIndicators();
+    },
   });
 
   const dialog = new BoxRenderable(ctx, {
@@ -393,7 +417,12 @@ export function createConnectionForm(
       focusedTextColor: C.fieldText,
       cursorColor: C.cursorBg,
       cursorStyle: { style: "block", blinking: true },
+      // OpenTUI 默认把 Ctrl+A 绑成 line-home（Unix 习惯），这里改回「全选」
+      keyBindings: [{ name: "a", ctrl: true, action: "select-all" }],
     });
+    input.onContentChange = () => {
+      state[fd.key] = input.value;
+    };
     textInputs.push(input);
 
     const fieldBox = new BoxRenderable(ctx, {
@@ -404,12 +433,18 @@ export function createConnectionForm(
       paddingY: 0,
       onMouseDown: (e: MouseEvent) => {
         e.stopPropagation();
-        focusedField = i;
-        replaceOnType = false;
+        // 别让 renderer 的 autoFocus 把焦点从 InputRenderable 抢回 overlay
+        e.preventDefault();
         hasFocus = true;
-        focusCurrentInput();
-        // 点击后光标落到末尾
-        input.cursorOffset = input.plainText.length;
+        focusedField = i;
+        if (e.button === 2) {
+          // 右键 = 粘贴到该字段（光标处插入，不覆盖原值）
+          focusCurrentInput(false);
+          updateFocusIndicators();
+          onPasteRequestCb?.();
+          return;
+        }
+        focusCurrentInput(false);
         updateFocusIndicators();
       },
     });
@@ -442,6 +477,8 @@ export function createConnectionForm(
     borderColor: C.fieldBorder,
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
+      e.preventDefault();
+      if (e.button === 2) return; // 右键不翻认证类型
       // Toggle auth type on click
       state.authType = state.authType === "key" ? "password" : "key";
       refreshAuthToggle();
@@ -475,7 +512,11 @@ export function createConnectionForm(
     focusedTextColor: C.fieldText,
     cursorColor: C.cursorBg,
     cursorStyle: { style: "block", blinking: true },
+    keyBindings: [{ name: "a", ctrl: true, action: "select-all" }],
   });
+  keyPathInput.onContentChange = () => {
+    state.privateKeyPath = keyPathInput.value;
+  };
 
   conditionalBox = new BoxRenderable(ctx, {
     flexDirection: "row",
@@ -486,16 +527,17 @@ export function createConnectionForm(
     paddingY: 0,
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
+      e.preventDefault();
       focusedField = 5;
-      replaceOnType = false;
       hasFocus = true;
-      if (state.authType === "key") {
-        focusCurrentInput();
-        keyPathInput.cursorOffset = keyPathInput.plainText.length;
-      } else {
-        passwordCursor = state.password.length;
-        focusCurrentInput();
+      if (e.button === 2) {
+        focusCurrentInput(false);
+        updateFocusIndicators();
+        onPasteRequestCb?.();
+        return;
       }
+      if (state.authType === "password") passwordCursor = state.password.length;
+      focusCurrentInput(false);
       updateFocusIndicators();
     },
   });
@@ -513,6 +555,8 @@ export function createConnectionForm(
     fg: C.labelFg,
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
+      e.preventDefault();
+      if (e.button === 2) return;
       focusedField = 5;
       replaceOnType = false;
       passwordCursor = state.password.length;
@@ -548,6 +592,8 @@ export function createConnectionForm(
     paddingY: 0,
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
+      e.preventDefault();
+      if (e.button === 2) return;
       handleSubmit();
     },
   });
@@ -563,6 +609,8 @@ export function createConnectionForm(
     paddingY: 0,
     onMouseDown: (e: MouseEvent) => {
       e.stopPropagation();
+      e.preventDefault();
+      if (e.button === 2) return;
       if (onCancelCb) onCancelCb();
     },
   });
@@ -579,6 +627,8 @@ export function createConnectionForm(
       paddingY: 0,
       onMouseDown: (e: MouseEvent) => {
         e.stopPropagation();
+        e.preventDefault();
+        if (e.button === 2) return;
         if (onDeleteCb) onDeleteCb(existing.id);
       },
     });
@@ -697,17 +747,49 @@ export function createConnectionForm(
     return buildConnectionConfig();
   }
 
-  function getFocusedFieldContent(): string {
-    if (focusedField >= 0 && focusedField < 4) {
-      return textInputs[focusedField].value;
-    } else if (focusedField === 5) {
-      return state.authType === "key" ? keyPathInput.value : state.password;
-    }
-    return "";
-  }
-
   function getFocusedFieldIndex(): number {
     return focusedField;
+  }
+
+  /** 只有密码框需要原始按键（其余字段由 InputRenderable 原生处理） */
+  function captureRawKeys(): boolean {
+    return hasFocus && focusedField === 5 && state.authType === "password";
+  }
+
+  /**
+   * 把文本插入当前字段：右键粘贴与终端发起的 bracketed paste 都走这里。
+   * 普通字段交给 InputRenderable.insertText()（单行、自动截断换行）；
+   * 密码框没有 InputRenderable，按手写光标插入。
+   */
+  function pasteText(text: string): void {
+    if (!hasFocus || !text) return;
+
+    if (focusedField >= 0 && focusedField < 4) {
+      const input = textInputs[focusedField];
+      input.insertText(text);
+      state[textFieldKeys[focusedField]] = input.value;
+      return;
+    }
+
+    if (focusedField === 5 && state.authType === "key") {
+      keyPathInput.insertText(text);
+      state.privateKeyPath = keyPathInput.value;
+      return;
+    }
+
+    if (focusedField === 5 && state.authType === "password") {
+      const clean = text.replace(/[\n\r]/g, "");
+      if (!clean) return;
+      if (replaceOnType) {
+        state.password = "";
+        passwordCursor = 0;
+        replaceOnType = false;
+      }
+      state.password =
+        state.password.slice(0, passwordCursor) + clean + state.password.slice(passwordCursor);
+      passwordCursor += clean.length;
+      refreshConditional();
+    }
   }
 
   function handleSubmit() {
@@ -722,7 +804,9 @@ export function createConnectionForm(
     replaceOnType = true;
     passwordCursor = state.password.length;
     focusCurrentInput();
-    logForm.debug(`focus() called: focusedField=${focusedField}, passwordCursor=${passwordCursor}`);
+    logForm.debug(
+      `focus() called: focusedField=${focusedField}, passwordCursor=${passwordCursor}, inputFocused=${textInputs[0]?.focused}`,
+    );
     updateFocusIndicators();
   }
 
@@ -738,6 +822,7 @@ export function createConnectionForm(
     onSubmitCb = null;
     onCancelCb = null;
     onDeleteCb = null;
+    onPasteRequestCb = null;
   }
 
   // ── Sync initial UI state ────────────────────────────────
@@ -752,12 +837,14 @@ export function createConnectionForm(
 
   const api: FormAPI = {
     getFormData,
-    getFocusedFieldContent,
     getFocusedFieldIndex,
+    captureRawKeys,
+    pasteText,
     validate,
     onSubmit: (cb) => { onSubmitCb = cb; },
     onCancel: (cb) => { onCancelCb = cb; },
     onDelete: (cb) => { onDeleteCb = cb; },
+    onPasteRequest: (cb) => { onPasteRequestCb = cb; },
     focus,
     handleKey: handleKeyDown,
     destroy,
