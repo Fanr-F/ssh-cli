@@ -37,7 +37,7 @@ src/
     ├── connection-form.ts # Add/edit connection modal form
     ├── status-bar.ts     # Status bar (fully disabled - no-op API)
     ├── terminal-panel.ts # Terminal display panel (with setVisible())
-    ├── tab-bar.ts        # Multi-tab bar (F2-F12, Ctrl+Shift+Tab, type field: terminal|sftp)
+    ├── tab-bar.ts        # Multi-tab bar (Alt+↑/↓ cycle, F2-F12 jump, type field: terminal|sftp)
     ├── toolbar.ts        # Clickable shortcut toolbar at top
     ├── divider.ts        # Draggable sidebar divider
     └── help-popup.ts     # Draggable help popup (F1) with SFTP shortcuts
@@ -70,7 +70,7 @@ Key behaviors that are easy to break:
 - `Ctrl+C` is **not** a global binding: it is declared once per scope (sidebar / terminal / form / sftp) with different meanings.
 - When the help popup or the form is open, only `system` bindings (`Ctrl+Q`, `F1`) plus that modal's own scope are active.
 - Unmatched keys in `terminal` scope must **not** be `preventDefault()`-ed — they are encoded by the native terminal and sent to the remote shell.
-- `Ctrl+Shift+C` is unreliable in legacy terminals (see README "Known Issues"); double-clicking a tab always works.
+- Closing a tab is mouse-only for now (double-click); the old `Ctrl+Shift+C` binding was removed — see README "Known Issues".
 
 ### Mouse Support
 - Mouse support enabled via `useMouse: true` in index.ts renderer config
@@ -160,7 +160,7 @@ No test suite, no linter, no formatter configured. TypeScript strict mode enforc
 ## Important Notes
 
 - **Ctrl+C does NOT exit** — `exitOnCtrlC: false` in index.ts. Ctrl+C is forwarded to SSH shell when connected, copies text when terminal has selection.
-- **Ctrl+Shift+C is unreliable** — legacy terminals (Windows Terminal / VS Code) encode `Ctrl+Shift+<letter>` as `Ctrl+<letter>`, so the app receives `shift=false` (`0x03`) and cannot distinguish it from Ctrl+C. Close-tab is checked before copy in `app.ts`, which only helps terminals supporting the Kitty keyboard protocol. Double-clicking a tab is the reliable workaround; a replacement shortcut is still undecided. See README "Known Issues".
+- **Close-tab has no keyboard shortcut** — `Ctrl+Shift+C` was removed: legacy terminals (Windows Terminal / VS Code) drop the Shift modifier (`0x03`), and host terminals bind it to "Copy". Double-clicking a tab is the only way for now. The `tab.close` action is still registered in `app.ts` so a future binding only needs a new row in `src/keymap/bindings.ts`.
 - **ssh2-no-cpu-features** — Used over ssh2 because native cpu-features module fails on Bun.
 - **Native VT** — Terminal emulation is `EmbeddedTerminalRenderable` from `@opentui/core` (Ghostty VT), NOT a custom ANSI parser. Scrollback lives inside the native terminal (`maxScrollback`).
 - **No public scroll API** — PageUp/PageDown call the zig binding `contextEmbeddedTerminalScroll` via `(term as any).lib` (negative = older lines); mouse wheel scrolling is built in.

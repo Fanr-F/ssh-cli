@@ -38,8 +38,8 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 |---|---|
 | `Ctrl+Q` | Quit application |
 | `F1` | Show / hide help |
-| `Ctrl+Shift+C` | Close current tab |
-| `Ctrl+Shift+Tab` | Next tab |
+| `Alt+↑` | Previous tab |
+| `Alt+↓` | Next tab |
 | `F2-F12` | Switch to tab 1-11 |
 | `Ctrl+E` | Open SFTP tab for active connection |
 | `Alt+←` | Focus sidebar |
@@ -49,14 +49,12 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 
 | Key | Action |
 |---|---|
-| `Alt+↑` | Previous connection (global) |
-| `Alt+↓` | Next connection (global) |
 | `↑` | Previous connection |
 | `↓` | Next connection |
 | `Enter` | Connect to selected server |
 | `A` | Add new connection |
 | `E` | Edit selected connection |
-| `Delete / Backspace` | Delete selected connection (no confirmation) |
+| `Delete` | Delete selected connection (no confirmation) |
 | `Ctrl+C` | Copy connection info |
 
 #### Terminal
@@ -162,21 +160,13 @@ All core layers are implemented and integrated.
 
 ### Known Issues
 
-#### `Ctrl+Shift+C` does not close tabs in some terminals
+#### No keyboard shortcut to close a tab
 
-**Symptom**: In legacy terminals such as Windows Terminal or the VS Code integrated terminal, pressing `Ctrl+Shift+C` does not close the active tab; it behaves like `Ctrl+C` (copy, or SIGINT to the remote shell).
+**Behaviour**: Closing a tab is mouse-only for now — double-click the tab. The previous `Ctrl+Shift+C` binding was removed: legacy terminals (Windows Terminal, VS Code) encode `Ctrl+Shift+<letter>` as `Ctrl+<letter>`, so the Shift modifier never reaches the app, and those terminals also bind `Ctrl+Shift+C` to "Copy".
 
-**Cause**: Legacy terminals encode `Ctrl+Shift+<letter>` as the same control character as `Ctrl+<letter>`, so the Shift modifier is lost before the app receives the key. The app log shows:
+**Status**: A replacement key (`Alt+W` / `Ctrl+W` / `Shift+F4`) is still undecided. The `tab.close` action is kept in `src/app.ts`, so re-enabling it only needs a new row in `src/keymap/bindings.ts`.
 
-```
-[KEY] name=c ctrl=true shift=false seqHex=[0x03] raw="\u0003"
-```
-
-Windows Terminal and VS Code also bind `Ctrl+Shift+C` to "Copy" by default, so the key may be intercepted at the terminal layer.
-
-**Status**: Keyboard handling is now scope-based: the terminal's `Ctrl+C` binding requires `shift: false`, so `Ctrl+Shift+C` can only match the global close-tab binding. Terminals that support the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) therefore work correctly. Legacy terminals cannot recover the Shift modifier at the application level. A replacement shortcut (`Alt+W` / `Ctrl+W` / `Shift+F4`) has not been chosen yet; this is deferred.
-
-**Workaround**: double-click the tab to close it, or cycle with `Ctrl+Shift+Tab` and jump with `F2-F12`.
+**Workaround**: double-click the tab to close it.
 
 ### Architecture
 
@@ -310,8 +300,8 @@ Select a connection in the sidebar and press `Enter`. The terminal panel will sh
 
 #### 4. Multi-Tab Support
 - Open multiple SSH sessions in separate tabs
-- Switch between tabs using `F2-F12` or `Ctrl+Shift+Tab`
-- Close tabs with `Ctrl+Shift+C` or double-click on the tab
+- Switch tabs with `Alt+↑` / `Alt+↓`, or jump straight to tab 1-11 with `F2-F12` (`F11` is taken by the host terminal)
+- Close a tab by double-clicking it (no keyboard shortcut yet)
 - Each tab maintains its own terminal state and scrollback
 
 #### 5. SFTP File Manager
@@ -323,7 +313,7 @@ Press `Ctrl+E` from a terminal tab to open the SFTP file manager:
 - **Switch panels**: Press `Tab` to switch between local and remote panels
 - **Command line**: Press `:` to enter command mode, then type commands like `upload`, `download`, `cd`, `mkdir`, `rm`, `mv`, `refresh`, `hidden` (`Tab` autocompletes, `↑/↓` browse history, `Esc` exits)
 - **Shortcuts**: `Ctrl+U` to pre-fill an upload command, `Ctrl+D` to pre-fill download — everything else (mkdir, rm, mv, refresh, hidden) goes through the command line
-- **Close**: Press `Esc` in command mode to exit it, or close the tab via `Ctrl+Shift+C` / double-click
+- **Close**: Press `Esc` in command mode to exit it, or double-click the tab to close it
 
 #### 6. Disconnect / Switch Sessions
 - Close the remote shell (type `exit` on the remote) to disconnect — the tab closes automatically

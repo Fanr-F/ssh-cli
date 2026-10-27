@@ -242,10 +242,13 @@ export class App {
     'help.scrollDown': () => this.helpPopup.scrollDown(),
     'help.pageDown': () => this.helpPopup.scrollDown(10),
 
+    // 暂无键盘绑定：关标签目前只能双击（tabBar.onTabClose 直接调用 closeTab）。
+    // 替代键确定后，只需在 bindings.ts 里加一行指向这个 id。
     'tab.close': () => {
       const id = this.tabBar.getActiveTabId();
       if (id) return this.closeTab(id);
     },
+    'tab.prev': () => this.cyclePrevTab(),
     'tab.next': () => this.cycleNextTab(),
     'tab.goto': (_raw, key) => {
       const num = parseInt(key.name.slice(1), 10);
@@ -257,8 +260,6 @@ export class App {
     'focus.sidebar': () => this.focusSidebar(),
     'focus.terminal': () => this.focusTerminal(),
 
-    'sidebar.prev': () => this.sidebar.selectPrevious(),
-    'sidebar.next': () => this.sidebar.selectNext(),
     'sidebar.up': () => this.sidebar.selectPrevious(),
     'sidebar.down': () => this.sidebar.selectNext(),
     'sidebar.connect': () => {
@@ -631,6 +632,17 @@ export class App {
     const currentIndex = currentId ? ids.indexOf(currentId) : -1;
     const nextIndex = (currentIndex + 1) % ids.length;
     this.switchToTab(ids[nextIndex]);
+  }
+
+  private cyclePrevTab(): void {
+    const ids = this.tabBar.getTabIds();
+    if (ids.length === 0) return;
+
+    const currentId = this.tabBar.getActiveTabId();
+    const currentIndex = currentId ? ids.indexOf(currentId) : -1;
+    // 没有激活标签或已在第一个时，回绕到最后一个
+    const prevIndex = currentIndex <= 0 ? ids.length - 1 : currentIndex - 1;
+    this.switchToTab(ids[prevIndex]);
   }
 
   private async closeTab(id: string): Promise<void> {

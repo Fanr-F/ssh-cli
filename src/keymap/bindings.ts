@@ -38,17 +38,17 @@ export const BINDINGS: Binding[] = [
 
   // ── global：任何焦点下都生效 ────────────────────────────────────
   {
-    id: 'tab.close',
+    id: 'tab.prev',
     scope: 'global',
-    key: { name: 'c', ctrl: true, shift: true },
+    key: { name: 'up', meta: true },
     group: 'general',
-    en: 'Close current tab',
-    zh: '关闭当前标签页',
+    en: 'Previous tab',
+    zh: '切换到上一个标签页',
   },
   {
     id: 'tab.next',
     scope: 'global',
-    key: { name: 'tab', ctrl: true, shift: true },
+    key: { name: 'down', meta: true },
     group: 'general',
     en: 'Next tab',
     zh: '切换到下一个标签页',
@@ -91,23 +91,6 @@ export const BINDINGS: Binding[] = [
     en: 'Focus terminal',
     zh: '焦点移到终端',
   },
-  {
-    id: 'sidebar.prev',
-    scope: 'global',
-    key: { name: 'up', meta: true },
-    group: 'sidebar',
-    en: 'Previous connection (global)',
-    zh: '上一个连接（全局）',
-  },
-  {
-    id: 'sidebar.next',
-    scope: 'global',
-    key: { name: 'down', meta: true },
-    group: 'sidebar',
-    en: 'Next connection (global)',
-    zh: '下一个连接（全局）',
-  },
-
   // ── sidebar：仅在侧边栏聚焦时生效 ──────────────────────────────
   {
     id: 'sidebar.up',
@@ -152,7 +135,7 @@ export const BINDINGS: Binding[] = [
   {
     id: 'sidebar.delete',
     scope: 'sidebar',
-    key: [{ name: 'delete' }, { name: 'backspace' }],
+    key: { name: 'delete' },
     group: 'sidebar',
     en: 'Delete selected connection (no confirmation)',
     zh: '删除选中的连接（无二次确认）',
