@@ -63,8 +63,8 @@
 |---|---|
 | `Ctrl+C` | 复制选中文本；没有选区时向 shell 发送 SIGINT |
 | `Ctrl+V` | 把剪贴板内容粘贴到终端 |
-| `PageUp` | 向上翻页 |
-| `PageDown` | 向下翻页 |
+| `PageUp` | 向上翻页（全屏程序下转发给远端） |
+| `PageDown` | 向下翻页（全屏程序下转发给远端） |
 
 #### SFTP
 
@@ -295,7 +295,7 @@ bun run docs
 - 直接在终端中输入命令 — 按键会被转发到远程服务器
 - 终端支持 ANSI 转义序列渲染（颜色、光标移动等）
 - 调整终端窗口大小 — PTY 大小会自动同步更新
-- 使用 `PageUp`/`PageDown` 滚动终端输出
+- `PageUp`/`PageDown` 在提示符下滚动本地历史；远端正在运行全屏程序（`vim`、`less`、`htop`、`mc`、`tmux` 等）时改为转发给该程序翻页 — 依据远端发来的备用屏序列 `ESC[?1049h/l` 自动判断，无需配置。`Shift+PageUp`/`Shift+PageDown` 始终滚动本地历史。
 - `Ctrl+C` 复制终端选中文本；无选区时向 shell 发送中断（SIGINT）
 
 #### 4. 多标签页支持

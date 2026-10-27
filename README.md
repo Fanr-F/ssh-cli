@@ -63,8 +63,8 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 |---|---|
 | `Ctrl+C` | Copy selection; with nothing selected, send SIGINT to the shell |
 | `Ctrl+V` | Paste clipboard into the terminal |
-| `PageUp` | Scroll output up |
-| `PageDown` | Scroll output down |
+| `PageUp` | Scroll output up (or page the remote full-screen program) |
+| `PageDown` | Scroll output down (or page the remote full-screen program) |
 
 #### SFTP
 
@@ -295,7 +295,7 @@ Select a connection in the sidebar and press `Enter`. The terminal panel will sh
 - Type commands directly into the terminal — they are forwarded to the remote server
 - The terminal renders ANSI escape sequences (colors, cursor movement, etc.)
 - Resize your terminal window — the PTY size is automatically updated
-- Use `PageUp`/`PageDown` to scroll through terminal output
+- `PageUp`/`PageDown` scroll the local scrollback at a prompt; when a full-screen program is running remotely (`vim`, `less`, `htop`, `mc`, `tmux`, …) they are forwarded to it instead — detected via the alternate-screen sequence `ESC[?1049h/l`, no configuration needed. `Shift+PageUp`/`Shift+PageDown` always scroll locally.
 - `Ctrl+C` copies the terminal selection; when there is nothing selected it sends an interrupt (`SIGINT`) to the shell instead
 
 #### 4. Multi-Tab Support

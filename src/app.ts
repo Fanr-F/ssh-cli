@@ -18,6 +18,7 @@ import { createDivider } from './ui/divider';
 import { createTabBar, type TabBarAPI } from './ui/tab-bar';
 import { createHelpPopup, type HelpPopupAPI } from './ui/help-popup';
 import { SshConnection } from './ssh/connection';
+import { createAltScreenTracker, type AltScreenTracker } from './ssh/alt-screen';
 import { SftpClient } from './sftp/sftp-client';
 import { createSftpTab, type SftpTabAPI } from './sftp/sftp-tab';
 import { logDebug, logIO } from './logger';
@@ -29,6 +30,17 @@ import {
   type NormalizedKey,
   type Scope,
 } from './keymap';
+
+/** 一个标签页持有的运行态（终端标签与 SFTP 标签共用同一份结构）。 */
+interface TabState {
+  term: EmbeddedTerminalRenderable;
+  ssh: SshConnection;
+  config: ConnectionConfig;
+  /** 远端是否处于备用屏（全屏程序）。SFTP 标签不接收终端数据，直接复用终端标签的实例。 */
+  altScreen: AltScreenTracker;
+  sftpClient?: SftpClient;
+  sftpTab?: SftpTabAPI;
+}
 
 /** Create a minimal KeyEvent-like object for injecting characters into forms. */
 function createFakeKeyEvent(ch: string) {
@@ -77,13 +89,7 @@ export class App {
   private connections: ConnectionConfig[] = [];
 
   // ── Multi-tab state ──────────────────────────────────────────────
-  private tabs = new Map<string, {
-    term: EmbeddedTerminalRenderable;
-    ssh: SshConnection;
-    config: ConnectionConfig;
-    sftpClient?: SftpClient;
-    sftpTab?: SftpTabAPI;
-  }>();
+  private tabs = new Map<string, TabState>();
 
   /**
    * Ghostty 终端把视口滚动封装在原生层，0.6.6 没有导出公开的滚动 API，
@@ -98,6 +104,39 @@ export class App {
       term.requestRender();
     } catch (err) {
       logDebug(`[SCROLL] contextEmbeddedTerminalScroll failed: ${err}`);
+    }
+  }
+
+  /**
+   * PageUp / PageDown：
+   * - 远端处在备用屏（vim / less / htop / mc / tmux …）时转发给远端，让程序自己翻页；
+   * - 否则滚本地 scrollback（提示符下回看历史）；
+   * - Shift+PageUp/PageDown 始终滚本地，作为显式逃生口。
+   * 判定依据来自 `src/ssh/alt-screen.ts` 对 `ESC[?1049h/l` 的跟踪，不是猜测。
+   */
+  private handlePageKey(raw: KeyEvent, key: NormalizedKey, direction: 1 | -1): void {
+    const tab = this.getActiveTab();
+    if (!tab) return;
+
+    if (!key.shift && tab.altScreen.active) {
+      this.forwardKeyToShell(tab, raw);
+      // 全屏程序会整屏重绘，把视口贴底避免重绘时画面错位
+      this.scrollTerminal(tab.term, 1_000_000);
+      return;
+    }
+
+    this.scrollTerminal(tab.term, direction * (Math.floor(tab.term.height) - 1));
+  }
+
+  /** 把一个按键按终端自己的编码规则发给远端 shell。 */
+  private forwardKeyToShell(tab: TabState, key: KeyEvent): void {
+    if (!tab.ssh.isConnected()) return;
+    try {
+      const bytes = tab.term.encodeKey(key);
+      if (bytes.length === 0) return;
+      tab.ssh.writeToShell(Buffer.from(bytes).toString('utf8'));
+    } catch (err) {
+      logDebug(`[KEY] forwardKeyToShell failed: ${err}`);
     }
   }
 
@@ -279,14 +318,8 @@ export class App {
 
     'terminal.copy': () => this.handleCopy(),
     'terminal.paste': () => this.handlePaste(),
-    'terminal.pageUp': () => {
-      const tab = this.getActiveTab();
-      if (tab) this.scrollTerminal(tab.term, -(Math.floor(tab.term.height) - 1));
-    },
-    'terminal.pageDown': () => {
-      const tab = this.getActiveTab();
-      if (tab) this.scrollTerminal(tab.term, Math.floor(tab.term.height) - 1);
-    },
+    'terminal.pageUp': (raw, key) => this.handlePageKey(raw, key, -1),
+    'terminal.pageDown': (raw, key) => this.handlePageKey(raw, key, 1),
 
     // 剪贴板服务在 App 侧（要访问 clipboard 后端），所以这两个 id 虽然
     // 声明在 form / sftp 层，动作仍然由 App 执行。
@@ -483,7 +516,7 @@ export class App {
     this.terminalPanel.registerTerminal(tabId, term);
     logDebug(`[CONNECT] terminal registered: ${tabId}`);
 
-    const tab = { term, ssh, config };
+    const tab: TabState = { term, ssh, config, altScreen: createAltScreenTracker() };
     this.tabs.set(tabId, tab);
     logDebug(`[CONNECT] tabs map size now=${this.tabs.size}`);
 
@@ -520,6 +553,8 @@ export class App {
         }
         const onSshData = (data: Buffer) => {
           logIO('IN', data);
+          // 跟踪备用屏切换，决定 PageUp/PageDown 是转发给远端还是滚本地历史
+          tab.altScreen.feed(data);
           // 视口跟随由原生终端负责：在底部时自动跟进，上滚后保持不动
           term.write(data);
         };
@@ -965,6 +1000,8 @@ export class App {
         term: tab.term,
         ssh: sftpSsh,
         config,
+        // 同一个终端渲染对象，备用屏状态也随之共享
+        altScreen: tab.altScreen,
         sftpClient,
         sftpTab: sftpTabComponent,
       });

@@ -171,16 +171,16 @@ export const BINDINGS: Binding[] = [
     scope: 'terminal',
     key: { name: 'pageup' },
     group: 'terminal',
-    en: 'Scroll output up',
-    zh: '向上翻页',
+    en: 'Scroll output up (or page the remote full-screen program)',
+    zh: '向上翻页（全屏程序下转发给远端）',
   },
   {
     id: 'terminal.pageDown',
     scope: 'terminal',
     key: { name: 'pagedown' },
     group: 'terminal',
-    en: 'Scroll output down',
-    zh: '向下翻页',
+    en: 'Scroll output down (or page the remote full-screen program)',
+    zh: '向下翻页（全屏程序下转发给远端）',
   },
 
   // ── sftp：两种子状态（命令模式 / 浏览模式）──────────────────────

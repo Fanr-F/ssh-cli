@@ -22,6 +22,7 @@ src/
 ├── ssh/                  # SSH connection layer
 │   ├── auth.ts           # Authentication config builder (key/password)
 │   ├── connection.ts     # SSH session lifecycle (SshConnection class) + startSftp()
+│   ├── alt-screen.ts     # Tracks alternate-screen (ESC[?1049h/l) to route PageUp/PageDown
 │   └── types.ts          # SSH types (SshConnectionState, errors)
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    # SFTP client wrapper (readdir, mkdir, upload, download, etc.)
@@ -164,5 +165,6 @@ No test suite, no linter, no formatter configured. TypeScript strict mode enforc
 - **ssh2-no-cpu-features** — Used over ssh2 because native cpu-features module fails on Bun.
 - **Native VT** — Terminal emulation is `EmbeddedTerminalRenderable` from `@opentui/core` (Ghostty VT), NOT a custom ANSI parser. Scrollback lives inside the native terminal (`maxScrollback`).
 - **No public scroll API** — PageUp/PageDown call the zig binding `contextEmbeddedTerminalScroll` via `(term as any).lib` (negative = older lines); mouse wheel scrolling is built in.
+- **PageUp/PageDown routing** — `src/ssh/alt-screen.ts` scans the SSH byte stream for `ESC[?(47|1047|1049)(h|l)` and exposes `active`. While active (vim/less/htop/mc/tmux), `PageUp`/`PageDown` are re-encoded with `term.encodeKey()` and written to the shell instead of scrolling locally; `Shift+PageUp/PageDown` always scroll locally. `1048` is intentionally NOT matched — it only saves/restores the cursor, it does not switch buffers.
 - **No encryption** — Storage is plain JSON (~/.ssh-cli/config.json). Master password dialog was removed.
 - **Platform-specific OpenTUI** — `@opentui/core-win32-x64` is a separate dependency for Windows.
