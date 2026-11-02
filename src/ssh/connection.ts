@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { ShellOptions, SshConnectionState, AuthenticationError, ConnectionTimeoutError, HostKeyError } from './types';
 import { ConnectionConfig } from '../types/connection';
 import { buildConnectConfig } from './auth';
+import { KnownHostsStore } from './known-hosts';
 import { createLogger } from '../logger';
 
 const log = createLogger('ssh');
@@ -101,18 +102,58 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
         ],
       };
 
-      // Host key verification (auto-accept for MVP with logging)
-      connectConfig.hostVerifier = (key: Buffer) => {
-        // In MVP, accept all host keys
-        // Log the key fingerprint for potential future use
-        // In production, you'd want to cache and verify
-        return true;
+      // Trust on first use: pin a new host key, reject a changed one.
+      const knownHosts = new KnownHostsStore();
+      let hostKeyFailure: HostKeyError | null = null;
+
+      connectConfig.hostVerifier = (key: Buffer, verify?: (valid: boolean) => void) => {
+        const done = verify ?? (() => {});
+        void knownHosts.verify(config.host, config.port, key)
+          .then((result) => {
+            if (result.ok) {
+              if (result.status === 'new') {
+                log.warn('Pinned new host key for {host}:{port}: {fingerprint}', {
+                  host: config.host,
+                  port: config.port,
+                  fingerprint: result.fingerprint,
+                });
+              } else {
+                log.debug('Host key verified for {host}:{port}: {fingerprint}', {
+                  host: config.host,
+                  port: config.port,
+                  fingerprint: result.fingerprint,
+                });
+              }
+              done(true);
+              return;
+            }
+
+            hostKeyFailure = new HostKeyError(result.message);
+            log.error('Host key verification failed for {host}:{port}: {reason}', {
+              host: config.host,
+              port: config.port,
+              reason: result.message,
+            });
+            done(false);
+          })
+          .catch((err: unknown) => {
+            const reason = err instanceof Error ? err.message : String(err);
+            hostKeyFailure = new HostKeyError(`Host key verification failed: ${reason}`);
+            log.error('Host key verification error for {host}:{port}: {reason}', {
+              host: config.host,
+              port: config.port,
+              reason,
+            });
+            done(false);
+          });
       };
 
       await new Promise<void>((resolve, reject) => {
         // Handle errors during connection
         const onError = (err: Error) => {
-          if (err.message?.includes('Authentication') || err.message?.includes('password') || err.message?.includes('auth')) {
+          if (hostKeyFailure) {
+            reject(hostKeyFailure);
+          } else if (err.message?.includes('Authentication') || err.message?.includes('password') || err.message?.includes('auth')) {
             reject(new AuthenticationError(err.message));
           } else if (err.message?.includes('timed out') || err.message?.includes('timeout')) {
             reject(new ConnectionTimeoutError(err.message));

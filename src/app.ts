@@ -57,6 +57,7 @@ export class App {
   private tabBar!: TabBarAPI;
   private helpPopup!: HelpPopupAPI;
   private form: any = null;
+  private formOpening = false;
   private focus: FocusZone = 'sidebar';
   private connections: ConnectionConfig[] = [];
 
@@ -124,14 +125,22 @@ export class App {
   async init(): Promise<void> {
     logDebug('App starting');
     this.store = new ConnectionStore();
+    let loadError: string | null = null;
     try {
       this.connections = await this.store.getAll();
-    } catch {
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logDebug(`[INIT] failed to load connections: ${reason}`);
       this.connections = [];
+      loadError = `Could not load connections: ${reason}`;
     }
     this.buildLayout();
     this.setupGlobalKeys();
     this.setupResizeHandler();
+    if (loadError) {
+      this.terminalPanel.showError(loadError);
+      this.statusBar.setStatus(loadError);
+    }
     this.renderer.start();
   }
 
@@ -460,7 +469,18 @@ export class App {
         this.closeTab(tabId);
       }
     }
-    
+
+    let authConfig: ConnectionConfig;
+    try {
+      authConfig = await this.store.withCredentials(config);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not read credentials';
+      this.terminalPanel.showError(msg);
+      this.statusBar.setStatus('Connection failed');
+      this.renderer.requestRender();
+      return;
+    }
+
     this.terminalPanel.showConnecting(config.host);
     this.statusBar.setStatus('Connecting to ' + config.host + '...');
     this.renderer.requestRender();
@@ -612,7 +632,7 @@ export class App {
     });
 
     try {
-      await ssh.connect(config);
+      await ssh.connect(authConfig);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Connection failed';
       this.terminalPanel.showError(msg);
@@ -746,45 +766,63 @@ export class App {
   }
 
   private async openForm(existing: ConnectionConfig | null): Promise<void> {
-    if (this.form) return;
-    this.focusForm();
-    const form = createConnectionForm(this.renderer, existing ?? undefined);
-    form.onCancel(() => { this.closeForm(form); this.focusSidebar(); });
-    form.onSubmit(async (data: ConnectionConfig) => {
-      try {
-        if (existing) {
-          await this.store.update(existing.id, data);
-        } else {
-          await this.store.add(data);
+    if (this.form || this.formOpening) return;
+    this.formOpening = true;
+
+    try {
+      let hydrated = existing;
+      if (existing) {
+        try {
+          // Editing must not require a keychain read to succeed; a missing
+          // password is simply left blank and the user can retype it.
+          hydrated = await this.store.withCredentials(existing, { requirePassword: false });
+        } catch (err) {
+          logDebug(`[FORM] could not hydrate credentials: ${err}`);
         }
-        this.connections = await this.store.getAll();
-        this.sidebar.setConnections(this.connections);
-        this.closeForm(form); this.focusSidebar();
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Save failed';
-        this.terminalPanel.showError('Save failed: ' + msg); this.renderer.requestRender();
-        // Re-throw so the form can leave its submitting state and allow a retry.
-        throw err;
       }
-    });
-    form.onDelete(async (id: string) => {
-      try {
-        await this.store.remove(id);
-        this.connections = await this.store.getAll();
-        this.sidebar.setConnections(this.connections);
-        this.closeForm(form); this.focusSidebar();
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Delete failed';
-        this.terminalPanel.showError('Delete failed: ' + msg); this.renderer.requestRender();
-      }
-    });
-    // 右键粘贴：剪贴板后端在 App 侧，表单只发请求
-    form.onPasteRequest(() => { void this.handlePaste(); });
-    this.form = form;
-    this.renderer.root.add(form);
-    // Activate keyboard input for the form
-    form.focus();
-    this.renderer.requestRender();
+
+      if (this.form) return;
+      const form = createConnectionForm(this.renderer, hydrated ?? undefined);
+      this.focusForm();
+      form.onCancel(() => { this.closeForm(form); this.focusSidebar(); });
+      form.onSubmit(async (data: ConnectionConfig) => {
+        try {
+          if (existing) {
+            await this.store.update(existing.id, data);
+          } else {
+            await this.store.add(data);
+          }
+          this.connections = await this.store.getAll();
+          this.sidebar.setConnections(this.connections);
+          this.closeForm(form); this.focusSidebar();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Save failed';
+          this.terminalPanel.showError('Save failed: ' + msg); this.renderer.requestRender();
+          // Re-throw so the form can leave its submitting state and allow a retry.
+          throw err;
+        }
+      });
+      form.onDelete(async (id: string) => {
+        try {
+          await this.store.remove(id);
+          this.connections = await this.store.getAll();
+          this.sidebar.setConnections(this.connections);
+          this.closeForm(form); this.focusSidebar();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Delete failed';
+          this.terminalPanel.showError('Delete failed: ' + msg); this.renderer.requestRender();
+        }
+      });
+      // 右键粘贴：剪贴板后端在 App 侧，表单只发请求
+      form.onPasteRequest(() => { void this.handlePaste(); });
+      this.form = form;
+      this.renderer.root.add(form);
+      // Activate keyboard input for the form
+      form.focus();
+      this.renderer.requestRender();
+    } finally {
+      this.formOpening = false;
+    }
   }
 
   private closeForm(form: any): void {
@@ -850,7 +888,7 @@ export class App {
    */
   private async copyText(text: string): Promise<void> {
     if (!text) return;
-    logDebug(`[COPY] copying ${text.length} chars: "${text.substring(0, 100)}"`);
+    logDebug(`[COPY] copying ${text.length} chars`);
     const result = await this.clipboard
       .writeText(text, {
         destination: 'all-available',
@@ -965,8 +1003,9 @@ export class App {
 
     try {
       const config = tab.config;
+      const authConfig = await this.store.withCredentials(config);
       const sftpSsh = new SshConnection();
-      await sftpSsh.connect(config);
+      await sftpSsh.connect(authConfig);
       const sftp = await sftpSsh.startSftp();
       const sftpClient = new SftpClient(sftp);
 

@@ -107,6 +107,7 @@ interface FormState {
   username: string;
   authType: "key" | "password";
   privateKeyPath: string;
+  passphrase: string;
   password: string;
 }
 
@@ -127,6 +128,7 @@ export function createConnectionForm(
     username: existing?.username ?? "",
     authType: existing?.authType ?? "key",
     privateKeyPath: existing?.privateKeyPath ?? "~/.ssh/id_ed25519",
+    passphrase: existing?.passphrase ?? "",
     password: existing?.password ?? "",
   };
 
@@ -738,6 +740,7 @@ export function createConnectionForm(
       username: state.username.trim(),
       authType: state.authType,
       privateKeyPath: state.authType === "key" ? (state.privateKeyPath || "~/.ssh/id_ed25519") : undefined,
+      passphrase: state.authType === "key" ? (state.passphrase || undefined) : undefined,
       password: state.authType === "password" ? state.password : undefined,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
       lastConnectedAt: existing?.lastConnectedAt,

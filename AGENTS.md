@@ -17,20 +17,22 @@
 src/
 ├── index.ts              # Entry point - creates renderer with { exitOnCtrlC: false, useMouse: true }
 ├── app.ts                # Main application class - layout, focus management, keyboard routing, multi-tab
-├── logger.ts             # Logging system (LogTape, writes to ssh-cli.log)
-├── clipboard.ts          # Copy/paste operations
+├── logger.ts             # Logging system (LogTape, writes to ~/.ssh-cli/ssh-cli.log)
 ├── ssh/                  # SSH connection layer
 │   ├── auth.ts           # Authentication config builder (key/password)
 │   ├── connection.ts     # SSH session lifecycle (SshConnection class) + startSftp()
+│   ├── known-hosts.ts    # TOFU host-key pinning and SHA-256 fingerprint checks
 │   ├── alt-screen.ts     # Tracks alternate-screen (ESC[?1049h/l) to route PageUp/PageDown
 │   └── types.ts          # SSH types (SshConnectionState, errors)
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    # SFTP client wrapper (readdir, mkdir, upload, download, etc.)
 │   ├── sftp-tab.ts       # SFTP dual-panel tab (cmd mode, keyboard, ScrollBox scrolling)
 │   └── types.ts          # SFTP types (FileEntry, TransferTask, PanelSide)
-├── storage/              # Persistence layer (plain JSON, NO encryption)
-│   ├── config.ts         # Config file paths (~/.ssh-cli/)
-│   └── connections.ts    # ConnectionStore CRUD
+├── storage/              # Persistence layer
+│   ├── config.ts         # Config paths, 0600/0700 permissions, atomic writes
+│   ├── connections.ts    # ConnectionStore CRUD + legacy credential migration
+│   ├── credentials.ts    # Bun.secrets wrapper (password / passphrase)
+│   └── schema.ts         # Config validation and secret stripping
 ├── types/                # Shared TypeScript interfaces
 │   └── connection.ts     # ConnectionConfig interface
 └── ui/                   # OpenTUI UI components
@@ -146,11 +148,14 @@ onMouseDrag: (e: MouseEvent) => {
 ## Commands
 
 ```bash
-bun run start   # Run the application
-bun run docs    # Regenerate shortcut tables in README.md / README.zh.md
+bun run start       # Run the application
+bun run typecheck   # tsc --noEmit
+bun test            # Bun test suite
+bun run docs        # Regenerate shortcut tables in README.md / README.zh.md
+bun run build:win   # Compile the Windows executable
 ```
 
-No test suite, no linter, no formatter configured. TypeScript strict mode enforced via tsconfig.json.
+No linter or formatter configured. TypeScript strict mode and tests are enforced by `.github/workflows/ci.yml`.
 
 ## Code Conventions
 
@@ -171,5 +176,7 @@ No test suite, no linter, no formatter configured. TypeScript strict mode enforc
 - **Native VT** — Terminal emulation is `EmbeddedTerminalRenderable` from `@opentui/core` (Ghostty VT), NOT a custom ANSI parser. Scrollback lives inside the native terminal (`maxScrollback`).
 - **No public scroll API** — PageUp/PageDown call the zig binding `contextEmbeddedTerminalScroll` via `(term as any).lib` (negative = older lines); mouse wheel scrolling is built in.
 - **PageUp/PageDown routing** — `src/ssh/alt-screen.ts` scans the SSH byte stream for `ESC[?(47|1047|1049)(h|l)` and exposes `active`. While active (vim/less/htop/mc/tmux), `PageUp`/`PageDown` are re-encoded with `term.encodeKey()` and written to the shell instead of scrolling locally; `Shift+PageUp/PageDown` always scroll locally. `1048` is intentionally NOT matched — it only saves/restores the cursor, it does not switch buffers.
-- **No encryption** — Storage is plain JSON (~/.ssh-cli/config.json). Master password dialog was removed.
+- **Credentials are not in config.json** — Passwords and key passphrases are stored via `Bun.secrets` (OS keychain). `~/.ssh-cli/config.json` contains metadata only; legacy plaintext entries are migrated on load and stripped by `storage/schema.ts`. On Linux this requires a Secret Service provider.
+- **Host keys are pinned (TOFU)** — `ssh/known-hosts.ts` stores SHA-256 fingerprints in `~/.ssh-cli/known_hosts.json`; a changed key rejects the connection. The first connection is auto-trusted and logged.
+- **Logs are private and opt-in for I/O** — `~/.ssh-cli/ssh-cli.log` is `0600`, rotates at 2 MB, and terminal I/O previews require both debug logging and `SSH_CLI_LOG_IO=1`; previews are redacted.
 - **Platform-specific OpenTUI** — `@opentui/core-win32-x64` is a separate dependency for Windows.

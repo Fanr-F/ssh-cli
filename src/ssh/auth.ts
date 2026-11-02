@@ -17,7 +17,7 @@ interface SshConnectConfig {
   passphrase?: string;
   readyTimeout?: number;
   hostHash?: string;
-  hostVerifier?: (key: Buffer) => boolean;
+  hostVerifier?: (key: Buffer, verify?: (valid: boolean) => void) => boolean | void;
   algorithms?: {
     kex?: string[];
     serverHostKey?: string[];
@@ -35,7 +35,6 @@ export function buildConnectConfig(connection: ConnectionConfig): SshConnectConf
     port: connection.port,
     username: connection.username,
     readyTimeout: 10000,
-    hostHash: 'sha256',
   };
 
   if (connection.authType === 'key') {

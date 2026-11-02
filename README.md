@@ -16,7 +16,8 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 ### Features
 
 - **Connection Manager** — Add, edit, delete connections via keyboard-driven sidebar UI
-- **Plain JSON Storage** — Connections saved to `~/.ssh-cli/config.json`
+- **OS Credential Storage** — Connection metadata lives in `~/.ssh-cli/config.json`; passwords/passphrases are stored in the OS keychain
+- **Host Key Pinning** — Trust on first use; a changed server key is rejected
 - **Dual Auth** — Supports both private key (`~/.ssh/id_rsa`, etc.) and password authentication
 - **Native Terminal Emulation** — Full VT emulation via OpenTUI's `EmbeddedTerminalRenderable` (Ghostty VT engine)
 - **Multi-Tab Support** — Open multiple SSH sessions in tabs, switch between them
@@ -27,6 +28,8 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 - **Mouse Support** — Click to select connections, double-click to connect, clickable toolbar buttons
 - **Draggable UI** — Resize sidebar divider, drag help popup window
 - **Help System** — Press F1 to view all keyboard shortcuts
+
+> **Linux note**: credential storage uses `Bun.secrets`, which requires a Secret Service provider (GNOME Keyring, KWallet, etc.).
 
 <!-- shortcuts:begin -->
 
@@ -169,8 +172,7 @@ All core layers are implemented and integrated.
 src/
 ├── index.ts              # Entry point — creates renderer and initializes App
 ├── app.ts                # Main application class — layout, focus management, keyboard dispatch
-├── logger.ts             # Logging system (LogTape, writes to ssh-cli.log)
-├── clipboard.ts          # Clipboard operations (copy/paste)
+├── logger.ts             # Logging system (LogTape, writes to ~/.ssh-cli/ssh-cli.log)
 ├── keymap/               # Keyboard shortcut definitions (single source of truth)
 │   ├── bindings.ts       #   Every binding: scope, key, group, docs text
 │   ├── matcher.ts        #   Key normalization + pattern matching
@@ -179,14 +181,17 @@ src/
 ├── ssh/                  # SSH connection layer
 │   ├── auth.ts           #   Authentication config builder (key/password)
 │   ├── connection.ts     #   SSH session lifecycle (SshConnection class)
+│   ├── known-hosts.ts    #   TOFU host-key pinning and fingerprint checks
 │   └── types.ts          #   SSH types (SshConnectionState, errors)
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    #   SFTP client wrapper (readdir, mkdir, upload, download)
 │   ├── sftp-tab.ts       #   SFTP dual-panel tab (cmd mode, keyboard, ScrollBox scrolling)
 │   └── types.ts          #   SFTP types (FileEntry, TransferTask, PanelSide)
 ├── storage/              # Persistence layer
-│   ├── config.ts         #   Config file paths (~/.ssh-cli/)
-│   └── connections.ts    #   ConnectionStore CRUD (plain JSON)
+│   ├── config.ts         #   Config paths, 0600/0700 permissions, atomic writes
+│   ├── connections.ts    #   ConnectionStore CRUD + legacy credential migration
+│   ├── credentials.ts    #   Bun.secrets wrapper (password / passphrase)
+│   └── schema.ts         #   Config validation and secret stripping
 ├── terminal/             # (removed — VT emulation is native in @opentui/core)
 ├── types/                # Shared TypeScript interfaces
 │   └── connection.ts     #   ConnectionConfig interface
@@ -213,8 +218,12 @@ git clone <repo-url> && cd ssh-cli
 # Install dependencies
 bun install
 
-# Run (default: info level logging to ssh-cli.log)
+# Run (default: info level logging to ~/.ssh-cli/ssh-cli.log)
 bun start
+
+# Typecheck and run tests
+bun run typecheck
+bun test
 
 # Run with debug logging
 bun run start -- --log-level debug
@@ -231,9 +240,9 @@ bun run docs
 
 ### Logging
 
-All logs are written to `ssh-cli.log` in the project root. No console output (TUI safe).
+All logs are written to `~/.ssh-cli/ssh-cli.log` with `0600` permissions. No console output (TUI safe).
 
-When the log exceeds 2 MB, it is rotated to `ssh-cli.log.1` on the next startup (one backup is kept). SSH I/O previews are only formatted when `debug` logging is enabled; on the default `info` level this path allocates nothing.
+When the log exceeds 2 MB, it is rotated to `ssh-cli.log.1` at runtime (one backup is kept). SSH I/O previews are opt-in: they require `--log-level debug` **and** `SSH_CLI_LOG_IO=1`, and common secret patterns are masked. On the default `info` level this path allocates nothing.
 
 | Flag | Description |
 |---|---|
@@ -242,6 +251,7 @@ When the log exceeds 2 MB, it is rotated to `ssh-cli.log.1` on the next startup 
 | `--log-level info` | Info and above (default) |
 | `--log-level warning` | Warnings and errors only |
 | `--log-level error` | Errors only |
+| `SSH_CLI_LOG_IO=1` | Include redacted SSH I/O previews at debug level |
 
 Log format:
 ```
@@ -342,4 +352,5 @@ Press `Ctrl+Q` to quit the application.
 - **Native VT** — Terminal emulation is OpenTUI's native `EmbeddedTerminalRenderable`, which handles ANSI parsing, keyboard encoding, selection, scrolling and scrollback
 - **No manual redraw** — The native renderable owns its buffer, so there is no per-row dirty-diff code in this project
 - **Dynamic import** — `ssh2-no-cpu-features` is imported via `await import()` because it ships ESM with top-level await
-- **File-only logging** — All logs write to `ssh-cli.log` (no console output to preserve TUI integrity)
+- **File-only logging** — All logs write to `~/.ssh-cli/ssh-cli.log` (no console output to preserve TUI integrity)
+- **Keychain credentials** — Passwords/passphrases never go into `config.json`; legacy plaintext entries are migrated on first launch when the OS keychain is available

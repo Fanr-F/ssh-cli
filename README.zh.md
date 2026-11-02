@@ -16,7 +16,8 @@
 ### 功能特性
 
 - **连接管理** — 通过键盘驱动的侧边栏界面添加、编辑、删除 SSH 连接
-- **JSON 持久化** — 连接保存到 `~/.ssh-cli/config.json`
+- **系统密钥库** — 连接元数据保存在 `~/.ssh-cli/config.json`，密码/passphrase 存入操作系统密钥库
+- **主机密钥固定** — 首次连接信任并记录指纹，之后密钥变化会被拒绝
 - **双重认证** — 支持私钥（`~/.ssh/id_rsa` 等）和密码认证
 - **原生终端模拟** — 通过 OpenTUI 的 `EmbeddedTerminalRenderable`（Ghostty VT 引擎）实现完整终端模拟
 - **多标签页支持** — 在标签页中打开多个 SSH 会话，自由切换
@@ -27,6 +28,8 @@
 - **鼠标支持** — 点击选择连接，双击连接，可点击的工具栏按钮
 - **可拖动 UI** — 调整侧边栏分隔线，拖动帮助弹窗
 - **帮助系统** — 按 F1 查看所有键盘快捷键
+
+> **Linux 说明**：凭据存储使用 `Bun.secrets`，需要系统提供 Secret Service 实现（GNOME Keyring、KWallet 等）。
 
 <!-- shortcuts:begin -->
 
@@ -169,8 +172,7 @@
 src/
 ├── index.ts              # 入口文件 — 创建渲染器并初始化 App
 ├── app.ts                # 主应用类 — 布局、焦点管理、键盘分发
-├── logger.ts             # 日志系统（LogTape，写入 ssh-cli.log）
-├── clipboard.ts          # 剪贴板操作（复制/粘贴）
+├── logger.ts             # 日志系统（LogTape，写入 ~/.ssh-cli/ssh-cli.log）
 ├── keymap/               # 快捷键定义（唯一事实来源）
 │   ├── bindings.ts       #   全部绑定：作用域、按键、分组、文档文案
 │   ├── matcher.ts        #   按键归一化 + 模式匹配
@@ -179,14 +181,17 @@ src/
 ├── ssh/                  # SSH 连接层
 │   ├── auth.ts           #   认证配置构建器（密钥/密码）
 │   ├── connection.ts     #   SSH 会话生命周期（SshConnection 类）
+│   ├── known-hosts.ts    #   TOFU 主机密钥固定与指纹校验
 │   └── types.ts          #   SSH 类型（SshConnectionState、错误）
 ├── sftp/                 # SFTP 文件管理器模块
 │   ├── sftp-client.ts    #   SFTP 客户端封装（readdir、mkdir、upload、download）
 │   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、键盘、ScrollBox 滚动）
 │   └── types.ts          #   SFTP 类型（FileEntry、TransferTask、PanelSide）
 ├── storage/              # 持久化层
-│   ├── config.ts         #   配置文件路径（~/.ssh-cli/）
-│   └── connections.ts    #   ConnectionStore CRUD（纯 JSON）
+│   ├── config.ts         #   配置路径、0600/0700 权限、原子写入
+│   ├── connections.ts    #   ConnectionStore CRUD + 旧凭据迁移
+│   ├── credentials.ts    #   Bun.secrets 封装（密码 / passphrase）
+│   └── schema.ts         #   配置校验与密钥剥离
 ├── terminal/             # （已移除 — VT 模拟由 @opentui/core 原生提供）
 ├── types/                # 共享 TypeScript 接口
 │   └── connection.ts     #   ConnectionConfig 接口
@@ -213,8 +218,12 @@ git clone <仓库地址> && cd ssh-cli
 # 安装依赖
 bun install
 
-# 运行（默认 info 级别日志写入 ssh-cli.log）
+# 运行（默认 info 级别日志写入 ~/.ssh-cli/ssh-cli.log）
 bun start
+
+# 类型检查与测试
+bun run typecheck
+bun test
 
 # 以 debug 级别运行
 bun run start -- --log-level debug
@@ -231,9 +240,9 @@ bun run docs
 
 ### 日志
 
-所有日志写入项目根目录的 `ssh-cli.log` 文件，控制台无输出（TUI 安全）。
+所有日志写入 `~/.ssh-cli/ssh-cli.log`，文件权限为 `0600`，控制台无输出（TUI 安全）。
 
-日志文件超过 2MB 时，会在下次启动时自动轮转为 `ssh-cli.log.1`（只保留一份备份）。`debug` 级别下的 SSH 输入/输出预览只在启用 debug 时才会格式化，`info` 级别下不产生额外分配。
+日志文件超过 2MB 时会在运行中轮转为 `ssh-cli.log.1`（只保留一份备份）。SSH 输入/输出预览需要同时启用 `--log-level debug` 和 `SSH_CLI_LOG_IO=1`，常见密钥模式会被脱敏；默认 `info` 级别下不产生额外分配。
 
 | 参数 | 说明 |
 |---|---|
@@ -242,6 +251,7 @@ bun run docs
 | `--log-level info` | 信息及以上（默认） |
 | `--log-level warning` | 仅警告和错误 |
 | `--log-level error` | 仅错误 |
+| `SSH_CLI_LOG_IO=1` | 在 debug 级别下输出脱敏后的 SSH I/O 预览 |
 
 日志格式：
 ```
@@ -342,7 +352,8 @@ bun run docs
 - **原生 VT** — 终端模拟使用 OpenTUI 原生 `EmbeddedTerminalRenderable`，ANSI 解析、按键编码、选区、滚动与回滚均由它负责
 - **无自研重绘** — 原生组件自己维护缓冲区，项目内不再有逐行脏差异渲染代码
 - **动态导入** — 通过 `await import()` 导入 `ssh2-no-cpu-features`，因其以含顶层 await 的 ESM 格式发布
-- **仅文件日志** — 所有日志写入 `ssh-cli.log`（控制台无输出，保护 TUI 完整性）
+- **仅文件日志** — 所有日志写入 `~/.ssh-cli/ssh-cli.log`（控制台无输出，保护 TUI 完整性）
+- **密钥库凭据** — 密码/passphrase 不再写入 `config.json`；旧版明文凭据会在首次启动时迁移到系统密钥库
 
 ---
 
