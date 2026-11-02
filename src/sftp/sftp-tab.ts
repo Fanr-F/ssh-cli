@@ -1,5 +1,6 @@
-import { Box, ScrollBox, Text, StyledText, type TextChunk } from '@opentui/core';
+import { Box, ScrollBox, Text, TextRenderable, StyledText, type TextChunk } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
+import { readdir, stat as fsStat } from 'node:fs/promises';
 import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
@@ -11,6 +12,16 @@ import { remoteParentPath, resolveRemotePath } from './paths';
 const log = createLogger('sftp-tab');
 
 const KNOWN_COMMANDS = ['upload', 'download', 'mkdir', 'rm', 'mv', 'cd', 'refresh', 'hidden'];
+
+/** One-line items are rendered in chunks so moving the cursor is not O(n). */
+const LIST_CHUNK_SIZE = 32;
+/** Concurrent stat calls for local directories. */
+const LOCAL_STAT_CONCURRENCY = 32;
+/** How long a switched-to SFTP tab may reuse its last directory listing. */
+const REFRESH_TTL_MS = 2000;
+/** Windows `attrib` is expensive; cache system-file names briefly. */
+const SYSTEM_NAMES_TTL_MS = 10_000;
+const systemNamesCache = new Map<string, { names: Set<string>; expiresAt: number }>();
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -61,6 +72,10 @@ interface FileListState {
 async function getWindowsSystemNames(dir: string): Promise<Set<string>> {
   const names = new Set<string>();
   if (process.platform !== 'win32') return names;
+
+  const cached = systemNamesCache.get(dir);
+  if (cached && cached.expiresAt > Date.now()) return cached.names;
+
   try {
     const { execFile } = await import('node:child_process');
     const output = await new Promise<string>((resolve, reject) => {
@@ -69,7 +84,6 @@ async function getWindowsSystemNames(dir: string): Promise<Set<string>> {
         else resolve(stdout);
       });
     });
-    const { basename } = await import('node:path');
     for (const line of output.split(/\r?\n/)) {
       const sep = line.indexOf(':');
       if (sep < 0) continue;
@@ -78,6 +92,8 @@ async function getWindowsSystemNames(dir: string): Promise<Set<string>> {
         names.add(basename(line.slice(sep - 1)));
       }
     }
+    if (systemNamesCache.size > 64) systemNamesCache.clear();
+    systemNamesCache.set(dir, { names, expiresAt: Date.now() + SYSTEM_NAMES_TTL_MS });
   } catch {
     // attrib unavailable — fall back to showing everything
   }
@@ -86,33 +102,40 @@ async function getWindowsSystemNames(dir: string): Promise<Set<string>> {
 
 /** Read local directory contents. */
 async function readLocalDir(path: string, hideSystem = true): Promise<FileItem[]> {
-  const { readdir, stat } = await import('node:fs/promises');
-  const { join } = await import('node:path');
-
   const entries = await readdir(path, { withFileTypes: true });
   const systemNames = hideSystem ? await getWindowsSystemNames(path) : new Set<string>();
+  const visible = entries.filter(
+    (entry) => entry.name !== '.' && entry.name !== '..' && !systemNames.has(entry.name),
+  );
   const items: FileItem[] = [];
 
-  for (const entry of entries) {
-    if (entry.name === '.' || entry.name === '..') continue;
-    if (systemNames.has(entry.name)) continue;
-    try {
-      const fullPath = join(path, entry.name);
-      // `stat` follows symlinks, so a symlink to a directory is navigable and
-      // is classified consistently with the target it points at.
-      const stats = await stat(fullPath);
-      items.push({
-        name: entry.name,
-        isDirectory: stats.isDirectory(),
-        isFile: stats.isFile(),
-        isSymlink: entry.isSymbolicLink(),
-        size: stats.size,
-        mode: stats.mode,
-        mtime: Math.floor(stats.mtimeMs / 1000),
-        longname: '',
-      });
-    } catch {
-      // Skip files we can't stat
+  // Batch stat calls instead of awaiting them one by one. This is the main
+  // difference between a fast and a visibly stalling large directory.
+  for (let offset = 0; offset < visible.length; offset += LOCAL_STAT_CONCURRENCY) {
+    const batch = visible.slice(offset, offset + LOCAL_STAT_CONCURRENCY);
+    const results = await Promise.all(batch.map(async (entry): Promise<FileItem | null> => {
+      try {
+        const fullPath = join(path, entry.name);
+        // `stat` follows symlinks, so a symlink to a directory is navigable
+        // and is classified consistently with the target it points at.
+        const stats = await fsStat(fullPath);
+        return {
+          name: entry.name,
+          isDirectory: stats.isDirectory(),
+          isFile: stats.isFile(),
+          isSymlink: entry.isSymbolicLink(),
+          size: stats.size,
+          mode: stats.mode,
+          mtime: Math.floor(stats.mtimeMs / 1000),
+          longname: '',
+        };
+      } catch {
+        // Skip files we can't stat
+        return null;
+      }
+    }));
+    for (const item of results) {
+      if (item) items.push(item);
     }
   }
 
@@ -180,7 +203,7 @@ export function createSftpTab(
    * Wrap a file list in a ScrollBox: 滚动、滚动条、滚轮都由 OpenTUI 自己管理，
    * 不再手写 `scrollY` 与 ScrollBar 同步。
    */
-  function createListScrollBox(id: string, list: ReturnType<typeof Text>) {
+  function createListScrollBox(id: string, list: ReturnType<typeof Box>) {
     return ScrollBox(
       {
         id,
@@ -189,6 +212,7 @@ export function createSftpTab(
         flexBasis: 0,
         scrollY: true,
         scrollX: false,
+        viewportCulling: true,
         backgroundColor: C.surface,
         contentOptions: { flexDirection: 'column' },
         scrollbarOptions: {
@@ -210,8 +234,11 @@ export function createSftpTab(
 
   // Local panel
   const localPathText = Text({ content: ` Local: ${localState.currentPath}`, fg: C.cyan, id: 'sftp-local-path' });
-  const localListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-local-list', wrapMode: 'none', width: '100%' });
-  const localScroll = createListScrollBox('sftp-local-scroll', localListText);
+  const localList = Box(
+    { id: 'sftp-local-list', flexDirection: 'column', width: '100%' },
+    Text({ content: ' Loading...', fg: C.textDim, wrapMode: 'none', width: '100%' }),
+  );
+  const localScroll = createListScrollBox('sftp-local-scroll', localList);
   const localPanel = Box(
     { id: 'sftp-local-panel', flexDirection: 'column', flexGrow: 1, flexBasis: 0, backgroundColor: C.surface, paddingX: 1 },
     localPathText,
@@ -221,8 +248,11 @@ export function createSftpTab(
 
   // Remote panel
   const remotePathText = Text({ content: ` Remote: ${remoteState.currentPath}`, fg: C.cyan, id: 'sftp-remote-path' });
-  const remoteListText = Text({ content: ' Loading...', fg: C.textDim, id: 'sftp-remote-list', wrapMode: 'none', width: '100%' });
-  const remoteScroll = createListScrollBox('sftp-remote-scroll', remoteListText);
+  const remoteList = Box(
+    { id: 'sftp-remote-list', flexDirection: 'column', width: '100%' },
+    Text({ content: ' Loading...', fg: C.textDim, wrapMode: 'none', width: '100%' }),
+  );
+  const remoteScroll = createListScrollBox('sftp-remote-scroll', remoteList);
   const remotePanel = Box(
     { id: 'sftp-remote-panel', flexDirection: 'column', flexGrow: 1, flexBasis: 0, backgroundColor: C.surface, paddingX: 1 },
     remotePathText,
@@ -281,7 +311,18 @@ export function createSftpTab(
   let _resolvedLocalPanel: any = null;
   let _resolvedRemotePanel: any = null;
 
+  const listViews: Record<PanelSide, { container: any; chunks: any[] }> = {
+    local: { container: null, chunks: [] },
+    remote: { container: null, chunks: [] },
+  };
+
   function resolveAll(): void {
+    if (_resolvedLocalPath && _resolvedLocalList && _resolvedRemotePath && _resolvedRemoteList
+      && _resolvedLocalScroll && _resolvedRemoteScroll && _resolvedStatus
+      && _resolvedLocalPanel && _resolvedRemotePanel) {
+      return;
+    }
+
     const root = renderer.root.findDescendantById(tabId);
     _resolvedLocalPath = root?.findDescendantById('sftp-local-path') ?? null;
     _resolvedLocalList = root?.findDescendantById('sftp-local-list') ?? null;
@@ -295,7 +336,6 @@ export function createSftpTab(
     // ScrollBox 默认可聚焦；文件列表的按键由本组件统一处理，别让它抢焦点
     if (_resolvedLocalScroll) _resolvedLocalScroll.focusable = false;
     if (_resolvedRemoteScroll) _resolvedRemoteScroll.focusable = false;
-    log.debug(`[SFTP RESOLVE] root:${!!root} localPath:${!!_resolvedLocalPath} localList:${!!_resolvedLocalList} remotePath:${!!_resolvedRemotePath} remoteList:${!!_resolvedRemoteList} status:${!!_resolvedStatus} localPanel:${!!_resolvedLocalPanel} remotePanel:${!!_resolvedRemotePanel}`);
   }
 
   // ── Render functions ──────────────────────────────────────────
@@ -310,63 +350,117 @@ export function createSftpTab(
     }
   }
 
-  function renderFileList(state: FileListState, listText: any, pathText: any, panel: any, side: PanelSide): void {
-    log.debug(`[SFTP RENDER] side:${side} listText:${!!listText} pathText:${!!pathText} panel:${!!panel} items:${state.items.length}`);
-    if (!listText || !pathText) {
-      log.debug(`[SFTP RENDER] early return - missing elements`);
+  function renderListChrome(state: FileListState, pathText: any, panel: any, side: PanelSide): void {
+    if (pathText) {
+      pathText.content = ` ${side === 'local' ? 'Local' : 'Remote'}: ${state.currentPath}`;
+    }
+    if (panel) {
+      panel.borderColor = side === activeSide ? C.borderActive : C.border;
+    }
+  }
+
+  /** Build one column of rendered lines; also used to refresh a single chunk. */
+  function buildListChunk(state: FileListState, start: number, end: number): StyledText {
+    const chunks: TextChunk[] = [];
+    const selectedFg = toRGBA(C.bg);
+    const selectedBg = toRGBA(C.textDim);
+    const normalFg = toRGBA(C.textDim);
+
+    for (let i = start; i < end; i++) {
+      const item = state.items[i];
+      if (!item) continue;
+      if (i > start) {
+        chunks.push({ __isChunk: true, text: '\n', fg: normalFg, attributes: 0 });
+      }
+
+      const prefix = item.isDirectory ? '/' : ' ';
+      const sizeStr = item.isDirectory ? '' : ` ${formatSize(item.size).padStart(8)}`;
+      const timeStr = item.mtime ? ` ${formatTime(item.mtime)}` : '';
+      const line = ` ${prefix}${item.name}${sizeStr}${timeStr} `;
+      const isSelected = i === state.selectedIndex;
+
+      chunks.push({
+        __isChunk: true,
+        text: line,
+        fg: isSelected ? selectedFg : normalFg,
+        ...(isSelected ? { bg: selectedBg } : {}),
+        attributes: 0,
+      });
+    }
+
+    return new StyledText(chunks);
+  }
+
+  function rebuildList(state: FileListState, side: PanelSide): void {
+    const container = side === 'local' ? _resolvedLocalList : _resolvedRemoteList;
+    if (!container) return;
+
+    const view = listViews[side];
+    view.container = container;
+    for (const child of [...container.getChildren()]) {
+      container.remove(child);
+    }
+    view.chunks = [];
+
+    if (state.items.length === 0) {
+      const empty = new TextRenderable(renderer.root.ctx, {
+        id: `sftp-${side}-empty`,
+        content: ' (empty)',
+        fg: C.textDim,
+        width: '100%',
+      });
+      container.add(empty);
+      view.chunks.push(empty);
       return;
     }
 
-    // Update path
-    pathText.content = ` ${side === 'local' ? 'Local' : 'Remote'}: ${state.currentPath}`;
-
-    // Update border highlight
-    const isActive = side === activeSide;
-    if (panel) {
-      panel.borderColor = isActive ? C.borderActive : C.border;
+    for (let start = 0; start < state.items.length; start += LIST_CHUNK_SIZE) {
+      const end = Math.min(state.items.length, start + LIST_CHUNK_SIZE);
+      const text = new TextRenderable(renderer.root.ctx, {
+        id: `sftp-${side}-chunk-${start}`,
+        content: buildListChunk(state, start, end),
+        width: '100%',
+        wrapMode: 'none',
+      });
+      container.add(text);
+      view.chunks.push(text);
     }
+  }
 
-    // Build file list — render ALL items, Text element handles viewport scrolling
-    if (state.items.length === 0) {
-      listText.content = ' (empty)';
-      listText.fg = C.textDim;
-    } else {
-      const chunks: TextChunk[] = [];
-      const selectedFg = toRGBA(C.bg);
-      const selectedBg = toRGBA(C.textDim);
-      const normalFg = toRGBA(C.textDim);
+  /**
+   * Redraw only the chunks containing the old and new selection. A cursor
+   * move is O(CHUNK_SIZE) instead of O(directory size).
+   */
+  function updateSelectionChunks(state: FileListState, side: PanelSide, indices: number[]): void {
+    if (state.items.length === 0) return;
+    const view = listViews[side];
+    if (!view.container) return;
 
-      for (let i = 0; i < state.items.length; i++) {
-        const item = state.items[i];
-        const isSelected = i === state.selectedIndex;
-        const prefix = item.isDirectory ? '/' : ' ';
-        const sizeStr = item.isDirectory ? '' : ` ${formatSize(item.size).padStart(8)}`;
-        const timeStr = item.mtime ? ` ${formatTime(item.mtime)}` : '';
-        const name = `${prefix}${item.name}`;
-        const line = ` ${name}${sizeStr}${timeStr} `;
-
-        if (isSelected) {
-          chunks.push({ __isChunk: true, text: line, fg: selectedFg, bg: selectedBg, attributes: 0 });
-        } else {
-          chunks.push({ __isChunk: true, text: line, fg: normalFg, attributes: 0 });
-        }
-
-        if (i < state.items.length - 1) {
-          chunks.push({ __isChunk: true, text: '\n', fg: normalFg, attributes: 0 });
-        }
-      }
-
-      listText.content = new StyledText(chunks);
+    for (const index of new Set(indices)) {
+      if (index < 0 || index >= state.items.length) continue;
+      const chunkIndex = Math.floor(index / LIST_CHUNK_SIZE);
+      const chunk = view.chunks[chunkIndex];
+      if (!chunk) continue;
+      const start = chunkIndex * LIST_CHUNK_SIZE;
+      const end = Math.min(state.items.length, start + LIST_CHUNK_SIZE);
+      chunk.content = buildListChunk(state, start, end);
     }
+  }
 
-    ensureIndexVisible(
-      side === 'local' ? _resolvedLocalScroll : _resolvedRemoteScroll,
-      state.selectedIndex,
-    );
+  function renderFileList(state: FileListState, side: PanelSide): void {
+    resolveAll();
+    const pathText = side === 'local' ? _resolvedLocalPath : _resolvedRemotePath;
+    const panel = side === 'local' ? _resolvedLocalPanel : _resolvedRemotePanel;
+    const scroll = side === 'local' ? _resolvedLocalScroll : _resolvedRemoteScroll;
+
+    renderListChrome(state, pathText, panel, side);
+    rebuildList(state, side);
+    ensureIndexVisible(scroll, state.selectedIndex);
   }
 
   function renderStatus(msg: string, fg?: string): void {
-    if (_resolvedStatus) {
+    if (destroyed) return;
+    if (_resolvedStatus && !_resolvedStatus.isDestroyed) {
       _resolvedStatus.content = ` ${msg}`;
       _resolvedStatus.fg = fg || C.textDim;
     }
@@ -374,7 +468,13 @@ export function createSftpTab(
   }
 
   // ── Data loading ──────────────────────────────────────────────
+  let localLoadToken = 0;
+  let remoteLoadToken = 0;
+  let lastRefreshAt = 0;
+  let refreshInFlight: Promise<void> | null = null;
+
   async function loadRemoteDir(path: string): Promise<void> {
+    const token = ++remoteLoadToken;
     log.debug(`[SFTP LOAD REMOTE] path:${path}`);
     try {
       if (path === '~') {
@@ -383,17 +483,18 @@ export function createSftpTab(
         const home = await sftpClient.realpath('.');
         path = home + path.slice(1);
       }
+      if (token !== remoteLoadToken || destroyed) return;
+
       const items = await sftpClient.readdir(path);
-      log.debug(`[SFTP LOAD REMOTE] items count:${items.length}`);
+      if (token !== remoteLoadToken || destroyed) return;
+
       remoteState.items = items;
       remoteState.currentPath = path;
       remoteState.selectedIndex = 0;
-      resolveAll();
-      log.debug(`[SFTP LOAD REMOTE] after resolveAll: remoteList=${!!_resolvedRemoteList} remotePath=${!!_resolvedRemotePath} remotePanel=${!!_resolvedRemotePanel}`);
-      renderFileList(remoteState, _resolvedRemoteList, _resolvedRemotePath, _resolvedRemotePanel, 'remote');
-      log.debug(`[SFTP LOAD REMOTE] renderFileList done, listText content length=${_resolvedRemoteList?.content?.length ?? 'null'}`);
+      renderFileList(remoteState, 'remote');
       renderer.requestRender();
     } catch (err) {
+      if (token !== remoteLoadToken || destroyed) return;
       log.debug(`[SFTP LOAD REMOTE] error: ${err}`);
       const msg = err instanceof Error ? err.message : 'Failed to read remote directory';
       renderStatus(`Error: ${msg}`, C.red);
@@ -401,31 +502,38 @@ export function createSftpTab(
   }
 
   async function loadLocalDir(path: string): Promise<void> {
+    const token = ++localLoadToken;
     try {
       // Resolve relative paths against current panel directory
-      const { resolve, isAbsolute } = await import('node:path');
       const actualPath = isAbsolute(path) ? path : resolve(localState.currentPath, path);
-      
-      log.debug(`[SFTP LOAD LOCAL] input:${path} resolved:${actualPath}`);
+      if (token !== localLoadToken || destroyed) return;
+
       const items = await readLocalDir(actualPath, !showSystemFiles);
+      if (token !== localLoadToken || destroyed) return;
+
       localState.items = items;
       localState.currentPath = actualPath;
       localState.selectedIndex = 0;
-      resolveAll();
-      renderFileList(localState, _resolvedLocalList, _resolvedLocalPath, _resolvedLocalPanel, 'local');
+      renderFileList(localState, 'local');
       renderer.requestRender();
     } catch (err) {
+      if (token !== localLoadToken || destroyed) return;
       log.debug(`[SFTP LOAD LOCAL] error: ${err}`);
       const msg = err instanceof Error ? err.message : 'Failed to read local directory';
       renderStatus(`Error: ${msg}`, C.red);
     }
   }
 
-  /** 刷新两个面板；verbose=false 用于切标签页时的静默刷新 */
-  async function refreshBoth(verbose = true): Promise<void> {
+  /** 刷新两个面板；force=false 用于切标签页时的 TTL 缓存。 */
+  async function refreshBoth(verbose = true, force = true): Promise<void> {
+    if (!force && Date.now() - lastRefreshAt < REFRESH_TTL_MS) return;
     if (verbose) renderStatus('Refreshing...');
-    await loadLocalDir(localState.currentPath);
-    await loadRemoteDir(remoteState.currentPath);
+    await Promise.all([
+      loadLocalDir(localState.currentPath),
+      loadRemoteDir(remoteState.currentPath),
+    ]);
+    if (destroyed) return;
+    lastRefreshAt = Date.now();
     if (verbose) renderStatus('Refreshed', C.green);
   }
 
@@ -868,14 +976,13 @@ export function createSftpTab(
     if (state.items.length === 0) return;
     const next = Math.max(0, Math.min(state.items.length - 1, state.selectedIndex + delta));
     if (next === state.selectedIndex) return;
+
+    const previous = state.selectedIndex;
     state.selectedIndex = next;
-    resolveAll();
-    renderFileList(
-      state,
-      activeSide === 'local' ? _resolvedLocalList : _resolvedRemoteList,
-      activeSide === 'local' ? _resolvedLocalPath : _resolvedRemotePath,
-      activeSide === 'local' ? _resolvedLocalPanel : _resolvedRemotePanel,
-      activeSide,
+    updateSelectionChunks(state, activeSide, [previous, next]);
+    ensureIndexVisible(
+      activeSide === 'local' ? _resolvedLocalScroll : _resolvedRemoteScroll,
+      next,
     );
     renderer.requestRender();
   }
@@ -982,8 +1089,12 @@ export function createSftpTab(
       case 'sftp.switchPanel':
         activeSide = activeSide === 'local' ? 'remote' : 'local';
         resolveAll();
-        renderFileList(localState, _resolvedLocalList, _resolvedLocalPath, _resolvedLocalPanel, 'local');
-        renderFileList(remoteState, _resolvedRemoteList, _resolvedRemotePath, _resolvedRemotePanel, 'remote');
+        renderListChrome(localState, _resolvedLocalPath, _resolvedLocalPanel, 'local');
+        renderListChrome(remoteState, _resolvedRemotePath, _resolvedRemotePanel, 'remote');
+        ensureIndexVisible(
+          activeSide === 'local' ? _resolvedLocalScroll : _resolvedRemoteScroll,
+          activeSide === 'local' ? localState.selectedIndex : remoteState.selectedIndex,
+        );
         renderStatus(`Panel: ${activeSide === 'local' ? 'Local' : 'Remote'}`);
         renderer.requestRender();
         return;
@@ -1087,19 +1198,33 @@ export function createSftpTab(
     },
 
     focus(): void {
-      resolveAll();
-      renderFileList(localState, _resolvedLocalList, _resolvedLocalPath, _resolvedLocalPanel, 'local');
-      renderFileList(remoteState, _resolvedRemoteList, _resolvedRemotePath, _resolvedRemotePanel, 'remote');
+      renderFileList(localState, 'local');
+      renderFileList(remoteState, 'remote');
       renderer.requestRender();
     },
 
     destroy(): void {
       destroyed = true;
+      localLoadToken++;
+      remoteLoadToken++;
       sftpClient.close();
     },
 
-    async refresh(): Promise<void> {
-      await refreshBoth(false);
+    refresh(): Promise<void> {
+      if (refreshInFlight) return refreshInFlight;
+      if (Date.now() - lastRefreshAt < REFRESH_TTL_MS) return Promise.resolve();
+
+      const task = refreshBoth(false, false)
+        .catch((err: unknown) => {
+          log.error('SFTP refresh failed: {reason}', {
+            reason: err instanceof Error ? err.message : String(err),
+          });
+        })
+        .finally(() => {
+          refreshInFlight = null;
+        });
+      refreshInFlight = task;
+      return task;
     },
   };
 }

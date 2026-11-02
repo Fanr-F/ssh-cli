@@ -26,7 +26,7 @@ src/
 │   └── types.ts          # SSH types (SshConnectionState, errors)
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    # SFTP client wrapper (readdir, mkdir, upload, download, etc.)
-│   ├── sftp-tab.ts       # SFTP dual-panel tab (cmd mode, keyboard, ScrollBox scrolling)
+│   ├── sftp-tab.ts       # SFTP dual-panel tab (cmd mode, chunked file list, ScrollBox)
 │   └── types.ts          # SFTP types (FileEntry, TransferTask, PanelSide)
 ├── storage/              # Persistence layer
 │   ├── config.ts         # Config paths, 0600/0700 permissions, atomic writes
@@ -135,10 +135,12 @@ onMouseDrag: (e: MouseEvent) => {
 
 ### SFTP File Manager
 - **Dual-panel layout**: Local (left) / Remote (right)
-- **Independent SSH connections**: Each SFTP tab creates its own SSH connection
+- **Independent SSH connections**: Each SFTP tab creates its own SSH connection. This isolates transport failures and keeps teardown simple; reusing the terminal transport would require ref-counting across terminal/SFTP tabs
 - **Command line mode** (`:`): persistent mode, Enter executes but stays in mode, Esc exits
 - **Commands**: `upload <local> <remote>`, `download <remote> <local>`, `mkdir <path>`, `rm [path]`, `mv <src> <dst>`, `cd <path>`, `refresh`, `hidden [on|off]`
-- **ScrollBox scrolling**: Each list is a `ScrollBox` (built-in scrollbar / wheel / auto-hide); `ensureIndexVisible()` calls `scrollTo()` to keep the selected row in view
+- **ScrollBox scrolling**: Each list is a `ScrollBox` (built-in scrollbar / wheel / auto-hide, `viewportCulling`); `ensureIndexVisible()` calls `scrollTo()` to keep the selected row in view
+- **Chunked list rendering**: File lines are grouped into 32-line `TextRenderable`s. Moving the cursor redraws only the old/new chunks (O(32)) instead of the whole directory; directory reloads rebuild the chunks
+- **Load generation + TTL**: Local and remote loads each have a token so stale responses are discarded; switching back to a tab reuses the listing for 2 seconds
 - **Remote cd resolution**: Relative paths resolved against `remoteState.currentPath`
 - **Tab close independence**: Closing one tab doesn't affect others
 

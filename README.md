@@ -24,7 +24,7 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 - **Keyboard Forwarding** — Type directly into the remote shell; window resize propagates PTY size
 - **Terminal Scrollback** — Scroll up/down to view previous output
 - **SFTP File Manager** — Dual-panel file browser with command line interface
-- **Independent SFTP Connections** — Each SFTP tab creates its own SSH connection
+- **Independent SFTP Connections** — Each SFTP tab creates its own SSH connection; this isolates SFTP failures but costs one extra authentication per tab
 - **Mouse Support** — Click to select connections, double-click to connect, clickable toolbar buttons
 - **Draggable UI** — Resize sidebar divider, drag help popup window
 - **Help System** — Press F1 to view all keyboard shortcuts
@@ -185,7 +185,7 @@ src/
 │   └── types.ts          #   SSH types (SshConnectionState, errors)
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    #   SFTP client wrapper (readdir, mkdir, upload, download)
-│   ├── sftp-tab.ts       #   SFTP dual-panel tab (cmd mode, keyboard, ScrollBox scrolling)
+│   ├── sftp-tab.ts       #   SFTP dual-panel tab (cmd mode, chunked file list, ScrollBox)
 │   └── types.ts          #   SFTP types (FileEntry, TransferTask, PanelSide)
 ├── storage/              # Persistence layer
 │   ├── config.ts         #   Config paths, 0600/0700 permissions, atomic writes

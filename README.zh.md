@@ -24,7 +24,7 @@
 - **键盘转发** — 在远程 shell 中直接输入，窗口大小变化自动调整 PTY
 - **终端历史回滚** — 向上/向下滚动查看之前的输出
 - **SFTP 文件管理器** — 双面板文件浏览器，支持命令行界面
-- **独立 SFTP 连接** — 每个 SFTP 标签页创建独立的 SSH 连接
+- **独立 SFTP 连接** — 每个 SFTP 标签页创建独立 SSH 连接，隔离故障，代价是每个标签多一次认证
 - **鼠标支持** — 点击选择连接，双击连接，可点击的工具栏按钮
 - **可拖动 UI** — 调整侧边栏分隔线，拖动帮助弹窗
 - **帮助系统** — 按 F1 查看所有键盘快捷键
@@ -185,7 +185,7 @@ src/
 │   └── types.ts          #   SSH 类型（SshConnectionState、错误）
 ├── sftp/                 # SFTP 文件管理器模块
 │   ├── sftp-client.ts    #   SFTP 客户端封装（readdir、mkdir、upload、download）
-│   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、键盘、ScrollBox 滚动）
+│   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、分块文件列表、ScrollBox）
 │   └── types.ts          #   SFTP 类型（FileEntry、TransferTask、PanelSide）
 ├── storage/              # 持久化层
 │   ├── config.ts         #   配置路径、0600/0700 权限、原子写入
