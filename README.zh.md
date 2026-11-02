@@ -198,7 +198,7 @@ src/
 └── ui/                   # OpenTUI UI 组件
     ├── sidebar.ts        #   连接列表侧边栏
     ├── connection-form.ts #   添加/编辑连接模态表单
-    ├── status-bar.ts     #   状态栏（已完全禁用 - 空操作 API）
+    ├── status-bar.ts     #   单行状态栏，显示操作结果与错误
     ├── terminal-panel.ts #   终端显示面板（带 setVisible()）
     ├── tab-bar.ts        #   多标签栏（F2-F12，类型：terminal|sftp）
     ├── toolbar.ts        #   可点击的快捷键工具栏

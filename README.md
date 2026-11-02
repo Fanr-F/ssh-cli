@@ -198,7 +198,7 @@ src/
 └── ui/                   # OpenTUI UI components
     ├── sidebar.ts        #   Connection list sidebar
     ├── connection-form.ts #   Add/edit connection modal form
-    ├── status-bar.ts     #   Status bar (fully disabled - no-op API)
+    ├── status-bar.ts     #   One-line status bar for operation results and errors
     ├── terminal-panel.ts #   Terminal display panel (with setVisible())
     ├── tab-bar.ts        #   Multi-tab bar (F2-F12, type: terminal|sftp)
     ├── toolbar.ts        #   Clickable shortcut toolbar

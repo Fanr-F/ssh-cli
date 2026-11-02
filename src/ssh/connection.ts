@@ -8,6 +8,9 @@ import { createLogger } from '../logger';
 
 const log = createLogger('ssh');
 
+/** Never let a stuck transport keep a tab in "closing" forever. */
+const DISCONNECT_TIMEOUT_MS = 5000;
+
 interface SshConnectionEvents {
   ready: [];
   close: [];
@@ -22,6 +25,11 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
   private _state: SshConnectionState = SshConnectionState.Disconnected;
   private shellChannel: ClientChannel | null = null;
   private _lastError: Error | null = null;
+  private disconnectPromise: Promise<void> | null = null;
+
+  constructor(private readonly disconnectTimeoutMs: number = DISCONNECT_TIMEOUT_MS) {
+    super();
+  }
 
   get state(): SshConnectionState {
     return this._state;
@@ -212,28 +220,62 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
   }
 
   disconnect(): Promise<void> {
-    return new Promise((resolve) => {
-      const client = this.client;
-      if (this._state === SshConnectionState.Disconnected || !client) {
+    if (this.disconnectPromise) return this.disconnectPromise;
+
+    const client = this.client;
+    if (this._state === SshConnectionState.Disconnected || !client) {
+      this.setState(SshConnectionState.Disconnected);
+      return Promise.resolve();
+    }
+
+    this.setState(SshConnectionState.Closing);
+
+    this.disconnectPromise = new Promise<void>((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = (timedOut: boolean): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        client.removeListener('close', onClose);
+        if (timedOut) {
+          log.warn('SSH disconnect timed out after {timeout}ms', { timeout: this.disconnectTimeoutMs });
+        }
+        this.shellChannel = null;
+        if (this.client === client) this.client = null;
         this.setState(SshConnectionState.Disconnected);
-        resolve();
-        return;
-      }
-
-      this.setState(SshConnectionState.Closing);
-
-      const onClose = () => {
         resolve();
       };
 
-      client.once('close', onClose);
+      const onClose = (): void => finish(false);
 
-      if (this.shellChannel) {
-        this.shellChannel.close();
-        this.shellChannel = null;
+      client.once('close', onClose);
+      timer = setTimeout(() => {
+        // Best effort: the transport may already be half-closed.
+        try { client.end(); } catch {}
+        finish(true);
+      }, this.disconnectTimeoutMs);
+      (timer as { unref?: () => void }).unref?.();
+
+      try {
+        if (this.shellChannel) {
+          this.shellChannel.close();
+          this.shellChannel = null;
+        }
+        client.end();
+      } catch (err) {
+        log.warn('SSH disconnect failed: {error}', { error: String(err) });
+        finish(false);
       }
-      client.end();
+    }).finally(() => {
+      this.disconnectPromise = null;
     });
+
+    return this.disconnectPromise;
   }
 
   isConnected(): boolean {

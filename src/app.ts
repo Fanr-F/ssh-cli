@@ -58,11 +58,14 @@ export class App {
   private helpPopup!: HelpPopupAPI;
   private form: any = null;
   private formOpening = false;
+  private shuttingDown = false;
   private focus: FocusZone = 'sidebar';
   private connections: ConnectionConfig[] = [];
 
   // ── Multi-tab state ──────────────────────────────────────────────
   private tabs = new Map<string, TabState>();
+  /** Guards against re-entrant close events while a tab is being torn down. */
+  private closingTabs = new Set<string>();
 
   /**
    * Ghostty 终端把视口滚动封装在原生层，0.6.6 没有导出公开的滚动 API，
@@ -139,7 +142,7 @@ export class App {
     this.setupResizeHandler();
     if (loadError) {
       this.terminalPanel.showError(loadError);
-      this.statusBar.setStatus(loadError);
+      this.statusBar.setStatus(loadError, 'error');
     }
     this.renderer.start();
   }
@@ -185,18 +188,19 @@ export class App {
       () => { return this.sidebar.getWidth(); },
     );
 
-    // Main content: toolbar + sidebar + divider + (tab bar + terminal) stacked vertically
+    // Main content: toolbar + (sidebar | tab bar + terminal) + status bar
     this.mainContainer = Box(
       { flexDirection: 'column', width: '100%', height: '100%' },
       this.toolbar.component,
       Box(
-        { flexDirection: 'row', width: '100%', height: '100%' },
+        { flexDirection: 'row', width: '100%', flexGrow: 1, flexBasis: 0 },
         this.sidebar, divider,         Box(
           { id: 'right-panel', flexDirection: 'column', flexGrow: 1 },
           this.tabBar.component,
           this.terminalPanel.component,
         ),
       ),
+      this.statusBar.component,
     );
     this.renderer.root.add(this.mainContainer);
     this.renderer.root.add(this.helpPopup.component);
@@ -236,25 +240,25 @@ export class App {
         // 粘贴交给聚焦的终端自己处理（encodePaste 会按需包 bracketed paste 标记，
         // 再通过 onData 回写远端）。这里不能 preventDefault，否则组件的处理会被跳过。
         if (this.getActiveTab()?.ssh.isConnected()) {
-          this.statusBar.setStatus('Pasted to terminal');
+          this.statusBar.setStatus('Pasted to terminal', 'success');
         }
       } else if (this.focus === 'form' && this.form) {
         // 表单统一走 FormAPI.pasteText()：普通字段用 InputRenderable.insertText()，
         // 密码框（手写渲染）按光标位置插入，行为一致且不会漏字符。
         event.preventDefault();
         this.form.pasteText(text);
-        this.statusBar.setStatus('Pasted to form');
+        this.statusBar.setStatus('Pasted to form', 'success');
       } else if (this.focus === 'sftp') {
         const activeId = this.tabBar.getActiveTabId();
         if (activeId) {
           const tab = this.tabs.get(activeId);
           if (tab?.sftpTab) {
             tab.sftpTab.pasteText(text);
-            this.statusBar.setStatus('Pasted to SFTP');
+            this.statusBar.setStatus('Pasted to SFTP', 'success');
           }
         }
       } else {
-        this.statusBar.setStatus('Nothing to paste to');
+        this.statusBar.setStatus('Nothing to paste to', 'warning');
       }
       this.renderer.requestRender();
     });
@@ -432,7 +436,7 @@ export class App {
     this.sidebar.setFocused(true);
     if (this.terminalPanel) { this.terminalPanel.setFocused(false); }
     this.toolbar?.setFocus('sidebar');
-    this.statusBar.setStatus('Sidebar focused'); this.renderer.requestRender();
+    this.renderer.requestRender();
   }
 
   private focusTerminal(): void {
@@ -440,7 +444,7 @@ export class App {
     this.sidebar.setFocused(false);
     if (this.terminalPanel) { this.terminalPanel.setFocused(true); this.terminalPanel.focus(); }
     this.toolbar?.setFocus('terminal');
-    this.statusBar.setStatus('Terminal focused'); this.renderer.requestRender();
+    this.renderer.requestRender();
   }
 
   private focusForm(): void {
@@ -455,7 +459,6 @@ export class App {
     this.sidebar.setFocused(false);
     if (this.terminalPanel) { this.terminalPanel.setFocused(false); }
     this.toolbar?.setFocus('sftp');
-    this.statusBar.setStatus('SFTP focused');
     this.renderer.requestRender();
   }
 
@@ -475,8 +478,10 @@ export class App {
       authConfig = await this.store.withCredentials(config);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not read credentials';
-      this.terminalPanel.showError(msg);
-      this.statusBar.setStatus('Connection failed');
+      // Keep any existing terminal visible; the status bar is the shared
+      // feedback surface for errors that do not belong to a tab.
+      if (this.tabs.size === 0) this.terminalPanel.showError(msg);
+      this.statusBar.setStatus(`Connection failed: ${msg}`, 'error');
       this.renderer.requestRender();
       return;
     }
@@ -485,11 +490,11 @@ export class App {
     this.statusBar.setStatus('Connecting to ' + config.host + '...');
     this.renderer.requestRender();
     const cols = Math.max(40, this.renderer.width - 32);
-    const rows = Math.max(10, this.renderer.height - 4); // -2 borders, -1 toolbar, -1 tabBar
+    const rows = Math.max(10, this.renderer.height - 5); // -2 borders, -1 toolbar, -1 tabBar, -1 status bar
     logDebug(`[CONNECT] initial terminal size: renderer=${this.renderer.width}x${this.renderer.height}, cols=${cols}, rows=${rows}`);
 
     // Create tab ID
-    const tabId = `tab-${Date.now()}`;
+    const tabId = `tab-${crypto.randomUUID()}`;
     const tabTitle = `${config.username}@${config.host}`;
     logDebug(`[CONNECT] creating tab id=${tabId}, title=${tabTitle}`);
 
@@ -564,6 +569,11 @@ export class App {
     let wasConnected = false;
 
     ssh.on('ready', async () => {
+      // The user may have closed the tab while the handshake was in flight.
+      if (!this.tabs.has(tabId)) {
+        await ssh.disconnect();
+        return;
+      }
       wasConnected = true;
       // Update tab title with connected status
       this.tabBar.updateTabTitle(tabId, `SSH: ${config.username}@${config.host}`);
@@ -584,6 +594,10 @@ export class App {
         const shellCols = Math.floor(term.width) || cols;
         const shellRows = Math.floor(term.height) || rows;
         const channel = await ssh.startShell({ cols: shellCols, rows: shellRows, term: 'xterm-256color' });
+        if (!this.tabs.has(tabId)) {
+          channel.close();
+          return;
+        }
         // 布局可能晚于 shell 创建完成，这里再对齐一次
         const realCols = Math.floor(term.width);
         const realRows = Math.floor(term.height);
@@ -601,6 +615,7 @@ export class App {
         channel.stderr.on('data', onSshData);
         channel.on('close', () => {
           logDebug(`[SSH CLOSE] Tab ${tabId} channel closed`);
+          if (!this.tabs.has(tabId)) return;
           this.terminalPanel.showDisconnected();
           this.statusBar.setDisconnected();
           this.renderer.requestRender();
@@ -610,23 +625,26 @@ export class App {
           }
         });
       } catch (err) {
+        if (!this.tabs.has(tabId)) return;
         const msg = err instanceof Error ? err.message : 'Unknown error';
         this.terminalPanel.showError('Shell error: ' + msg);
-        this.statusBar.setStatus('Shell error');
+        this.statusBar.setStatus(`Shell error: ${msg}`, 'error');
         this.renderer.requestRender();
+        await this.disposeTab(tabId, { keepPanel: true });
       }
     });
 
     ssh.on('error', (err: Error) => {
       logDebug(`[SSH ERROR] Tab ${tabId}: ${err.message}`);
+      if (!this.tabs.has(tabId)) return;
       this.terminalPanel.showError(err.message);
-      this.statusBar.setStatus('Error: ' + err.message);
+      this.statusBar.setStatus(`Error: ${err.message}`, 'error');
       this.renderer.requestRender();
     });
 
     ssh.on('close', () => {
       logDebug(`[SSH CLOSE] Tab ${tabId} connection closed`);
-      if (wasConnected) {
+      if (wasConnected && this.tabs.has(tabId)) {
         this.closeTab(tabId);
       }
     });
@@ -634,10 +652,14 @@ export class App {
     try {
       await ssh.connect(authConfig);
     } catch (err) {
+      // A tab closed by the user during the handshake must not surface a late
+      // error or linger in the tab bar.
+      if (!this.tabs.has(tabId)) return;
       const msg = err instanceof Error ? err.message : 'Connection failed';
       this.terminalPanel.showError(msg);
-      this.statusBar.setStatus('Connection failed');
+      this.statusBar.setStatus(`Connection failed: ${msg}`, 'error');
       this.renderer.requestRender();
+      await this.disposeTab(tabId, { keepPanel: true });
     }
   }
 
@@ -720,49 +742,77 @@ export class App {
   }
 
   private async closeTab(id: string): Promise<void> {
+    await this.disposeTab(id);
+  }
+
+  /**
+   * Single teardown path for terminal and SFTP tabs.
+   *
+   * UI removal happens first so the app stays responsive while SSH shutdown
+   * waits; `closingTabs` prevents channel/connection close events from
+   * re-entering the same teardown.
+   */
+  private async disposeTab(
+    id: string,
+    options: { keepPanel?: boolean } = {},
+  ): Promise<void> {
     const tab = this.tabs.get(id);
-    if (!tab) {
-      logDebug(`[CLOSE TAB] id=${id} not found in tabs map`);
+    if (!tab || this.closingTabs.has(id)) {
+      logDebug(`[CLOSE TAB] id=${id} already gone or closing`);
       return;
     }
 
     logDebug(`[CLOSE TAB] id=${id}, isSftp=${!!tab.sftpTab}, ssh=${tab.ssh.isConnected()}`);
+    this.closingTabs.add(id);
 
-    const wasActive = this.tabBar.getActiveTabId() === id;
+    try {
+      this.tabs.delete(id);
 
-    // SFTP component cleanup
-    if (tab.sftpTab) {
-      tab.sftpTab.destroy();
-      const rightPanel = this.renderer.root.findDescendantById('right-panel');
-      // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛
-      // "remove expects a renderable child object"，需先取回节点。
-      const sftpRoot = rightPanel?.findDescendantById(tab.sftpTab.id);
-      if (rightPanel && sftpRoot) rightPanel.remove(sftpRoot);
+      // SFTP component cleanup
+      if (tab.sftpTab) {
+        try {
+          tab.sftpTab.destroy();
+        } catch (err) {
+          logDebug(`[CLOSE TAB] SFTP destroy failed: ${err}`);
+        }
+        const rightPanel = this.renderer.root.findDescendantById('right-panel');
+        // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛
+        // "remove expects a renderable child object"，需先取回节点。
+        const sftpRoot = rightPanel?.findDescendantById(tab.sftpTab.id);
+        if (rightPanel && sftpRoot) {
+          try {
+            rightPanel.remove(sftpRoot);
+          } catch (err) {
+            logDebug(`[CLOSE TAB] SFTP remove failed: ${err}`);
+          }
+        }
+      } else {
+        // Only terminal tabs register in the terminal panel.
+        this.terminalPanel.unregisterTerminal(id);
+      }
+
+      this.tabBar.removeTab(id);
+      logDebug(`[CLOSE TAB] removed ${id}, tabs remaining=${this.tabs.size}`);
+
+      if (this.tabs.size === 0) {
+        if (!options.keepPanel) {
+          this.terminalPanel.setVisible(true);
+          this.terminalPanel.showIdle();
+        }
+      }
+
+      this.renderer.requestRender();
+
+      try {
+        await tab.ssh.disconnect();
+        logDebug(`[CLOSE TAB] SSH disconnected for ${id}`);
+      } catch (err) {
+        logDebug(`[CLOSE TAB] SSH disconnect failed for ${id}: ${err}`);
+      }
+    } finally {
+      this.closingTabs.delete(id);
+      this.renderer.requestRender();
     }
-
-    // Disconnect own SSH connection
-    if (tab.ssh.isConnected()) {
-      await tab.ssh.disconnect();
-      logDebug(`[CLOSE TAB] SSH disconnected for ${id}`);
-    }
-
-    // Unregister terminal (only terminal tabs register in terminal panel)
-    if (!tab.sftpTab) {
-      this.terminalPanel.unregisterTerminal(id);
-    }
-
-    this.tabBar.removeTab(id);
-    this.tabs.delete(id);
-    logDebug(`[CLOSE TAB] removed ${id}, tabs remaining=${this.tabs.size}`);
-
-    if (this.tabs.size > 0 && wasActive) {
-      const remainingIds = this.tabBar.getTabIds();
-      if (remainingIds.length > 0) this.switchToTab(remainingIds[0]);
-    } else if (this.tabs.size === 0) {
-      this.terminalPanel.showIdle();
-    }
-
-    this.renderer.requestRender();
   }
 
   private async openForm(existing: ConnectionConfig | null): Promise<void> {
@@ -797,7 +847,8 @@ export class App {
           this.closeForm(form); this.focusSidebar();
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Save failed';
-          this.terminalPanel.showError('Save failed: ' + msg); this.renderer.requestRender();
+          this.statusBar.setStatus('Save failed: ' + msg, 'error');
+          this.renderer.requestRender();
           // Re-throw so the form can leave its submitting state and allow a retry.
           throw err;
         }
@@ -810,7 +861,8 @@ export class App {
           this.closeForm(form); this.focusSidebar();
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Delete failed';
-          this.terminalPanel.showError('Delete failed: ' + msg); this.renderer.requestRender();
+          this.statusBar.setStatus('Delete failed: ' + msg, 'error');
+          this.renderer.requestRender();
         }
       });
       // 右键粘贴：剪贴板后端在 App 侧，表单只发请求
@@ -850,20 +902,24 @@ export class App {
       await this.store.remove(conn.id);
       this.connections = await this.store.getAll();
       this.sidebar.setConnections(this.connections);
-      this.statusBar.setStatus('Deleted: ' + conn.name);
+      this.statusBar.setStatus('Deleted: ' + conn.name, 'success');
       this.renderer.requestRender();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Delete failed';
-      this.statusBar.setStatus('Delete failed: ' + msg); this.renderer.requestRender();
+      this.statusBar.setStatus('Delete failed: ' + msg, 'error');
+      this.renderer.requestRender();
     }
   }
 
   private async shutdown(): Promise<void> {
-    // Disconnect all tabs
-    for (const [, tab] of this.tabs) {
-      if (tab.ssh.isConnected()) await tab.ssh.disconnect();
-    }
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+
+    // Disconnect all tabs in parallel; each disconnect has its own timeout.
+    const tabs = [...this.tabs.values()];
     this.tabs.clear();
+    await Promise.allSettled(tabs.map((tab) => tab.ssh.disconnect()));
+
     try {
       await this.clipboard.dispose();
     } catch {
@@ -907,7 +963,7 @@ export class App {
       );
     }
     const ok = !!result && (result.host.status === 'written' || result.terminal.status === 'attempted');
-    this.statusBar.setStatus(ok ? 'Copied to clipboard' : 'Copy failed');
+    this.statusBar.setStatus(ok ? 'Copied to clipboard' : 'Copy failed', ok ? 'success' : 'error');
     this.renderer.requestRender();
   }
 
@@ -920,7 +976,7 @@ export class App {
       });
 
     if (!result) {
-      this.statusBar.setStatus('Clipboard read failed');
+      this.statusBar.setStatus('Clipboard read failed', 'error');
       this.renderer.requestRender();
       return;
     }
@@ -935,6 +991,7 @@ export class App {
             : result.status === 'timed-out'
               ? 'Clipboard read timed out'
               : 'Clipboard read failed',
+        result.status === 'empty' ? 'warning' : 'error',
       );
       this.renderer.requestRender();
       return;
@@ -949,7 +1006,7 @@ export class App {
       .replace(/\n+$/, '');
 
     if (!text) {
-      this.statusBar.setStatus('Clipboard is empty');
+      this.statusBar.setStatus('Clipboard is empty', 'warning');
       this.renderer.requestRender();
       return;
     }
@@ -961,14 +1018,14 @@ export class App {
       if (tab?.ssh.isConnected()) {
         const encoded = tab.term.encodePaste(new TextEncoder().encode(text));
         tab.ssh.writeToShell(Buffer.from(encoded).toString('utf8'));
-        this.statusBar.setStatus('Pasted to terminal');
+        this.statusBar.setStatus('Pasted to terminal', 'success');
       } else {
-        this.statusBar.setStatus('Not connected');
+        this.statusBar.setStatus('Not connected', 'warning');
       }
     } else if (this.focus === 'form' && this.form) {
       // 插入到当前字段（普通字段 → InputRenderable，密码框 → 手写光标）
       this.form.pasteText(text);
-      this.statusBar.setStatus('Pasted to form');
+      this.statusBar.setStatus('Pasted to form', 'success');
     } else if (this.focus === 'sftp') {
       // Paste to SFTP command/input buffer
       const activeId = this.tabBar.getActiveTabId();
@@ -976,11 +1033,11 @@ export class App {
         const tab = this.tabs.get(activeId);
         if (tab?.sftpTab) {
           tab.sftpTab.pasteText(text);
-          this.statusBar.setStatus('Pasted to SFTP');
+          this.statusBar.setStatus('Pasted to SFTP', 'success');
         }
       }
     } else {
-      this.statusBar.setStatus('Nothing to paste to');
+      this.statusBar.setStatus('Nothing to paste to', 'warning');
     }
     this.renderer.requestRender();
   }
@@ -990,29 +1047,38 @@ export class App {
   private async openSftpTab(): Promise<void> {
     const activeId = this.tabBar.getActiveTabId();
     if (!activeId) {
-      this.statusBar.setStatus('No active connection');
+      this.statusBar.setStatus('No active connection', 'warning');
       this.renderer.requestRender();
       return;
     }
     const tab = this.tabs.get(activeId);
     if (!tab?.ssh.isConnected()) {
-      this.statusBar.setStatus('Not connected');
+      this.statusBar.setStatus('Not connected', 'warning');
       this.renderer.requestRender();
       return;
     }
 
+    let sftpSsh: SshConnection | null = null;
+    let sftpTabId: string | null = null;
     try {
       const config = tab.config;
+      this.statusBar.setStatus(`Opening SFTP to ${config.host}...`);
       const authConfig = await this.store.withCredentials(config);
-      const sftpSsh = new SshConnection();
+      sftpSsh = new SshConnection();
       await sftpSsh.connect(authConfig);
       const sftp = await sftpSsh.startSftp();
-      const sftpClient = new SftpClient(sftp);
 
+      // The originating terminal tab may have been closed while we connected.
+      if (!this.tabs.has(activeId)) {
+        await sftpSsh.disconnect();
+        this.statusBar.setStatus('SFTP cancelled: connection closed', 'warning');
+        return;
+      }
+
+      const sftpClient = new SftpClient(sftp);
       const remotePwd = '~';
       const localPwd = process.env.HOME || process.env.USERPROFILE || '/';
-
-      const tabId = `sftp-${Date.now()}`;
+      const tabId = `sftp-${crypto.randomUUID()}`;
       const tabTitle = `SFTP: ${config.username}@${config.host}`;
 
       const sftpTabComponent = createSftpTab(tabId, this.renderer, sftpClient, remotePwd, localPwd, () => {
@@ -1030,12 +1096,24 @@ export class App {
         sftpClient,
         sftpTab: sftpTabComponent,
       });
+      sftpTabId = tabId;
 
       this.tabBar.addTab(tabId, tabTitle, 'sftp');
-      this.statusBar.setStatus('SFTP connected');
+      this.statusBar.setStatus(`SFTP connected to ${config.host}`, 'success');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to open SFTP';
-      this.statusBar.setStatus(`SFTP error: ${msg}`);
+      this.statusBar.setStatus(`SFTP error: ${msg}`, 'error');
+      logDebug(`[SFTP] open failed: ${msg}`);
+
+      if (sftpTabId && this.tabs.has(sftpTabId)) {
+        await this.disposeTab(sftpTabId, { keepPanel: true });
+      } else if (sftpSsh) {
+        try {
+          await sftpSsh.disconnect();
+        } catch (disconnectErr) {
+          logDebug(`[SFTP] cleanup disconnect failed: ${disconnectErr}`);
+        }
+      }
     }
     this.renderer.requestRender();
   }
