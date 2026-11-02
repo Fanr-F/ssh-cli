@@ -547,6 +547,9 @@ export class App {
       wasConnected = true;
       // Update tab title with connected status
       this.tabBar.updateTabTitle(tabId, `SSH: ${config.username}@${config.host}`);
+      // Persist the connection time and refresh the sidebar dot. Do not await:
+      // shell startup should not wait for a config write.
+      void this.markConnected(config);
 
       // Switch to this tab
       this.tabBar.switchTo(tabId);
@@ -760,6 +763,8 @@ export class App {
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Save failed';
         this.terminalPanel.showError('Save failed: ' + msg); this.renderer.requestRender();
+        // Re-throw so the form can leave its submitting state and allow a retry.
+        throw err;
       }
     });
     form.onDelete(async (id: string) => {
@@ -788,6 +793,18 @@ export class App {
       // Ignore destroy errors — form may already be torn down
     }
     this.renderer.requestRender();
+  }
+
+  /** Record a successful connection without resetting the sidebar selection. */
+  private async markConnected(config: ConnectionConfig): Promise<void> {
+    const timestamp = new Date().toISOString();
+    config.lastConnectedAt = timestamp;
+    this.sidebar.updateConnection(config.id, { lastConnectedAt: timestamp });
+    try {
+      await this.store.update(config.id, { lastConnectedAt: timestamp });
+    } catch (err) {
+      logDebug(`[CONNECT] failed to persist lastConnectedAt: ${err}`);
+    }
   }
 
   private async deleteConnection(conn: ConnectionConfig): Promise<void> {

@@ -5,7 +5,8 @@ import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
 import { toRGBA } from '../color';
 import { findBinding, normalizeKey, type KeyContext } from '../keymap';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep as pathSep } from 'node:path';
+import { remoteParentPath, resolveRemotePath } from './paths';
 
 const log = createLogger('sftp-tab');
 
@@ -49,11 +50,6 @@ interface FileListState {
   currentPath: string;
   items: FileItem[];
   selectedIndex: number;
-}
-
-/** Get the user's home directory. */
-function getHomeDir(): string {
-  return process.env.HOME || process.env.USERPROFILE || '/';
 }
 
 /**
@@ -102,11 +98,13 @@ async function readLocalDir(path: string, hideSystem = true): Promise<FileItem[]
     if (systemNames.has(entry.name)) continue;
     try {
       const fullPath = join(path, entry.name);
+      // `stat` follows symlinks, so a symlink to a directory is navigable and
+      // is classified consistently with the target it points at.
       const stats = await stat(fullPath);
       items.push({
         name: entry.name,
-        isDirectory: entry.isDirectory(),
-        isFile: entry.isFile(),
+        isDirectory: stats.isDirectory(),
+        isFile: stats.isFile(),
         isSymlink: entry.isSymbolicLink(),
         size: stats.size,
         mode: stats.mode,
@@ -467,11 +465,9 @@ export function createSftpTab(
       renderStatus(`Going to ${parent}...`);
       await loadLocalDir(parent);
     } else {
-      // Remote is always Unix-style paths
-      const parts = state.currentPath.split('/').filter(Boolean);
-      if (parts.length <= 1) return;
-      parts.pop();
-      const newPath = '/' + parts.join('/');
+      // Remote is always Unix-style paths; `remoteParentPath` allows /home → /.
+      const newPath = remoteParentPath(state.currentPath);
+      if (newPath === null) return;
       renderStatus(`Going to ${newPath}...`);
       await loadRemoteDir(newPath);
     }
@@ -491,7 +487,7 @@ export function createSftpTab(
   function toAbsPath(p: string): string {
     const state = activeSide === 'local' ? localState : remoteState;
     if (activeSide === 'local') return isAbsolute(p) ? p : resolve(state.currentPath, p);
-    return p.startsWith('/') ? p : `${state.currentPath.replace(/\/+$/, '')}/${p}`;
+    return resolveRemotePath(state.currentPath, p);
   }
 
   /** 取路径最后一段，用于提示文案 */
@@ -530,8 +526,8 @@ export function createSftpTab(
         const fileBase = basename(src);
         const rawDest = args[1];
         const remotePath = !rawDest || rawDest === '.' || rawDest === './'
-          ? `${remoteState.currentPath}/${fileBase}`
-          : (rawDest.startsWith('/') ? rawDest : `${remoteState.currentPath}/${rawDest}`);
+          ? resolveRemotePath(remoteState.currentPath, fileBase)
+          : resolveRemotePath(remoteState.currentPath, rawDest);
         renderStatus(`Uploading ${localPath} → ${remotePath}...`, C.yellow);
         try {
           await sftpClient.upload(localPath, remotePath);
@@ -552,7 +548,7 @@ export function createSftpTab(
           return false;
         }
         const src = args[0];
-        const remotePath = src.startsWith('/') ? src : `${remoteState.currentPath}/${src}`;
+        const remotePath = resolveRemotePath(remoteState.currentPath, src);
         const fileBase = basename(src);
         const rawDest = args[1];
         const localPath = !rawDest || rawDest === '.' || rawDest === '.\\' || rawDest === './'
@@ -578,8 +574,9 @@ export function createSftpTab(
         }
         const name = args[0];
         const state = activeSide === 'local' ? localState : remoteState;
-        const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
-        const fullPath = `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${name}`;
+        const fullPath = activeSide === 'local'
+          ? join(state.currentPath, name)
+          : resolveRemotePath(state.currentPath, name);
         try {
           if (activeSide === 'remote') {
             await sftpClient.mkdir(fullPath);
@@ -672,13 +669,13 @@ export function createSftpTab(
         if (dstIsDir) {
           newPath = activeSide === 'local'
             ? join(newPath, pathName(oldPath))
-            : `${newPath.replace(/\/+$/, '')}/${pathName(oldPath)}`;
+            : resolveRemotePath(newPath, pathName(oldPath));
         }
         if (oldPath === newPath) {
           renderStatus('Source and destination are the same', C.red);
           return false;
         }
-        const sep = activeSide === 'local' ? (oldPath.includes('\\') ? '\\' : '/') : '/';
+        const sep = activeSide === 'local' ? (oldPath.includes(pathSep) ? pathSep : '/') : '/';
         if (newPath.startsWith(oldPath + sep)) {
           renderStatus('Cannot move a directory into itself', C.red);
           return false;
@@ -777,7 +774,7 @@ export function createSftpTab(
       // Complete file path
       const cmd = parts[0];
       const state = activeSide === 'local' ? localState : remoteState;
-      const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
+      const sep = activeSide === 'local' ? pathSep : '/';
 
       // Resolve directory and prefix from currentToken
       let dir = state.currentPath;
@@ -787,7 +784,7 @@ export function createSftpTab(
         const tokenDir = currentToken.slice(0, lastSep);
         prefix = currentToken.slice(lastSep + 1);
         if (activeSide === 'remote' && !tokenDir.startsWith('/')) {
-          dir = `${state.currentPath}/${tokenDir}`;
+          dir = resolveRemotePath(state.currentPath, tokenDir);
         } else if (activeSide === 'local') {
           const { join } = await import('node:path');
           dir = join(state.currentPath, tokenDir);
@@ -1014,8 +1011,8 @@ export function createSftpTab(
       case 'sftp.prefillUpload': {
         const item = localState.items[localState.selectedIndex];
         if (item && !item.isDirectory) {
-          const localPath = `${localState.currentPath}/${item.name}`;
-          const remotePath = `${remoteState.currentPath}/${item.name}`;
+          const localPath = join(localState.currentPath, item.name);
+          const remotePath = resolveRemotePath(remoteState.currentPath, item.name);
           enterCommandMode(`upload ${localPath} ${remotePath}`);
         } else {
           renderStatus('Select a file in Local panel first', C.yellow);
@@ -1025,8 +1022,8 @@ export function createSftpTab(
       case 'sftp.prefillDownload': {
         const item = remoteState.items[remoteState.selectedIndex];
         if (item && !item.isDirectory) {
-          const remotePath = `${remoteState.currentPath}/${item.name}`;
-          const localPath = `${localState.currentPath}/${item.name}`;
+          const remotePath = resolveRemotePath(remoteState.currentPath, item.name);
+          const localPath = join(localState.currentPath, item.name);
           enterCommandMode(`download ${remotePath} ${localPath}`);
         } else {
           renderStatus('Select a file in Remote panel first', C.yellow);
@@ -1080,8 +1077,9 @@ export function createSftpTab(
       const state = activeSide === 'local' ? localState : remoteState;
       const item = state.items[state.selectedIndex];
       if (!item) return null;
-      const sep = activeSide === 'local' ? (getHomeDir().includes('\\') ? '\\' : '/') : '/';
-      return `${state.currentPath}${state.currentPath.endsWith(sep) ? '' : sep}${item.name}`;
+      return activeSide === 'local'
+        ? join(state.currentPath, item.name)
+        : resolveRemotePath(state.currentPath, item.name);
     },
 
     isCommandMode(): boolean {

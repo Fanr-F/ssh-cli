@@ -6,7 +6,8 @@ export interface ConnectionConfig {
   username: string;
   authType: 'key' | 'password';
   privateKeyPath?: string;  // For key auth, e.g. '~/.ssh/id_ed25519'
-  password?: string;        // Encrypted, stored only if authType='password'
+  passphrase?: string;      // Optional passphrase for an encrypted private key
+  password?: string;        // Stored only if authType='password'; plaintext until keychain migration
   createdAt: string;        // ISO date string
   lastConnectedAt?: string; // ISO date string
 }

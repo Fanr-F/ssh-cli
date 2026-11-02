@@ -45,8 +45,8 @@ export interface FormAPI {
   getFormData(): ConnectionConfig | null;
   /** Returns an array of validation error messages (empty = valid) */
   validate(): string[];
-  /** Register a callback for form submission */
-  onSubmit(cb: (data: ConnectionConfig) => void): void;
+  /** Register a callback for form submission. May be async; the form locks until it settles. */
+  onSubmit(cb: (data: ConnectionConfig) => void | Promise<void>): void;
   /** Register a callback for cancellation */
   onCancel(cb: () => void): void;
   /** Register a callback for deletion (only fires when editing) */
@@ -131,7 +131,7 @@ export function createConnectionForm(
   };
 
   // ── Callbacks ──────────────────────────────────────────
-  let onSubmitCb: ((data: ConnectionConfig) => void) | null = null;
+  let onSubmitCb: ((data: ConnectionConfig) => void | Promise<void>) | null = null;
   let onCancelCb: (() => void) | null = null;
   let onDeleteCb: ((id: string) => void) | null = null;
   let onPasteRequestCb: (() => void) | null = null;
@@ -139,6 +139,7 @@ export function createConnectionForm(
   let hasFocus = false;
   let focusedField = 0;
   let passwordRevealed = false;
+  let submitting = false;
 
   // 光标位置只剩密码框还需要手写维护（其余字段由 InputRenderable 管理）
   let passwordCursor = 0;
@@ -235,7 +236,7 @@ export function createConnectionForm(
 
       case "form.submit":
         key.preventDefault();
-        handleSubmit();
+        void handleSubmit();
         return;
 
       case "form.nextField":
@@ -594,7 +595,7 @@ export function createConnectionForm(
       e.stopPropagation();
       e.preventDefault();
       if (e.button === 2) return;
-      handleSubmit();
+      void handleSubmit();
     },
   });
   saveBtnText = new TextRenderable(ctx, { content: "  Save  ", fg: C.btnSave });
@@ -792,11 +793,21 @@ export function createConnectionForm(
     }
   }
 
-  function handleSubmit() {
+  async function handleSubmit(): Promise<void> {
+    if (submitting) return;
     const errs = validate();
     if (errs.length > 0) return;
     const data = getFormData();
-    if (data && onSubmitCb) onSubmitCb(data);
+    if (!data || !onSubmitCb) return;
+
+    submitting = true;
+    try {
+      await onSubmitCb(data);
+    } catch {
+      // The owner surfaces the error; just unlock so the form can be retried.
+    } finally {
+      submitting = false;
+    }
   }
 
   function focus() {

@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ConnectionConfig } from '../types/connection';
+import { createLogger } from '../logger';
+
+const log = createLogger('ssh-auth');
 
 // ssh2 is imported lazily (only when a key actually needs parsing) so that
 // merely loading this module does not pull in the whole ssh2 library.
@@ -48,7 +51,11 @@ export function buildConnectConfig(connection: ConnectionConfig): SshConnectConf
           config.passphrase = connection.passphrase;
         }
       } catch (err) {
-        console.warn(`Warning: Could not read key at ${keyPath}`);
+        const reason = err instanceof Error ? err.message : String(err);
+        log.warn('Could not read private key at {path}: {reason}', { path: keyPath, reason });
+        // Do not continue with a half-built auth config: the user would only see
+        // a misleading "authentication failed" later.
+        throw new Error(`Could not read private key at ${keyPath}: ${reason}`);
       }
     }
   } else if (connection.authType === 'password' && connection.password) {

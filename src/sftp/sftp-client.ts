@@ -18,7 +18,7 @@ export class SftpClient {
   /** List directory contents. */
   async readdir(path: string): Promise<FileItem[]> {
     return new Promise((resolve, reject) => {
-      this.sftp.readdir(path, (err: Error | undefined, list: FileEntry[]) => {
+      this.sftp.readdir(path, (err: Error | null | undefined, list: FileEntry[]) => {
         if (err) {
           reject(err);
           return;
@@ -47,7 +47,7 @@ export class SftpClient {
   /** Get file/directory stats. */
   async stat(path: string): Promise<Stats> {
     return new Promise((resolve, reject) => {
-      this.sftp.stat(path, (err: Error | undefined, stats: Stats) => {
+      this.sftp.stat(path, (err: Error | null | undefined, stats: Stats) => {
         if (err) reject(err);
         else resolve(stats);
       });
@@ -57,7 +57,7 @@ export class SftpClient {
   /** Create a directory. */
   async mkdir(path: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.sftp.mkdir(path, (err: Error | undefined) => {
+      this.sftp.mkdir(path, (err: Error | null | undefined) => {
         if (err) reject(err);
         else resolve();
       });
@@ -67,7 +67,7 @@ export class SftpClient {
   /** Remove a directory. */
   async rmdir(path: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.sftp.rmdir(path, (err: Error | undefined) => {
+      this.sftp.rmdir(path, (err: Error | null | undefined) => {
         if (err) reject(err);
         else resolve();
       });
@@ -77,7 +77,7 @@ export class SftpClient {
   /** Delete a file. */
   async unlink(path: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.sftp.unlink(path, (err: Error | undefined) => {
+      this.sftp.unlink(path, (err: Error | null | undefined) => {
         if (err) reject(err);
         else resolve();
       });
@@ -87,7 +87,7 @@ export class SftpClient {
   /** Rename/move a file or directory. */
   async rename(oldPath: string, newPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.sftp.rename(oldPath, newPath, (err: Error | undefined) => {
+      this.sftp.rename(oldPath, newPath, (err: Error | null | undefined) => {
         if (err) reject(err);
         else resolve();
       });
@@ -97,7 +97,7 @@ export class SftpClient {
   /** Change file permissions. */
   async chmod(path: string, mode: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.sftp.chmod(path, mode, (err: Error | undefined) => {
+      this.sftp.chmod(path, mode, (err: Error | null | undefined) => {
         if (err) reject(err);
         else resolve();
       });
@@ -107,7 +107,7 @@ export class SftpClient {
   /** Get real path (resolve symlinks, ~, etc). */
   async realpath(path: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      this.sftp.realpath(path, (err: Error | undefined, resolvedPath: string) => {
+      this.sftp.realpath(path, (err: Error | null | undefined, resolvedPath: string) => {
         if (err) reject(err);
         else resolve(resolvedPath);
       });
@@ -125,7 +125,7 @@ export class SftpClient {
         step: (totalTransferred: number, chunk: number, total: number) => {
           onProgress?.(totalTransferred, total);
         },
-      }, (err: Error | undefined) => {
+      }, (err: Error | null | undefined) => {
         if (err) reject(err);
         else resolve();
       });
@@ -143,7 +143,7 @@ export class SftpClient {
         step: (totalTransferred: number, chunk: number, total: number) => {
           onProgress?.(totalTransferred, total);
         },
-      }, (err: Error | undefined) => {
+      }, (err: Error | null | undefined) => {
         if (err) reject(err);
         else resolve();
       });

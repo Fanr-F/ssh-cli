@@ -9,6 +9,8 @@ export interface SidebarAPI {
   setConnections(connections: ConnectionConfig[]): void;
   /** Return the currently selected connection, or null if the list is empty. */
   getSelectedConnection(): ConnectionConfig | null;
+  /** Patch one connection in place without resetting the current selection. */
+  updateConnection(id: string, updates: Partial<ConnectionConfig>): void;
   /** Move selection one item down. Stops at the end – does NOT wrap. */
   selectNext(): void;
   /** Move selection one item up. Stops at the beginning – does NOT wrap. */
@@ -190,6 +192,15 @@ export function createSidebar(
     getSelectedConnection(): ConnectionConfig | null {
       if (items.length === 0) return null;
       return items[select.getSelectedIndex()] ?? null;
+    },
+
+    updateConnection(id: string, updates: Partial<ConnectionConfig>): void {
+      const index = items.findIndex((item) => item.id === id);
+      if (index === -1) return;
+      Object.assign(items[index], updates);
+      const selected = select.getSelectedIndex();
+      select.options = items.map(toOption);
+      select.setSelectedIndex(selected);
     },
 
     selectNext(): void {
