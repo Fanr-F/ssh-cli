@@ -12,6 +12,7 @@ import type { ConfirmRequest } from '../ui/confirm-dialog';
 import { expandRemoteTilde, remoteParentPath, resolveRemotePath } from './paths';
 import {
   buildListChunk,
+  formatSize,
   getWindowsSystemNames,
   LIST_CHUNK_SIZE,
   readLocalDir,
@@ -35,6 +36,15 @@ const log = createLogger('sftp-tab');
 
 /** How long a switched-to SFTP tab may reuse its last directory listing. */
 const REFRESH_TTL_MS = 2000;
+/** Transfer progress is redrawn at most ~10 times per second. */
+const PROGRESS_INTERVAL_MS = 100;
+
+/** Human-readable progress line, e.g. `Uploading a.txt 42% (420B/1.0K)`. */
+export function formatTransferProgress(label: string, transferred: number, total: number): string {
+  if (total <= 0) return `${label} (${formatSize(transferred)})`;
+  const percent = Math.min(100, Math.floor((transferred / total) * 100));
+  return `${label} ${percent}% (${formatSize(transferred)}/${formatSize(total)})`;
+}
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -344,6 +354,33 @@ export function createSftpTab(
     renderer.requestRender();
   }
 
+  /**
+   * Throttled transfer progress reporter. fastPut/fastGet invoke `step` for
+   * every chunk; redrawing each time would flood the render loop.
+   */
+  function createProgressReporter(
+    label: string,
+  ): (transferred: number, total: number) => void {
+    let lastRenderedAt = 0;
+    let lastBytes = 0;
+    let lastSampleAt = Date.now();
+
+    return (transferred, total) => {
+      const now = Date.now();
+      const finished = total > 0 && transferred >= total;
+      if (!finished && now - lastRenderedAt < PROGRESS_INTERVAL_MS) return;
+      lastRenderedAt = now;
+
+      const elapsed = Math.max(1, now - lastSampleAt) / 1000;
+      const speed = Math.max(0, (transferred - lastBytes) / elapsed);
+      lastBytes = transferred;
+      lastSampleAt = now;
+
+      const speedText = speed > 0 ? ` ${formatSize(speed)}/s` : '';
+      renderStatus(`${formatTransferProgress(label, transferred, total)}${speedText}`, C.yellow);
+    };
+  }
+
   // ── Data loading ──────────────────────────────────────────────
   let localLoadToken = 0;
   let remoteLoadToken = 0;
@@ -557,7 +594,11 @@ export function createSftpTab(
         }
         renderStatus(`Uploading ${localPath} → ${remotePath}...`, C.yellow);
         try {
-          await sftpClient.upload(localPath, remotePath);
+          await sftpClient.upload(
+            localPath,
+            remotePath,
+            createProgressReporter(`Uploading ${fileName}`),
+          );
           renderStatus(`Uploaded: ${fileName}`, C.green);
           await loadRemoteDir(remoteState.currentPath);
           return true;
@@ -589,7 +630,11 @@ export function createSftpTab(
         }
         renderStatus(`Downloading ${remotePath} → ${localPath}...`, C.yellow);
         try {
-          await sftpClient.download(remotePath, localPath);
+          await sftpClient.download(
+            remotePath,
+            localPath,
+            createProgressReporter(`Downloading ${fileName}`),
+          );
           renderStatus(`Downloaded: ${fileName}`, C.green);
           await loadLocalDir(localState.currentPath);
           return true;

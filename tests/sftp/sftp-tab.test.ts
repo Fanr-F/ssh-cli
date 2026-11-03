@@ -3,7 +3,7 @@ import { createTestRenderer } from '@opentui/core/testing';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSftpTab } from '../../src/sftp/sftp-tab';
+import { createSftpTab, formatTransferProgress } from '../../src/sftp/sftp-tab';
 
 function key(name: string, sequence: string) {
   return {
@@ -123,5 +123,19 @@ describe('createSftpTab', () => {
       tab.destroy();
       await t.dispose();
     }
+  });
+});
+
+describe('formatTransferProgress', () => {
+  test('renders percentage, transferred and total bytes', () => {
+    expect(formatTransferProgress('Uploading a.txt', 512, 1024))
+      .toBe('Uploading a.txt 50% (512B/1.0K)');
+  });
+
+  test('clamps at 100% and omits the percentage when the total is unknown', () => {
+    expect(formatTransferProgress('Downloading b', 2048, 1024))
+      .toBe('Downloading b 100% (2.0K/1.0K)');
+    expect(formatTransferProgress('Downloading b', 300, 0))
+      .toBe('Downloading b (300B)');
   });
 });
