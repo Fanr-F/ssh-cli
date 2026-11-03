@@ -1,6 +1,6 @@
 import { EmbeddedTerminalRenderable } from '@opentui/core';
 import type { CliRenderer } from '@opentui/core';
-import { logIO } from '../logger';
+import { logDebug, logIO } from '../logger';
 import type { SshConnection } from '../ssh/connection';
 
 export interface TerminalTabOptions {
@@ -11,6 +11,19 @@ export interface TerminalTabOptions {
   ssh: Pick<SshConnection, 'writeToShell' | 'resizePty'>;
   /** Right-click is paste, so the app needs to take focus first. */
   onRightClickPaste: () => void;
+}
+
+type ForwardMouse = (event: unknown, action: 'press' | 'release' | 'motion') => void;
+
+/**
+ * `forwardMouse` is a private method of EmbeddedTerminalRenderable. Resolve it
+ * once and degrade gracefully if an OpenTUI upgrade renames/removes it, so
+ * creating a tab never throws.
+ */
+export function resolveForwardMouse(term: unknown): ForwardMouse | null {
+  const candidate = (term as { forwardMouse?: unknown }).forwardMouse;
+  if (typeof candidate !== 'function') return null;
+  return (candidate as ForwardMouse).bind(term);
 }
 
 /** Create the native Ghostty terminal used by one terminal tab. */
@@ -45,8 +58,14 @@ export function createTerminalRenderable(
   // EmbeddedTerminalRenderable.setupMouse() wraps the mouse handler so it
   // forwards to the remote first. Right-click stays local for paste; every
   // other button keeps the built-in forwarding/selection behaviour.
-  const termAny = term as any;
-  const forwardMouse = termAny.forwardMouse.bind(term);
+  const forwardMouse = resolveForwardMouse(term);
+  if (!forwardMouse) {
+    // Keep the built-in handlers rather than replacing them with no-ops:
+    // right-click paste is lost, but the terminal stays usable.
+    logDebug('[TERMINAL] forwardMouse is unavailable; right-click paste disabled');
+    return term;
+  }
+
   term.onMouseDown = (e) => {
     if (e.button === 2) {
       e.preventDefault();
