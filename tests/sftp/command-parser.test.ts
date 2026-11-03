@@ -5,6 +5,7 @@ import {
   completeCommandName,
   expandLocalTilde,
   hasTrailingSeparator,
+  isAbsoluteLocalPath,
   isSameOrDescendantPath,
   parseCommand,
   pathDisplayName,
@@ -133,5 +134,29 @@ describe('SFTP command parser', () => {
       prefix: 'plain',
       tokenPrefix: '',
     });
+  });
+
+  test('completes local absolute paths without joining the panel cwd', () => {
+    expect(resolveCompletionScope('local', '/base', '/etc/ho')).toEqual({
+      directory: '/etc',
+      prefix: 'ho',
+      tokenPrefix: '/etc/',
+    });
+    expect(isAbsoluteLocalPath('/etc')).toBe(true);
+    expect(isAbsoluteLocalPath('relative/path')).toBe(false);
+  });
+
+  test.skipIf(process.platform !== 'win32')('recognises Windows drive paths', () => {
+    const drive = resolveCompletionScope('local', '/base', 'D:\\foo\\ba');
+    expect(drive.directory).toBe('D:\\foo');
+    expect(drive.prefix).toBe('ba');
+    expect(drive.tokenPrefix).toBe('D:\\foo\\');
+  });
+
+  test('recognises UNC paths as absolute', () => {
+    const unc = resolveCompletionScope('local', '/base', '\\\\server\\share\\fo');
+    expect(unc.directory).toBe('\\\\server\\share');
+    expect(unc.prefix).toBe('fo');
+    expect(isAbsoluteLocalPath('\\\\server\\share')).toBe(true);
   });
 });

@@ -35,6 +35,15 @@ export function resolveLocalPath(base: string, target: string): string {
 }
 
 /**
+ * Whether a local path is absolute, including Windows drive paths and UNC
+ * paths (`\\server\share`). Plain `isAbsolute()` is platform-dependent, so the
+ * UNC check keeps completion working when the path syntax is recognised.
+ */
+export function isAbsoluteLocalPath(target: string): boolean {
+  return isAbsolute(target) || /^[\\/]{2}[^\\/]/.test(target);
+}
+
+/**
  * Expand a leading `~` in a local path. A trailing separator is preserved so
  * directory-intent detection keeps working (Windows separators included).
  */
@@ -185,7 +194,11 @@ export function resolveCompletionScope(
   const tokenPrefix = token.slice(0, lastSep + 1);
 
   if (side === 'local') {
-    return { directory: join(currentPath, tokenDir), prefix, tokenPrefix };
+    // Absolute / drive / UNC tokens must not be joined onto the panel cwd.
+    const directory = isAbsoluteLocalPath(tokenDir)
+      ? tokenDir
+      : join(currentPath, tokenDir);
+    return { directory, prefix, tokenPrefix };
   }
   if (tokenDir.startsWith('/')) {
     return { directory: tokenDir || '/', prefix, tokenPrefix };

@@ -1,5 +1,5 @@
-import { readdir, stat as fsStat } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { lstat, readdir, stat as fsStat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { StyledText, type TextChunk } from '@opentui/core';
 import { toRGBA } from '../color';
 import { theme } from '../theme';
@@ -15,6 +15,35 @@ export const SYSTEM_NAMES_TTL_MS = 10_000;
 const systemNamesCache = new Map<string, { names: Set<string>; expiresAt: number }>();
 
 /**
+ * Parse one `attrib` output line.
+ *
+ * Format: `A    S            C:\dir\name`. The flag block must be split from
+ * the path before checking for `S`: using the drive-letter colon as a
+ * separator leaks the drive letter into the flags, so every file on `S:` used
+ * to be treated as a system file. Exported for tests.
+ */
+export function parseAttribLine(line: string): { name: string; isSystem: boolean } | null {
+  const trimmed = line.trimEnd();
+  if (!trimmed) return null;
+
+  // The path starts at a drive prefix (`C:\`) or a UNC prefix (`\\server`).
+  const drive = /[A-Za-z]:[\\/]/.exec(trimmed);
+  const unc = /\\\\/.exec(trimmed);
+  let pathIndex = -1;
+  if (drive && drive.index !== undefined) pathIndex = drive.index;
+  if (unc && unc.index !== undefined && (pathIndex === -1 || unc.index < pathIndex)) {
+    pathIndex = unc.index;
+  }
+  if (pathIndex <= 0) return null;
+
+  const flags = trimmed.slice(0, pathIndex);
+  const filePath = trimmed.slice(pathIndex);
+  const name = filePath.split(/[\\/]/).filter(Boolean).pop() ?? '';
+  if (!name) return null;
+  return { name, isSystem: flags.includes('S') };
+}
+
+/**
  * Collect names of Windows system-protected files (System attribute) in a
  * directory. Node's fs.stat does not expose DOS attributes, so we shell out to
  * `attrib` once per directory. Returns an empty set on non-Windows platforms or
@@ -27,6 +56,12 @@ export async function getWindowsSystemNames(dir: string): Promise<Set<string>> {
   const cached = systemNamesCache.get(dir);
   if (cached && cached.expiresAt > Date.now()) return cached.names;
 
+  const cache = (entries: Set<string>): Set<string> => {
+    if (systemNamesCache.size > 64) systemNamesCache.clear();
+    systemNamesCache.set(dir, { names: entries, expiresAt: Date.now() + SYSTEM_NAMES_TTL_MS });
+    return entries;
+  };
+
   try {
     const { execFile } = await import('node:child_process');
     const output = await new Promise<string>((resolve, reject) => {
@@ -36,19 +71,16 @@ export async function getWindowsSystemNames(dir: string): Promise<Set<string>> {
       });
     });
     for (const line of output.split(/\r?\n/)) {
-      const sep = line.indexOf(':');
-      if (sep < 0) continue;
-      const flags = line.slice(0, sep);
-      if (flags.includes('S')) {
-        names.add(basename(line.slice(sep - 1)));
-      }
+      const parsed = parseAttribLine(line);
+      if (parsed?.isSystem) names.add(parsed.name);
     }
-    if (systemNamesCache.size > 64) systemNamesCache.clear();
-    systemNamesCache.set(dir, { names, expiresAt: Date.now() + SYSTEM_NAMES_TTL_MS });
+    return cache(names);
   } catch {
-    // attrib unavailable — fall back to showing everything
+    // attrib unavailable — fall back to showing everything, but remember the
+    // failure briefly so every directory load / Tab completion does not spawn
+    // another child process.
+    return cache(new Set());
   }
-  return names;
 }
 
 /** Read local directory contents. */
@@ -64,9 +96,9 @@ export async function readLocalDir(path: string, hideSystem = true): Promise<Fil
   // difference between a fast and a visibly stalling large directory.
   for (let offset = 0; offset < visible.length; offset += LOCAL_STAT_CONCURRENCY) {
     const batch = visible.slice(offset, offset + LOCAL_STAT_CONCURRENCY);
-    const results = await Promise.all(batch.map(async (entry): Promise<FileItem | null> => {
+    const results = await Promise.all(batch.map(async (entry): Promise<FileItem> => {
+      const fullPath = join(path, entry.name);
       try {
-        const fullPath = join(path, entry.name);
         // `stat` follows symlinks, so a symlink to a directory is navigable
         // and is classified consistently with the target it points at.
         const stats = await fsStat(fullPath);
@@ -81,12 +113,33 @@ export async function readLocalDir(path: string, hideSystem = true): Promise<Fil
           longname: '',
         };
       } catch {
-        // Skip files we can't stat
-        return null;
+        // stat() follows symlinks and fails for dangling links; fall back to
+        // lstat()/Dirent so the entry is still shown instead of silently lost.
+        let size = 0;
+        let mode = 0;
+        let mtime = 0;
+        try {
+          const info = await lstat(fullPath);
+          size = info.size;
+          mode = info.mode;
+          mtime = Math.floor(info.mtimeMs / 1000);
+        } catch {
+          // Keep the Dirent-only information.
+        }
+        return {
+          name: entry.name,
+          isDirectory: entry.isDirectory(),
+          isFile: entry.isFile(),
+          isSymlink: entry.isSymbolicLink(),
+          size,
+          mode,
+          mtime,
+          longname: '',
+        };
       }
     }));
     for (const item of results) {
-      if (item) items.push(item);
+      items.push(item);
     }
   }
 

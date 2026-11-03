@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatFileLine, formatSize, formatTime, readLocalDir, sortFileItems } from '../../src/sftp/file-list';
+import {
+  formatFileLine,
+  formatSize,
+  formatTime,
+  parseAttribLine,
+  readLocalDir,
+  sortFileItems,
+} from '../../src/sftp/file-list';
 import type { FileItem } from '../../src/sftp/types';
 
 const tempDirs: string[] = [];
@@ -55,5 +62,50 @@ describe('SFTP file list helpers', () => {
     expect(entries[0].isDirectory).toBe(true);
     expect(entries[1].isFile).toBe(true);
     expect(entries[1].size).toBe(5);
+  });
+
+  test('keeps entries whose stat fails (dangling symlinks)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ssh-cli-file-list-'));
+    tempDirs.push(dir);
+    try {
+      await symlink(join(dir, 'missing-target'), join(dir, 'dangling'));
+    } catch {
+      // Creating symlinks needs extra privileges on some Windows setups.
+      return;
+    }
+
+    const entries = await readLocalDir(dir, false);
+    const dangling = entries.find((entry) => entry.name === 'dangling');
+    expect(dangling).toBeDefined();
+    expect(dangling?.isSymlink).toBe(true);
+    expect(dangling?.isDirectory).toBe(false);
+  });
+});
+
+describe('parseAttribLine', () => {
+  test('detects the System attribute', () => {
+    expect(parseAttribLine('A    S            C:\\dir\\pagefile.sys')).toEqual({
+      name: 'pagefile.sys',
+      isSystem: true,
+    });
+  });
+
+  test('does not mistake an S: drive letter for the System attribute', () => {
+    expect(parseAttribLine('A                 S:\\dir\\normal.txt')).toEqual({
+      name: 'normal.txt',
+      isSystem: false,
+    });
+  });
+
+  test('parses UNC paths and other flags', () => {
+    expect(parseAttribLine('     R     H      \\\\server\\share\\hidden.txt')).toEqual({
+      name: 'hidden.txt',
+      isSystem: false,
+    });
+  });
+
+  test('ignores lines without a path', () => {
+    expect(parseAttribLine('')).toBeNull();
+    expect(parseAttribLine('garbage')).toBeNull();
   });
 });
