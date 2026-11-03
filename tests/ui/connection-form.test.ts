@@ -40,6 +40,7 @@ describe('connection form keyboard semantics', () => {
   test('Enter on Cancel cancels instead of saving', async () => {
     const t = await createTestRenderer({ width: 100, height: 30 });
     const form = createConnectionForm(t.renderer, existing);
+    t.renderer.root.add(form);
     let submits = 0;
     let cancels = 0;
     form.onSubmit(() => { submits += 1; });
@@ -62,6 +63,7 @@ describe('connection form keyboard semantics', () => {
   test('Enter on Delete deletes instead of saving', async () => {
     const t = await createTestRenderer({ width: 100, height: 30 });
     const form = createConnectionForm(t.renderer, existing);
+    t.renderer.root.add(form);
     const deleted: string[] = [];
     let submits = 0;
     form.onSubmit(() => { submits += 1; });
@@ -85,6 +87,7 @@ describe('connection form keyboard semantics', () => {
   test('Enter on Save submits a valid form', async () => {
     const t = await createTestRenderer({ width: 100, height: 30 });
     const form = createConnectionForm(t.renderer, existing);
+    t.renderer.root.add(form);
     const submitted: ConnectionConfig[] = [];
     form.onSubmit((data) => { submitted.push(data); });
 
@@ -106,6 +109,7 @@ describe('connection form keyboard semantics', () => {
   test('invalid submit shows the first validation error', async () => {
     const t = await createTestRenderer({ width: 100, height: 30 });
     const form = createConnectionForm(t.renderer);
+    t.renderer.root.add(form);
     let submits = 0;
     form.onSubmit(() => { submits += 1; });
 
@@ -116,6 +120,22 @@ describe('connection form keyboard semantics', () => {
 
       expect(submits).toBe(0);
       expect(t.captureCharFrame()).toContain('Name is required');
+    } finally {
+      form.destroy();
+      await t.dispose();
+    }
+  });
+
+  test('does not mount itself; the caller adds it once', async () => {
+    const t = await createTestRenderer({ width: 100, height: 30 });
+    const form = createConnectionForm(t.renderer);
+
+    try {
+      expect(t.renderer.root.findDescendantById('conn-form-overlay')).toBeFalsy();
+
+      t.renderer.root.add(form);
+      await t.renderOnce();
+      expect(t.captureCharFrame()).toContain('New Connection');
     } finally {
       form.destroy();
       await t.dispose();

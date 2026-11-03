@@ -63,6 +63,7 @@ export function createConfirmDialog(
     alignItems: 'center',
     justifyContent: 'center',
     focusable: true,
+    zIndex: 30,
     onMouseDown: (e: MouseEvent) => {
       // Never let a click reach the form / sidebar behind the modal.
       e.preventDefault();

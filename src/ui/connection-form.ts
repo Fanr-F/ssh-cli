@@ -70,6 +70,8 @@ const C = {
   authInactive: theme.textMuted,
   cursorBg: theme.accent,
   dialogWidth: 60,
+  /** Below the help popup (20) and confirmation dialog (30). */
+  overlayZIndex: 10,
 } as const;
 
 // ─── Factory ──────────────────────────────────────────────────
@@ -158,8 +160,17 @@ export function createConnectionForm(
     const total = getTotalFields();
     focusedField = ((focusedField + dir) % total + total) % total;
     replaceOnType = true;
+    setPasswordRevealed(false);
     if (focusedField === 5) passwordCursor = state.password.length;
     focusCurrentInput();
+    updateFocusIndicators();
+  }
+
+  /** Move focus onto a button row; no input lives there, so blur the inputs. */
+  function focusButton(field: 6 | 7 | 8): void {
+    focusedField = field;
+    hasFocus = true;
+    focusCurrentInput(false);
     updateFocusIndicators();
   }
 
@@ -224,6 +235,7 @@ export function createConnectionForm(
         key.preventDefault();
         state.authType = binding.id === "form.authKey" ? "key" : "password";
         replaceOnType = true;
+        setPasswordRevealed(false);
         passwordCursor = state.password.length;
         refreshAuthToggle();
         refreshConditional();
@@ -290,7 +302,15 @@ export function createConnectionForm(
     alignItems: "center",
     justifyContent: "center",
     focusable: true,
+    zIndex: C.overlayZIndex,
     onKeyDown: handleKeyDown,
+    onMouseUp: () => {
+      // "Hold the eye icon" must not stick when the release happens elsewhere.
+      setPasswordRevealed(false);
+    },
+    onMouseDragEnd: () => {
+      setPasswordRevealed(false);
+    },
     onMouseDown: (e: MouseEvent) => {
       // 点到空白处时把焦点还给当前字段，否则按键会落到没有输入框的 overlay 上。
       // preventDefault 阻止 renderer 的 autoFocus 反过来把焦点抢到 overlay。
@@ -419,11 +439,15 @@ export function createConnectionForm(
       if (e.button === 2) return; // 右键不翻认证类型
       // Toggle auth type on click
       state.authType = state.authType === "key" ? "password" : "key";
+      setPasswordRevealed(false);
       refreshAuthToggle();
       refreshConditional();
       focusedField = 4;
       updateFocusIndicators();
       hasFocus = true;
+      // The row itself has no InputRenderable: blur the previously focused
+      // input so visual focus matches where keys actually land.
+      focusCurrentInput(false);
     },
   });
   authRow.add(authKeyText);
@@ -500,13 +524,11 @@ export function createConnectionForm(
       passwordCursor = state.password.length;
       updateFocusIndicators();
       hasFocus = true;
-      passwordRevealed = true;
-      refreshConditional();
+      setPasswordRevealed(true);
     },
     onMouseUp: (e: MouseEvent) => {
       e.stopPropagation();
-      passwordRevealed = false;
-      refreshConditional();
+      setPasswordRevealed(false);
     },
   });
   conditionalBox.add(eyeIcon);
@@ -542,6 +564,7 @@ export function createConnectionForm(
       e.stopPropagation();
       e.preventDefault();
       if (e.button === 2) return;
+      focusButton(6);
       void handleSubmit();
     },
   });
@@ -559,6 +582,7 @@ export function createConnectionForm(
       e.stopPropagation();
       e.preventDefault();
       if (e.button === 2) return;
+      focusButton(7);
       if (onCancelCb) onCancelCb();
     },
   });
@@ -577,6 +601,7 @@ export function createConnectionForm(
         e.stopPropagation();
         e.preventDefault();
         if (e.button === 2) return;
+        focusButton(8);
         void requestDelete();
       },
     });
@@ -604,6 +629,13 @@ export function createConnectionForm(
     if (current) conditionalTextWrapper.remove(current);
     conditionalTextWrapper.add(isKey ? keyPathInput : conditionalText);
     conditionalChild = target;
+  }
+
+  /** Show/hide the password plaintext, refreshing the field when it changes. */
+  function setPasswordRevealed(value: boolean) {
+    if (passwordRevealed === value) return;
+    passwordRevealed = value;
+    refreshConditional();
   }
 
   function refreshConditional() {
@@ -752,6 +784,7 @@ export function createConnectionForm(
 
   function destroy() {
     hasFocus = false;
+    passwordRevealed = false;
     // 释放 InputRenderable 的焦点与按键监听
     for (const input of textInputs) input.blur();
     keyPathInput.blur();
@@ -783,8 +816,8 @@ export function createConnectionForm(
   refreshAuthToggle();
   refreshConditional();
 
-  // ── Mount ──────────────────────────────────────────────
-  renderer.root.add(overlay);
+  // Mounting is the caller's job (App), so the overlay is added exactly once
+  // and keeps a predictable order in the render tree.
 
   const api: FormAPI = {
     getFocusedFieldIndex,

@@ -3,6 +3,30 @@ import type { CliRenderer, MouseEvent } from '@opentui/core';
 import { buildDocs } from '../keymap';
 import { theme } from '../theme';
 
+/** Popup geometry as percentages of the terminal; also used for clamping. */
+const POPUP_WIDTH_PCT = 50;
+const POPUP_HEIGHT_PCT = 80;
+const POPUP_INITIAL_LEFT_PCT = 25;
+const POPUP_INITIAL_TOP_PCT = 10;
+/** Rendered above the form overlay (zIndex 10) so F1 is always visible. */
+const POPUP_Z_INDEX = 20;
+
+/**
+ * Clamp a dragged popup position (percentages) so the whole popup stays
+ * inside the terminal. Exported for tests.
+ */
+export function clampPopupPosition(
+  leftPct: number,
+  topPct: number,
+): { left: number; top: number } {
+  const maxLeft = Math.max(0, 100 - POPUP_WIDTH_PCT);
+  const maxTop = Math.max(0, 100 - POPUP_HEIGHT_PCT);
+  return {
+    left: Math.max(0, Math.min(maxLeft, leftPct)),
+    top: Math.max(0, Math.min(maxTop, topPct)),
+  };
+}
+
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
   bg: theme.panelBg,
@@ -62,6 +86,11 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
   // ── Drag state ──────────────────────────────────────────────────
   let lastDragX = -1;
   let lastDragY = -1;
+
+  function resetDrag(): void {
+    lastDragX = -1;
+    lastDragY = -1;
+  }
 
   // 帮助内容来自 keymap 的唯一事实来源
   const docs = buildDocs('en');
@@ -185,15 +214,23 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
     {
       id: 'help-popup',
       position: 'absolute',
-      top: '10%',
-      left: '25%',
-      width: '50%',
-      height: '80%',
+      top: `${POPUP_INITIAL_TOP_PCT}%`,
+      left: `${POPUP_INITIAL_LEFT_PCT}%`,
+      width: `${POPUP_WIDTH_PCT}%`,
+      height: `${POPUP_HEIGHT_PCT}%`,
+      zIndex: POPUP_Z_INDEX,
       backgroundColor: C.bgOverlay,
       borderColor: C.border,
       flexDirection: 'column',
       padding: 1,
       visible: false,
+      onMouseUp: () => {
+        // Release may land on the popup itself; always clear the drag anchor.
+        resetDrag();
+      },
+      onMouseDragEnd: () => {
+        resetDrag();
+      },
       // ── Drag handler ────────────────────────────────────────────
       onMouseDrag: (e: MouseEvent) => {
         if (!visible) return;
@@ -217,8 +254,13 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
           const currentTop = (parseFloat(String(instance.top)) / 100) * screenHeight;
           const newLeft = currentLeft + deltaX;
           const newTop = currentTop + deltaY;
-          instance.left = `${Math.max(0, Math.min(80, (newLeft / screenWidth) * 100))}%`;
-          instance.top = `${Math.max(0, Math.min(80, (newTop / screenHeight) * 100))}%`;
+          // Clamp so the full popup stays on screen (not a fixed 80%).
+          const { left, top } = clampPopupPosition(
+            (newLeft / screenWidth) * 100,
+            (newTop / screenHeight) * 100,
+          );
+          instance.left = `${left}%`;
+          instance.top = `${top}%`;
           renderer.requestRender();
         }
       },
