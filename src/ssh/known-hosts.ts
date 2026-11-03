@@ -4,6 +4,16 @@ import {
   readPrivateFile,
   writePrivateFileAtomic,
 } from '../storage/config';
+import { createLogger } from '../logger';
+
+const log = createLogger('known-hosts');
+
+/**
+ * Refresh `lastSeen` at most once per hour per host. The field is metadata,
+ * so rewriting the whole store on every connect (read + atomic write) is not
+ * worth the I/O — but leaving it frozen forever makes it dead data.
+ */
+const LAST_SEEN_REFRESH_MS = 60 * 60 * 1000;
 
 export interface KnownHostEntry {
   fingerprint: string;
@@ -139,6 +149,20 @@ export class KnownHostsStore {
           fingerprint,
           expected: existing.fingerprint,
         };
+      }
+
+      // Trusted key: refresh lastSeen when it is stale, but never fail the
+      // connection because metadata could not be written.
+      const now = Date.now();
+      const lastSeenMs = Date.parse(existing.lastSeen);
+      if (!Number.isFinite(lastSeenMs) || now - lastSeenMs >= LAST_SEEN_REFRESH_MS) {
+        existing.lastSeen = new Date(now).toISOString();
+        try {
+          await writePrivateFileAtomic(this.filePath, JSON.stringify(store, null, 2));
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          log.warn('Could not update lastSeen for {id}: {reason}', { id, reason });
+        }
       }
 
       return { ok: true, status: 'trusted', fingerprint };

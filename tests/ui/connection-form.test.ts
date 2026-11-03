@@ -126,6 +126,36 @@ describe('connection form keyboard semantics', () => {
     }
   });
 
+  test('Delete is not triggered twice while the first request is pending', async () => {
+    const t = await createTestRenderer({ width: 100, height: 30 });
+    const form = createConnectionForm(t.renderer, existing);
+    t.renderer.root.add(form);
+    const deleted: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    form.onDelete(async (id) => {
+      deleted.push(id);
+      await gate;
+    });
+
+    try {
+      form.focus();
+      tabTo(form, 8);
+      press(form, 'enter', '\r');
+      // The confirmation / store call is still in flight.
+      press(form, 'enter', '\r');
+      await Promise.resolve();
+
+      expect(deleted).toEqual(['c1']);
+
+      release();
+      await gate;
+    } finally {
+      form.destroy();
+      await t.dispose();
+    }
+  });
+
   test('does not mount itself; the caller adds it once', async () => {
     const t = await createTestRenderer({ width: 100, height: 30 });
     const form = createConnectionForm(t.renderer);

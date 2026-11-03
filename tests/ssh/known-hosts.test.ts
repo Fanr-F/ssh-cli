@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -71,5 +71,31 @@ describe('KnownHostsStore', () => {
     const result = await store.verify('example.com', 22, Buffer.from('key'));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.status).toBe('error');
+  });
+
+  test('refreshes a stale lastSeen but not on every trusted check', async () => {
+    const { store, file } = await tempStore();
+    const key = Buffer.from('key-a');
+    const id = knownHostKeyId('example.com', 22);
+
+    await store.verify('example.com', 22, key);
+    const initial = JSON.parse(await readFile(file, 'utf-8'));
+    expect(initial[id].lastSeen).toBe(initial[id].firstSeen);
+    const firstSeen = initial[id].firstSeen;
+
+    // Pretend the entry was last seen long ago.
+    initial[id].lastSeen = '2020-01-01T00:00:00.000Z';
+    await writeFile(file, JSON.stringify(initial), 'utf-8');
+
+    const second = await store.verify('example.com', 22, key);
+    expect(second.ok).toBe(true);
+    const refreshed = JSON.parse(await readFile(file, 'utf-8'));
+    expect(refreshed[id].lastSeen).not.toBe('2020-01-01T00:00:00.000Z');
+    expect(refreshed[id].firstSeen).toBe(firstSeen);
+
+    // A second immediate check is throttled: no further rewrite occurs.
+    await store.verify('example.com', 22, key);
+    const throttled = JSON.parse(await readFile(file, 'utf-8'));
+    expect(throttled[id].lastSeen).toBe(refreshed[id].lastSeen);
   });
 });
