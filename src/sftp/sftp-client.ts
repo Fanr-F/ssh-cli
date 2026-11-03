@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
 import type { SFTPWrapper, Stats } from 'ssh2-no-cpu-features';
 import type { FileEntry, FileItem } from './types';
+import { sortFileItems } from './file-list';
 import { createLogger } from '../logger';
 
 const log = createLogger('sftp');
@@ -61,71 +62,49 @@ export class SftpClient {
       }
     }));
 
-    items.sort((a, b) => {
-      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-      return a.name.localeCompare(b.name);
+    return sortFileItems(items);
+  }
+
+  /** Promisify one callback-style ssh2 SFTP call. */
+  private call<T>(
+    invoke: (cb: (err: Error | null | undefined, result?: T) => void) => void,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      invoke((err, result) => {
+        if (err) reject(err);
+        else resolve(result as T);
+      });
     });
-    return items;
   }
 
   /** Get file/directory stats. */
   async stat(path: string): Promise<Stats> {
-    return new Promise((resolve, reject) => {
-      this.sftp.stat(path, (err: Error | null | undefined, stats: Stats) => {
-        if (err) reject(err);
-        else resolve(stats);
-      });
-    });
+    return this.call<Stats>((cb) => this.sftp.stat(path, cb));
   }
 
   /** Create a directory. */
   async mkdir(path: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.sftp.mkdir(path, (err: Error | null | undefined) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    await this.call<void>((cb) => this.sftp.mkdir(path, cb));
   }
 
   /** Remove a directory. */
   async rmdir(path: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.sftp.rmdir(path, (err: Error | null | undefined) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    await this.call<void>((cb) => this.sftp.rmdir(path, cb));
   }
 
   /** Delete a file. */
   async unlink(path: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.sftp.unlink(path, (err: Error | null | undefined) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    await this.call<void>((cb) => this.sftp.unlink(path, cb));
   }
 
   /** Rename/move a file or directory. */
   async rename(oldPath: string, newPath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.sftp.rename(oldPath, newPath, (err: Error | null | undefined) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    await this.call<void>((cb) => this.sftp.rename(oldPath, newPath, cb));
   }
 
   /** Get real path (resolve symlinks, ~, etc). */
   async realpath(path: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      this.sftp.realpath(path, (err: Error | null | undefined, resolvedPath: string) => {
-        if (err) reject(err);
-        else resolve(resolvedPath);
-      });
-    });
+    return this.call<string>((cb) => this.sftp.realpath(path, cb));
   }
 
   /** Upload a local file to remote with progress callback. */

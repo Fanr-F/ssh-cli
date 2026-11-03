@@ -72,11 +72,7 @@ export class ClipboardController {
       );
     }
     const ok = isCopySuccessful(result);
-    this.hooks.setStatus(
-      ok ? 'Copied to clipboard' : 'Copy failed',
-      ok ? 'success' : 'error',
-    );
-    this.hooks.requestRender();
+    this.report(ok ? 'Copied to clipboard' : 'Copy failed', ok ? 'success' : 'error');
   }
 
   async paste(): Promise<void> {
@@ -88,22 +84,19 @@ export class ClipboardController {
       });
 
     if (!result) {
-      this.hooks.setStatus('Clipboard read failed', 'error');
-      this.hooks.requestRender();
+      this.report('Clipboard read failed', 'error');
       return;
     }
 
     if (result.status !== 'read') {
       logDebug(`[PASTE] clipboard read status: ${result.status}`);
-      this.hooks.setStatus(readFailureMessage(result.status), readFailureKind(result.status));
-      this.hooks.requestRender();
+      this.report(readFailureMessage(result.status), readFailureKind(result.status));
       return;
     }
 
     const text = normalizePasteText(result.representation.bytes);
     if (!text) {
-      this.hooks.setStatus('Clipboard is empty', 'warning');
-      this.hooks.requestRender();
+      this.report('Clipboard is empty', 'warning');
       return;
     }
 
@@ -119,23 +112,29 @@ export class ClipboardController {
         if (target.ssh.isConnected()) {
           const encoded = target.term.encodePaste(new TextEncoder().encode(text));
           target.ssh.writeToShell(Buffer.from(encoded).toString('utf8'));
-          this.hooks.setStatus('Pasted to terminal', 'success');
+          this.report('Pasted to terminal', 'success');
         } else {
-          this.hooks.setStatus('Not connected', 'warning');
+          this.report('Not connected', 'warning');
         }
         break;
       case 'form':
         target.form.pasteText(text);
-        this.hooks.setStatus('Pasted to form', 'success');
+        this.report('Pasted to form', 'success');
         break;
       case 'sftp':
         target.tab.pasteText(text);
-        this.hooks.setStatus('Pasted to SFTP', 'success');
+        this.report('Pasted to SFTP', 'success');
         break;
       case 'none':
-        this.hooks.setStatus('Nothing to paste to', 'warning');
+        this.report('Nothing to paste to', 'warning');
         break;
     }
+  }
+
+  /** Show a status message and request a redraw; used by every paste branch. */
+  private report(text: string, kind: StatusKind): void {
+    this.hooks.setStatus(text, kind);
+    this.hooks.requestRender();
   }
 
   dispose(): Promise<void> {

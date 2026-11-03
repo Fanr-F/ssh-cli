@@ -565,6 +565,15 @@ export function createSftpTab(
     return (await stat(p)).isDirectory();
   }
 
+  /** Reload the panel that owns the mutation (local or remote). */
+  async function reloadActivePanel(): Promise<void> {
+    if (activeSide === 'local') {
+      await loadLocalDir(localState.currentPath);
+    } else {
+      await loadRemoteDir(remoteState.currentPath);
+    }
+  }
+
   async function executeCommand(input: string): Promise<boolean> {
     const { command: cmd, args } = parseCommand(input);
     let ok = true;
@@ -664,11 +673,7 @@ export function createSftpTab(
             await mkdir(fullPath);
           }
           renderStatus(`Created: ${name}`, C.green);
-          if (activeSide === 'local') {
-            await loadLocalDir(localState.currentPath);
-          } else {
-            await loadRemoteDir(remoteState.currentPath);
-          }
+          await reloadActivePanel();
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Mkdir failed';
           log.error(`[SFTP MKDIR] ${fullPath}: ${msg}`);
@@ -732,11 +737,7 @@ export function createSftpTab(
             }
           }
           renderStatus(`Deleted: ${name}`, C.green);
-          if (activeSide === 'local') {
-            await loadLocalDir(localState.currentPath);
-          } else {
-            await loadRemoteDir(remoteState.currentPath);
-          }
+          await reloadActivePanel();
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Delete failed';
           log.error(`[SFTP RM] ${fullPath}: ${msg}`);
@@ -787,11 +788,7 @@ export function createSftpTab(
             await rename(oldPath, newPath);
           }
           renderStatus(`Moved: ${pathName(oldPath)} → ${pathName(newPath)}`, C.green);
-          if (activeSide === 'local') {
-            await loadLocalDir(localState.currentPath);
-          } else {
-            await loadRemoteDir(remoteState.currentPath);
-          }
+          await reloadActivePanel();
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'mv failed';
           log.error(`[SFTP MV] ${oldPath} → ${newPath}: ${msg}`);
