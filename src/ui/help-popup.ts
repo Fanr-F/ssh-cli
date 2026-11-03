@@ -2,6 +2,7 @@ import { Box, Text, ScrollBox, TextAttributes } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import { buildDocs } from '../keymap';
 import { theme } from '../theme';
+import { resolveDescendant, resolveNode, type ResolvedNode } from './resolve';
 
 /** Popup geometry as percentages of the terminal; also used for clamping. */
 const POPUP_WIDTH_PCT = 50;
@@ -63,22 +64,19 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
   let visible = false;
 
   // Resolve real renderable
-  let _instance: any = null;
-  function getInstance(): any {
+  let _instance: ResolvedNode | null = null;
+  function getInstance(): ResolvedNode | null {
     if (!_instance) {
-      _instance = renderer.root.findDescendantById('help-popup');
+      _instance = resolveNode(renderer, 'help-popup');
     }
     return _instance;
   }
 
   // Resolve scroll box
-  let _scrollInstance: any = null;
-  function getScrollInstance(): any {
+  let _scrollInstance: ResolvedNode | null = null;
+  function getScrollInstance(): ResolvedNode | null {
     if (!_scrollInstance) {
-      const popup = getInstance();
-      if (popup) {
-        _scrollInstance = popup.findDescendantById('help-scroll');
-      }
+      _scrollInstance = resolveDescendant(getInstance(), 'help-scroll');
     }
     return _scrollInstance;
   }
@@ -166,8 +164,7 @@ export function createHelpPopup(renderer: CliRenderer): HelpPopupAPI {
     const scrollBox = getScrollInstance();
     if (!scrollBox) return 0;
     const viewportHeight = Math.floor(scrollBox.viewport?.height ?? 0);
-    return Math.max(0, (scrollBox.scrollHeight ?? 0) - viewportHeight);
-  }
+    return Math.max(0, (scrollBox.scrollHeight ?? 0) - viewportHeight);  }
 
   function show(): void {
     visible = true;

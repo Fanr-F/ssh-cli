@@ -23,6 +23,8 @@ src/
 ├── app/                  # Extracted application helpers
 │   ├── clipboard.ts      # Selection copy + paste target routing
 │   ├── terminal-tab.ts   # EmbeddedTerminalRenderable factory
+│   ├── tab-manager.ts    # Tab map + single teardown path (dispose)
+│   ├── session.ts        # Credentials + SshConnection factory for new sessions
 │   └── tab-navigation.ts # Pure next/previous/jump tab helpers
 ├── ssh/                  # SSH connection layer
 │   ├── auth.ts           # Authentication config builder (key/password)
@@ -55,6 +57,7 @@ src/
     ├── form-model.ts     # Add/edit form state, validation, config building
     ├── password-field.ts # Hand-rendered masked password input
     ├── confirm-dialog.ts # Reusable modal confirmation (dangerous actions)
+    ├── resolve.ts        # Minimal ResolvedNode interface + tree lookup helpers
     └── help-popup.ts     # Draggable help popup (F1) with SFTP shortcuts
 ```
 
@@ -105,12 +108,13 @@ Key behaviors that are easy to break:
 ### OpenTUI Patterns
 
 #### Resolving Renderable Instances
-Box() returns a Proxy. To call methods like `add()`, `remove()`, or set properties on the actual renderable, resolve via `findDescendantById()`:
+Box() returns a Proxy. To call methods like `add()`, `remove()`, or set properties on the actual renderable, resolve via `resolveNode()` (`src/ui/resolve.ts`), which returns a structurally typed `ResolvedNode | null`:
 ```typescript
-let _instance: any = null;
-function getInstance(): any {
+import { resolveNode, type ResolvedNode } from './ui/resolve';
+let _instance: ResolvedNode | null = null;
+function getInstance(): ResolvedNode | null {
   if (!_instance) {
-    _instance = renderer.root.findDescendantById('element-id');
+    _instance = resolveNode(renderer, 'element-id');
   }
   return _instance;
 }
@@ -142,7 +146,7 @@ onMouseDrag: (e: MouseEvent) => {
 ```
 
 ### Multi-Tab System
-- Tabs stored in `Map<string, { term, ssh, config, sftpClient?, sftpTab? }>`
+- Tabs stored in `TabManager` (`src/app/tab-manager.ts`) as `Map<string, { term, ssh, config, sftpClient?, sftpTab? }>`; it also owns the single teardown path
 - Tab bar manages tab switching and closing
 - Each tab has its own `EmbeddedTerminalRenderable` (native, registered in `terminal-panel.ts`)
 - Active tab ID tracked via `tabBar.getActiveTabId()`
@@ -153,7 +157,7 @@ onMouseDrag: (e: MouseEvent) => {
 - **Dual-panel layout**: Local (left) / Remote (right)
 - **Independent SSH connections**: Each SFTP tab creates its own SSH connection. This isolates transport failures and keeps teardown simple; reusing the terminal transport would require ref-counting across terminal/SFTP tabs
 - **Command line mode** (`:`): persistent mode, Enter executes but stays in mode, Esc exits
-- **Commands**: `upload <local> <remote>`, `download <remote> <local>`, `mkdir <path>`, `rm [path]`, `mv <src> <dst>`, `cd <path>`, `refresh`, `hidden [on|off]`
+- **Commands**: `upload <local> <remote>`, `download <remote> <local>`, `mkdir <path>`, `rm [path]`, `mv <src> <dst>`, `cd <path>`, `refresh`, `hidden [on|off]`; paths may be quoted and support backslash escapes
 - **ScrollBox scrolling**: Each list is a `ScrollBox` (built-in scrollbar / wheel / auto-hide, `viewportCulling`); `ensureIndexVisible()` calls `scrollTo()` to keep the selected row in view
 - **Chunked list rendering**: File lines are grouped into 32-line `TextRenderable`s. Moving the cursor redraws only the old/new chunks (O(32)) instead of the whole directory; directory reloads rebuild the chunks
 - **Load generation + TTL**: Local and remote loads each have a token so stale responses are discarded; switching back to a tab reuses the listing for 2 seconds

@@ -11,22 +11,23 @@ import type { CliRenderer, KeyEvent, PasteEvent, Selection } from '@opentui/core
 import type { ConnectionConfig } from './types/connection';
 import { ConnectionStore } from './storage/connections';
 import { createSidebar, type SidebarAPI } from './ui/sidebar';
-import { createConnectionForm } from './ui/connection-form';
+import { createConnectionForm, type FormAPI } from './ui/connection-form';
 import { createTerminalPanel, type TerminalPanelAPI } from './ui/terminal-panel';
 import { createStatusBar, type StatusBarAPI } from './ui/status-bar';
 import { createToolbar, type ToolbarAPI } from './ui/toolbar';
 import { createDivider } from './ui/divider';
 import { createTabBar, type TabBarAPI } from './ui/tab-bar';
 import { createHelpPopup, type HelpPopupAPI } from './ui/help-popup';
+import { resolveDescendant, resolveNode } from './ui/resolve';
 import {
   createConfirmDialog,
   type ConfirmDialogAPI,
   type ConfirmRequest,
 } from './ui/confirm-dialog';
 import { SshConnection } from './ssh/connection';
-import { createAltScreenTracker, type AltScreenTracker } from './ssh/alt-screen';
+import { createAltScreenTracker } from './ssh/alt-screen';
 import { SftpClient } from './sftp/sftp-client';
-import { createSftpTab, type SftpTabAPI } from './sftp/sftp-tab';
+import { createSftpTab } from './sftp/sftp-tab';
 import { logDebug, logIO } from './logger';
 import {
   findBinding,
@@ -42,17 +43,8 @@ import {
 } from './app/clipboard';
 import { createTerminalRenderable } from './app/terminal-tab';
 import { nextTabId, previousTabId, tabIdAt } from './app/tab-navigation';
-
-/** 一个标签页持有的运行态（终端标签与 SFTP 标签共用同一份结构）。 */
-interface TabState {
-  term: EmbeddedTerminalRenderable;
-  ssh: SshConnection;
-  config: ConnectionConfig;
-  /** 远端是否处于备用屏（全屏程序）。SFTP 标签不接收终端数据，直接复用终端标签的实例。 */
-  altScreen: AltScreenTracker;
-  sftpClient?: SftpClient;
-  sftpTab?: SftpTabAPI;
-}
+import { TabManager, type TabState } from './app/tab-manager';
+import { createSshSession } from './app/session';
 
 export class App {
   private renderer: CliRenderer;
@@ -68,25 +60,30 @@ export class App {
   private tabBar!: TabBarAPI;
   private helpPopup!: HelpPopupAPI;
   private confirmDialog: ConfirmDialogAPI | null = null;
-  private form: any = null;
+  private form: FormAPI | null = null;
   private formOpening = false;
   private shuttingDown = false;
   private focus: FocusZone = 'sidebar';
   private connections: ConnectionConfig[] = [];
 
   // ── Multi-tab state ──────────────────────────────────────────────
-  private tabs = new Map<string, TabState>();
-  /** Guards against re-entrant close events while a tab is being torn down. */
-  private closingTabs = new Set<string>();
+  private tabs: TabManager;
 
   /**
    * Ghostty 终端把视口滚动封装在原生层，0.6.6 没有导出公开的滚动 API，
    * 这里直接调用 zig 绑定（`zig.d.ts` 有声明）：负数向上（更早），正数向下。
    * 同时用于 PageUp/PageDown 和"输入时回到底部"。
+   *
+   * 私有成员只在下面这一个窄接口里声明，升级 OpenTUI 时只需改这里。
    */
   private scrollTerminal(term: EmbeddedTerminalRenderable, delta: number): void {
-    const t = term as any;
-    if (!t.handle) return;
+    const t = term as unknown as {
+      handle?: { context: unknown };
+      lib?: {
+        contextEmbeddedTerminalScroll(context: unknown, handle: unknown, delta: number): void;
+      };
+    };
+    if (!t.handle || !t.lib) return;
     try {
       t.lib.contextEmbeddedTerminalScroll(t.handle.context, t.handle, delta);
       term.requestRender();
@@ -140,6 +137,30 @@ export class App {
       requestRender: () => this.renderer.requestRender(),
       getPasteTarget: () => this.getPasteTarget(),
     });
+    this.tabs = new TabManager({
+      unregisterTerminal: (id) => this.terminalPanel.unregisterTerminal(id),
+      removeSftpNode: (tab) => this.removeSftpNode(tab),
+      removeTabFromBar: (id) => this.tabBar.removeTab(id),
+      onAllTabsClosed: () => {
+        this.terminalPanel.setVisible(true);
+        this.terminalPanel.showIdle();
+      },
+      requestRender: () => this.renderer.requestRender(),
+    });
+  }
+
+  /** Remove an SFTP tab's component node from the right panel. */
+  private removeSftpNode(tab: TabState): void {
+    const rightPanel = resolveNode(this.renderer, 'right-panel');
+    const sftpRoot = resolveDescendant(rightPanel, tab.sftpTab!.id);
+    if (!rightPanel || !sftpRoot) return;
+    // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛
+    // "remove expects a renderable child object"，需先取回节点。
+    try {
+      rightPanel.remove(sftpRoot);
+    } catch (err) {
+      logDebug(`[CLOSE TAB] SFTP remove failed: ${err}`);
+    }
   }
 
   /** Resolve where a paste should land based on the current focus. */
@@ -514,7 +535,7 @@ export class App {
     logDebug(`[CONNECT] host=${config.host}, username=${config.username}, current tabs=${this.tabs.size}`);
     
     // Close any tabs that failed to connect (in error state)
-    for (const [tabId, tab] of this.tabs) {
+    for (const [tabId, tab] of this.tabs.entries()) {
       if (!tab.ssh.isConnected() && tab.ssh.getLastError()) {
         logDebug(`[CONNECT] closing failed tab ${tabId}`);
         this.closeTab(tabId);
@@ -635,7 +656,7 @@ export class App {
         this.terminalPanel.showError('Shell error: ' + msg);
         this.statusBar.setStatus(`Shell error: ${msg}`, 'error');
         this.renderer.requestRender();
-        await this.disposeTab(tabId, { keepPanel: true });
+        await this.tabs.dispose(tabId, { keepPanel: true });
       }
     });
 
@@ -666,7 +687,7 @@ export class App {
       this.terminalPanel.showError(msg);
       this.statusBar.setStatus(`Connection failed: ${msg}`, 'error');
       this.renderer.requestRender();
-      await this.disposeTab(tabId, { keepPanel: true });
+      await this.tabs.dispose(tabId, { keepPanel: true });
     }
   }
 
@@ -689,7 +710,7 @@ export class App {
       const rightPanel = this.renderer.root.findDescendantById('right-panel');
       if (rightPanel) {
         // Mount each SFTP tab's component once; only the active one is visible
-        for (const [, t] of this.tabs) {
+        for (const [, t] of this.tabs.entries()) {
           if (!t.sftpTab) continue;
           const rootId = t.sftpTab.id;
           if (!rightPanel.findDescendantById(rootId)) {
@@ -705,7 +726,7 @@ export class App {
       // Terminal tab: hide SFTP, show terminal panel
       const rightPanel = this.renderer.root.findDescendantById('right-panel');
       if (rightPanel) {
-        for (const [, t] of this.tabs) {
+        for (const [, t] of this.tabs.entries()) {
           if (!t.sftpTab) continue;
           const sftpReal = rightPanel.findDescendantById(t.sftpTab.id);
           if (sftpReal) sftpReal.visible = false;
@@ -736,77 +757,7 @@ export class App {
   }
 
   private async closeTab(id: string): Promise<void> {
-    await this.disposeTab(id);
-  }
-
-  /**
-   * Single teardown path for terminal and SFTP tabs.
-   *
-   * UI removal happens first so the app stays responsive while SSH shutdown
-   * waits; `closingTabs` prevents channel/connection close events from
-   * re-entering the same teardown.
-   */
-  private async disposeTab(
-    id: string,
-    options: { keepPanel?: boolean } = {},
-  ): Promise<void> {
-    const tab = this.tabs.get(id);
-    if (!tab || this.closingTabs.has(id)) {
-      logDebug(`[CLOSE TAB] id=${id} already gone or closing`);
-      return;
-    }
-
-    logDebug(`[CLOSE TAB] id=${id}, isSftp=${!!tab.sftpTab}, ssh=${tab.ssh.isConnected()}`);
-    this.closingTabs.add(id);
-
-    try {
-      this.tabs.delete(id);
-
-      // SFTP component cleanup
-      if (tab.sftpTab) {
-        try {
-          tab.sftpTab.destroy();
-        } catch (err) {
-          logDebug(`[CLOSE TAB] SFTP destroy failed: ${err}`);
-        }
-        const rightPanel = this.renderer.root.findDescendantById('right-panel');
-        // OpenTUI 0.6：remove() 只接受 renderable 对象，传 id 会抛
-        // "remove expects a renderable child object"，需先取回节点。
-        const sftpRoot = rightPanel?.findDescendantById(tab.sftpTab.id);
-        if (rightPanel && sftpRoot) {
-          try {
-            rightPanel.remove(sftpRoot);
-          } catch (err) {
-            logDebug(`[CLOSE TAB] SFTP remove failed: ${err}`);
-          }
-        }
-      } else {
-        // Only terminal tabs register in the terminal panel.
-        this.terminalPanel.unregisterTerminal(id);
-      }
-
-      this.tabBar.removeTab(id);
-      logDebug(`[CLOSE TAB] removed ${id}, tabs remaining=${this.tabs.size}`);
-
-      if (this.tabs.size === 0) {
-        if (!options.keepPanel) {
-          this.terminalPanel.setVisible(true);
-          this.terminalPanel.showIdle();
-        }
-      }
-
-      this.renderer.requestRender();
-
-      try {
-        await tab.ssh.disconnect();
-        logDebug(`[CLOSE TAB] SSH disconnected for ${id}`);
-      } catch (err) {
-        logDebug(`[CLOSE TAB] SSH disconnect failed for ${id}: ${err}`);
-      }
-    } finally {
-      this.closingTabs.delete(id);
-      this.renderer.requestRender();
-    }
+    await this.tabs.dispose(id);
   }
 
   private async openForm(existing: ConnectionConfig | null): Promise<void> {
@@ -836,11 +787,8 @@ export class App {
           } else {
             await this.store.add(data);
           }
-          this.connections = await this.store.getAll();
-          // Keep the edited/created connection selected instead of jumping to 0.
-          this.sidebar.setConnections(this.connections, data.id);
-          this.closeForm(form); this.focusSidebar();
-        } catch (err) {
+          await this.reloadConnections(data.id);
+          this.closeForm(form); this.focusSidebar();        } catch (err) {
           const msg = err instanceof Error ? err.message : 'Save failed';
           this.statusBar.setStatus('Save failed: ' + msg, 'error');
           this.renderer.requestRender();
@@ -859,8 +807,7 @@ export class App {
         if (!confirmed) return;
         try {
           await this.store.remove(id);
-          this.connections = await this.store.getAll();
-          this.sidebar.setConnections(this.connections);
+          await this.reloadConnections();
           this.closeForm(form); this.focusSidebar();
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Delete failed';
@@ -880,12 +827,18 @@ export class App {
     }
   }
 
-  private closeForm(form: any): void {
+  private closeForm(form: FormAPI): void {
     if (this.form === form) this.form = null;
     try { form.destroy(); } catch (err) {
       // Ignore destroy errors — form may already be torn down
     }
     this.renderer.requestRender();
+  }
+
+  /** Reload the sidebar list, optionally keeping a connection selected. */
+  private async reloadConnections(preferredId?: string): Promise<void> {
+    this.connections = await this.store.getAll();
+    this.sidebar.setConnections(this.connections, preferredId);
   }
 
   /** Record a successful connection without resetting the sidebar selection. */
@@ -956,8 +909,7 @@ export class App {
 
     try {
       await this.store.remove(conn.id);
-      this.connections = await this.store.getAll();
-      this.sidebar.setConnections(this.connections);
+      await this.reloadConnections();
       this.statusBar.setStatus('Deleted: ' + conn.name, 'success');
       this.renderer.requestRender();
     } catch (err) {
@@ -1013,27 +965,26 @@ export class App {
     try {
       const config = tab.config;
       this.statusBar.setStatus(`Opening SFTP to ${config.host}...`);
-      const authConfig = await this.store.withCredentials(config);
-      sftpSsh = new SshConnection();
-      // Subscribe before connecting: ssh2 may report a transport error during
-      // the handshake, and an unhandled EventEmitter 'error' would kill the TUI.
-      const sshForSftp = sftpSsh;
-      sshForSftp.on('error', (err: Error) => {
-        logDebug(`[SFTP ERROR] ${err.message}`);
-        this.statusBar.setStatus(`SFTP error: ${err.message}`, 'error');
-        this.renderer.requestRender();
-        if (sftpTabId && this.tabs.has(sftpTabId)) {
-          void this.disposeTab(sftpTabId, { keepPanel: true });
-        }
+      // Credentials + connection creation are shared with other sessions;
+      // `configure` subscribes before connecting because an ssh2 error with
+      // no listener would kill the process.
+      sftpSsh = await createSshSession(this.store, config, (ssh) => {
+        ssh.on('error', (err: Error) => {
+          logDebug(`[SFTP ERROR] ${err.message}`);
+          this.statusBar.setStatus(`SFTP error: ${err.message}`, 'error');
+          this.renderer.requestRender();
+          if (sftpTabId && this.tabs.has(sftpTabId)) {
+            void this.tabs.dispose(sftpTabId, { keepPanel: true });
+          }
+        });
+        ssh.on('close', () => {
+          if (!sftpTabId || !this.tabs.has(sftpTabId)) return;
+          logDebug(`[SFTP CLOSE] ${sftpTabId}`);
+          this.statusBar.setStatus('SFTP connection closed', 'warning');
+          void this.tabs.dispose(sftpTabId, { keepPanel: true });
+        });
       });
-      sshForSftp.on('close', () => {
-        if (!sftpTabId || !this.tabs.has(sftpTabId)) return;
-        logDebug(`[SFTP CLOSE] ${sftpTabId}`);
-        this.statusBar.setStatus('SFTP connection closed', 'warning');
-        void this.disposeTab(sftpTabId, { keepPanel: true });
-      });
-      await sshForSftp.connect(authConfig);
-      const sftp = await sshForSftp.startSftp();
+      const sftp = await sftpSsh.startSftp();
 
       // The originating terminal tab may have been closed while we connected.
       if (!this.tabs.has(activeId)) {
@@ -1073,7 +1024,7 @@ export class App {
       logDebug(`[SFTP] open failed: ${msg}`);
 
       if (sftpTabId && this.tabs.has(sftpTabId)) {
-        await this.disposeTab(sftpTabId, { keepPanel: true });
+        await this.tabs.dispose(sftpTabId, { keepPanel: true });
       } else if (sftpSsh) {
         try {
           await sftpSsh.disconnect();

@@ -1,6 +1,7 @@
 import { Box } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import { theme } from '../theme';
+import { resolveNode, type ResolvedNode } from './resolve';
 
 // ── Colour tokens (Tokyo Night) ────────────────────────────────────────────
 
@@ -21,10 +22,10 @@ export function createDivider(
   let dragStartWidth = 0;
 
   // Resolve real renderable instance for Proxy-safe property sets.
-  let _instance: any = null;
-  function getInstance(): any {
+  let _instance: ResolvedNode | null = null;
+  function getInstance(): ResolvedNode | null {
     if (!_instance) {
-      _instance = renderer.root.findDescendantById('divider');
+      _instance = resolveNode(renderer, 'divider');
     }
     return _instance;
   }

@@ -2,6 +2,7 @@ import { Box, Text } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import { BINDINGS, formatKeys, type FocusZone } from '../keymap';
 import { theme } from '../theme';
+import { resolveNode, type ResolvedNode } from './resolve';
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
@@ -111,7 +112,7 @@ export function createToolbar(
   }
   toolbar.add(focusHint);
 
-  const resolved = new Map<FocusZone, any>();
+  const resolved = new Map<FocusZone, ResolvedNode>();
 
   return {
     component: toolbar,
@@ -120,7 +121,7 @@ export function createToolbar(
       for (const { zone: labelZone } of FOCUS_LABELS) {
         let node = resolved.get(labelZone);
         if (!node) {
-          node = renderer.root.findDescendantById(`focus-${labelZone}`);
+          node = resolveNode(renderer, `focus-${labelZone}`) ?? undefined;
           if (node) resolved.set(labelZone, node);
         }
         if (node) node.fg = labelZone === zone ? C.cyan : C.textDim;

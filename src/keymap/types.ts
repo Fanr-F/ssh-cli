@@ -135,7 +135,7 @@ export const GROUP_NOTES: Partial<Record<Group, { en: string; zh: string }>> = {
     zh: '仅在按 `:` 进入命令行模式后生效。',
   },
   'sftp-command': {
-    en: 'Command mode is persistent — Enter executes but stays in the prompt, Esc exits.',
-    zh: '命令模式常驻：Enter 执行后仍留在命令行，Esc 退出。',
+    en: 'Command mode is persistent — Enter executes but stays in the prompt, Esc exits. Paths may be quoted and support backslash escapes.',
+    zh: '命令模式常驻：Enter 执行后仍留在命令行，Esc 退出。路径可用引号包裹，支持反斜杠转义。',
   },
 };

@@ -2,6 +2,7 @@ import { ScrollBox, SelectRenderable } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import type { ConnectionConfig } from '../types/connection';
 import { theme } from '../theme';
+import { resolveNode, type ResolvedNode } from './resolve';
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -90,10 +91,10 @@ export function createSidebar(
   // Box() returns a Proxy that queues add/remove to __pendingCalls.
   // After instantiation those calls go nowhere.  We resolve the real
   // renderable instance once the sidebar is mounted in the render tree.
-  let _instance: any = null;
-  function getInstance(): any {
+  let _instance: ResolvedNode | null = null;
+  function getInstance(): ResolvedNode | null {
     if (!_instance) {
-      _instance = renderer.root.findDescendantById('sidebar');
+      _instance = resolveNode(renderer, 'sidebar');
     }
     return _instance;
   }

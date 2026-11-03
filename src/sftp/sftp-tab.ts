@@ -1,5 +1,5 @@
 import { Box, ScrollBox, Text, TextRenderable } from '@opentui/core';
-import type { CliRenderer, KeyEvent } from '@opentui/core';
+import type { CliRenderer, KeyEvent, MouseEvent } from '@opentui/core';
 import { mkdir, readdir, rename, rmdir, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, isAbsolute, resolve, sep as pathSep } from 'node:path';
@@ -9,6 +9,7 @@ import { createLogger } from '../logger';
 import { theme } from '../theme';
 import { findBinding, normalizeKey, type KeyContext } from '../keymap';
 import type { ConfirmRequest } from '../ui/confirm-dialog';
+import { resolveDescendant, resolveNode, type ResolvedNode } from '../ui/resolve';
 import { expandRemoteTilde, remoteParentPath, resolveRemotePath } from './paths';
 import {
   buildListChunk,
@@ -203,10 +204,10 @@ export function createSftpTab(
       flexDirection: 'column',
       width: '100%',
       flexGrow: 1,
-      onMouseDown: (e: any) => {
+      onMouseDown: (e: MouseEvent) => {
         if (e.button !== 2) return;
-        e.preventDefault?.();
-        e.stopPropagation?.();
+        e.preventDefault();
+        e.stopPropagation();
         if (cmdMode) requestPaste?.();
       },
     },
@@ -221,17 +222,17 @@ export function createSftpTab(
   );
 
   // ── Resolve real renderables ──────────────────────────────────
-  let _resolvedLocalPath: any = null;
-  let _resolvedLocalList: any = null;
-  let _resolvedRemotePath: any = null;
-  let _resolvedRemoteList: any = null;
-  let _resolvedLocalScroll: any = null;
-  let _resolvedRemoteScroll: any = null;
-  let _resolvedStatus: any = null;
-  let _resolvedLocalPanel: any = null;
-  let _resolvedRemotePanel: any = null;
+  let _resolvedLocalPath: ResolvedNode | null = null;
+  let _resolvedLocalList: ResolvedNode | null = null;
+  let _resolvedRemotePath: ResolvedNode | null = null;
+  let _resolvedRemoteList: ResolvedNode | null = null;
+  let _resolvedLocalScroll: ResolvedNode | null = null;
+  let _resolvedRemoteScroll: ResolvedNode | null = null;
+  let _resolvedStatus: ResolvedNode | null = null;
+  let _resolvedLocalPanel: ResolvedNode | null = null;
+  let _resolvedRemotePanel: ResolvedNode | null = null;
 
-  const listViews: Record<PanelSide, { container: any; chunks: any[] }> = {
+  const listViews: Record<PanelSide, { container: ResolvedNode | null; chunks: TextRenderable[] }> = {
     local: { container: null, chunks: [] },
     remote: { container: null, chunks: [] },
   };
@@ -243,16 +244,16 @@ export function createSftpTab(
       return;
     }
 
-    const root = renderer.root.findDescendantById(tabId);
-    _resolvedLocalPath = root?.findDescendantById('sftp-local-path') ?? null;
-    _resolvedLocalList = root?.findDescendantById('sftp-local-list') ?? null;
-    _resolvedRemotePath = root?.findDescendantById('sftp-remote-path') ?? null;
-    _resolvedRemoteList = root?.findDescendantById('sftp-remote-list') ?? null;
-    _resolvedStatus = root?.findDescendantById('sftp-status') ?? null;
-    _resolvedLocalPanel = root?.findDescendantById('sftp-local-panel') ?? null;
-    _resolvedRemotePanel = root?.findDescendantById('sftp-remote-panel') ?? null;
-    _resolvedLocalScroll = root?.findDescendantById('sftp-local-scroll') ?? null;
-    _resolvedRemoteScroll = root?.findDescendantById('sftp-remote-scroll') ?? null;
+    const root = resolveNode(renderer, tabId);
+    _resolvedLocalPath = resolveDescendant(root, 'sftp-local-path');
+    _resolvedLocalList = resolveDescendant(root, 'sftp-local-list');
+    _resolvedRemotePath = resolveDescendant(root, 'sftp-remote-path');
+    _resolvedRemoteList = resolveDescendant(root, 'sftp-remote-list');
+    _resolvedStatus = resolveDescendant(root, 'sftp-status');
+    _resolvedLocalPanel = resolveDescendant(root, 'sftp-local-panel');
+    _resolvedRemotePanel = resolveDescendant(root, 'sftp-remote-panel');
+    _resolvedLocalScroll = resolveDescendant(root, 'sftp-local-scroll');
+    _resolvedRemoteScroll = resolveDescendant(root, 'sftp-remote-scroll');
     // ScrollBox 默认可聚焦；文件列表的按键由本组件统一处理，别让它抢焦点
     if (_resolvedLocalScroll) _resolvedLocalScroll.focusable = false;
     if (_resolvedRemoteScroll) _resolvedRemoteScroll.focusable = false;
@@ -260,7 +261,7 @@ export function createSftpTab(
 
   // ── Render functions ──────────────────────────────────────────
   /** 让选中行保持在视口内（ScrollBox 自带滚动，只需按需 scrollTo）。 */
-  function ensureIndexVisible(scroll: any, index: number): void {
+  function ensureIndexVisible(scroll: ResolvedNode | null, index: number): void {
     if (!scroll || scroll.isDestroyed) return;
     const viewport = Math.max(1, Math.floor(scroll.viewport?.height || scroll.height || 1));
     if (index < scroll.scrollTop) {
@@ -270,7 +271,12 @@ export function createSftpTab(
     }
   }
 
-  function renderListChrome(state: FileListState, pathText: any, panel: any, side: PanelSide): void {
+  function renderListChrome(
+    state: FileListState,
+    pathText: ResolvedNode | null,
+    panel: ResolvedNode | null,
+    side: PanelSide,
+  ): void {
     if (pathText) {
       pathText.content = ` ${side === 'local' ? 'Local' : 'Remote'}: ${state.currentPath}`;
     }

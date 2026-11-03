@@ -1,6 +1,7 @@
 import { Box, Text } from '@opentui/core';
 import type { CliRenderer } from '@opentui/core';
 import { theme } from '../theme';
+import { resolveNode, type ResolvedNode } from './resolve';
 
 export type StatusKind = 'info' | 'success' | 'warning' | 'error';
 
@@ -49,12 +50,12 @@ export function createStatusBar(renderer: CliRenderer): StatusBarAPI {
     text,
   );
 
-  let resolvedText: any = null;
+  let resolvedText: ResolvedNode | null = null;
   let clearTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function getText(): any {
+  function getText(): ResolvedNode | null {
     if (!resolvedText) {
-      resolvedText = renderer.root.findDescendantById('status-bar-text');
+      resolvedText = resolveNode(renderer, 'status-bar-text');
     }
     return resolvedText;
   }

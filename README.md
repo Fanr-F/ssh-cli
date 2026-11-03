@@ -100,7 +100,7 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 
 #### SFTP Commands
 
-> Command mode is persistent — Enter executes but stays in the prompt, Esc exits.
+> Command mode is persistent — Enter executes but stays in the prompt, Esc exits. Paths may be quoted and support backslash escapes.
 
 | Command | Description |
 |---|---|

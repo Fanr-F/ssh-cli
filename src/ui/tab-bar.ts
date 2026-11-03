@@ -2,6 +2,7 @@ import { Box, Text } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import { createLogger } from '../logger';
 import { theme } from '../theme';
+import { resolveNode, type ResolvedNode } from './resolve';
 
 const log = createLogger('tab-bar');
 
@@ -55,10 +56,10 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
   });
 
   // ── Resolve real renderable ─────────────────────────────────
-  let _instance: any = null;
-  function getInstance(): any {
+  let _instance: ResolvedNode | null = null;
+  function getInstance(): ResolvedNode | null {
     if (!_instance) {
-      _instance = renderer.root.findDescendantById('tab-bar');
+      _instance = resolveNode(renderer, 'tab-bar');
     }
     return _instance;
   }
@@ -69,9 +70,9 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
 
   /** Resolved nodes per tab, so title/active changes never rebuild the tree. */
   interface TabNodes {
-    box: any;
-    title: any;
-    close: any;
+    box: ResolvedNode;
+    title: ResolvedNode;
+    close: ResolvedNode;
   }
   const nodeRefs = new Map<string, TabNodes>();
 
@@ -111,7 +112,7 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
     });
   }
 
-  function resolveNodes(instance: any): void {
+  function resolveNodes(instance: ResolvedNode): void {
     nodeRefs.clear();
     for (const tab of tabs) {
       const box = instance.findDescendantById(`tab-${tab.id}`);

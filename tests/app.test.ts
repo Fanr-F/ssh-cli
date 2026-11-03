@@ -48,8 +48,8 @@ describe('App tab teardown', () => {
       });
       (app as any).tabBar.addTab('t1', 'test', 'terminal');
 
-      await (app as any).disposeTab('t1');
-      await (app as any).disposeTab('t1');
+      await (app as any).tabs.dispose('t1');
+      await (app as any).tabs.dispose('t1');
       await t.renderOnce();
 
       expect((app as any).tabs.size).toBe(0);
@@ -94,7 +94,7 @@ describe('App tab teardown', () => {
       (app as any).tabBar.addTab('t1', 'one', 'terminal');
       (app as any).tabBar.addTab('t2', 'two', 'terminal');
 
-      await (app as any).disposeTab('t2');
+      await (app as any).tabs.dispose('t2');
 
       expect((app as any).tabs.size).toBe(1);
       expect((app as any).tabBar.getActiveTabId()).toBe('t1');

@@ -2,6 +2,7 @@ import { Box, Text, stringToStyledText, type EmbeddedTerminalRenderable } from '
 import type { CliRenderer } from '@opentui/core';
 import { createLogger } from '../logger';
 import { theme } from '../theme';
+import { resolveNode, type ResolvedNode } from './resolve';
 
 const log = createLogger('terminal-panel');
 
@@ -141,18 +142,18 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   // We resolve the real renderable instances once the tree is mounted.
 
   interface ResolvedInstances {
-    container: any;
-    idle: any;
-    connecting: any;
-    connected: any;
-    error: any;
-    disconnected: any;
+    container: ResolvedNode;
+    idle: ResolvedNode;
+    connecting: ResolvedNode;
+    connected: ResolvedNode;
+    error: ResolvedNode;
+    disconnected: ResolvedNode;
   }
   let resolved: ResolvedInstances | null = null;
 
   function resolve(): ResolvedInstances | null {
     if (resolved) return resolved;
-    const c = renderer.root.findDescendantById('terminal-panel');
+    const c = resolveNode(renderer, 'terminal-panel');
     if (!c) return null;
     const children = c.getChildren();
     // Children are in the order they were added: idle, connecting, connected, error, disconnected
@@ -175,7 +176,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   }
 
   // ── Helper: show exactly one overlay ──────────────────────────────────
-  function showOnly(target: any): void {
+  function showOnly(target: ResolvedNode): void {
     const r = resolve();
     if (!r) return;
     r.idle.visible = target === r.idle;
