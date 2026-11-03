@@ -6,8 +6,12 @@ import { theme } from '../theme';
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export interface SidebarAPI {
-  /** Replace the entire connection list. Resets selection to index 0. */
-  setConnections(connections: ConnectionConfig[]): void;
+  /**
+   * Replace the entire connection list. Selection is kept by id (or by the
+   * optional `preferredId`); when that id is gone the previous index is kept
+   * as close as possible. The selection callback fires once after the update.
+   */
+  setConnections(connections: ConnectionConfig[], preferredId?: string): void;
   /** Return the currently selected connection, or null if the list is empty. */
   getSelectedConnection(): ConnectionConfig | null;
   /** Patch one connection in place without resetting the current selection. */
@@ -181,13 +185,17 @@ export function createSidebar(
   // ── Public API ──────────────────────────────────────────────────────────
 
   const api: SidebarAPI = {
-    setConnections(newConnections: ConnectionConfig[]): void {
+    setConnections(newConnections: ConnectionConfig[], preferredId?: string): void {
+      const previousIndex = select.getSelectedIndex();
+      const targetId = preferredId ?? items[previousIndex]?.id;
       items = [...newConnections];
       select.options = items.map(toOption);
       select.height = Math.max(1, items.length * ITEM_LINES);
-      select.setSelectedIndex(0);
-      const scroll = getInstance();
-      if (scroll) scroll.scrollTo(0);
+
+      if (items.length === 0) return;
+      const found = targetId ? items.findIndex((item) => item.id === targetId) : -1;
+      const index = found >= 0 ? found : Math.min(previousIndex, items.length - 1);
+      selectIndex(index, true);
     },
 
     getSelectedConnection(): ConnectionConfig | null {

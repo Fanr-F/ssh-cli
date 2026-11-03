@@ -841,7 +841,8 @@ export class App {
             await this.store.add(data);
           }
           this.connections = await this.store.getAll();
-          this.sidebar.setConnections(this.connections);
+          // Keep the edited/created connection selected instead of jumping to 0.
+          this.sidebar.setConnections(this.connections, data.id);
           this.closeForm(form); this.focusSidebar();
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Save failed';
