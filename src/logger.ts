@@ -85,6 +85,39 @@ function writeToFile(record: LogRecord): void {
 // ── Module loggers ──────────────────────────────────────────────────────────
 let configured = false;
 
+/** Accepted `--log-level` values (also used for CLI validation). */
+export const LOG_LEVELS: readonly LogLevel[] = [
+  'trace',
+  'debug',
+  'info',
+  'warning',
+  'error',
+  'fatal',
+];
+
+/**
+ * Parse `--log-level <value>` from CLI args. Unknown values fall back to
+ * `info` and return a warning instead of being cast blindly.
+ */
+export function parseLogLevel(args: readonly string[]): {
+  level: LogLevel;
+  warning?: string;
+} {
+  const index = args.indexOf('--log-level');
+  if (index === -1) return { level: 'info' };
+
+  const raw = args[index + 1];
+  if (!raw) {
+    return { level: 'info', warning: 'Missing value for --log-level; using "info".' };
+  }
+
+  const value = raw.toLowerCase();
+  if ((LOG_LEVELS as readonly string[]).includes(value)) {
+    return { level: value as LogLevel };
+  }
+  return { level: 'info', warning: `Unknown log level "${raw}"; using "info".` };
+}
+
 /**
  * Configure the logging system. Call once at app startup.
  */

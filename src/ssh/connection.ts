@@ -103,8 +103,9 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
       this.client = client;
       this.setupClientHandlers(client);
 
-      // Build config using auth.ts (handles both key and password auth)
-      const connectConfig = buildConnectConfig(config) as ConnectConfig;
+      // Build config using auth.ts (handles both key and password auth).
+      // Reading the key is async so the render loop is not blocked.
+      const connectConfig = await buildConnectConfig(config) as ConnectConfig;
 
       // Use explicit algorithms to avoid native dep compatibility issues
       connectConfig.algorithms = {

@@ -1,5 +1,26 @@
 import { describe, expect, test } from 'bun:test';
-import { redactSensitive } from '../src/logger';
+import { LOG_LEVELS, parseLogLevel, redactSensitive } from '../src/logger';
+
+describe('parseLogLevel', () => {
+  test('defaults to info without the flag', () => {
+    expect(parseLogLevel([])).toEqual({ level: 'info' });
+  });
+
+  test('accepts every supported level', () => {
+    for (const level of LOG_LEVELS) {
+      expect(parseLogLevel(['--log-level', level])).toEqual({ level });
+    }
+  });
+
+  test('falls back to info and warns on unknown or missing values', () => {
+    expect(parseLogLevel(['--log-level', 'verbose'])).toEqual({
+      level: 'info',
+      warning: 'Unknown log level "verbose"; using "info".',
+    });
+    expect(parseLogLevel(['--log-level']).warning).toContain('Missing value');
+  });
+});
+
 
 describe('redactSensitive', () => {
   test('masks common key/value secrets', () => {
