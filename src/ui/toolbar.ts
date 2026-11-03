@@ -1,6 +1,6 @@
 import { Box, Text } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
-import type { FocusZone } from '../keymap';
+import { BINDINGS, formatKeys, type FocusZone } from '../keymap';
 import { theme } from '../theme';
 
 // ── Tokyo Night palette ───────────────────────────────────────
@@ -16,6 +16,13 @@ const C = {
   textDim: theme.textDim,
   textMuted: theme.textMuted,
 };
+
+/** Format a binding's key(s) for display; the binding table is the source. */
+export function bindingShortcut(id: string): string {
+  const binding = BINDINGS.find((entry) => entry.id === id);
+  if (!binding) return '?';
+  return formatKeys(binding.key, binding.keys);
+}
 
 export interface ToolbarCallbacks {
   onNew?: () => void;
@@ -61,13 +68,14 @@ export function createToolbar(
   });
   toolbar.add(accentBar);
 
+  // Labels' shortcut hints come from src/keymap/bindings.ts (single source).
   const items = [
-    { label: 'new [a]', key: 'a', action: () => callbacks.onNew?.(), color: C.green },
-    { label: 'edit [e]', key: 'e', action: () => callbacks.onEdit?.(), color: C.yellow },
-    { label: 'connect [enter]', key: '↵', action: () => callbacks.onConnect?.(), color: C.blue },
-    { label: 'delete [del]', key: '⌫', action: () => callbacks.onDelete?.(), color: C.red },
-    { label: 'quit [^q]', key: '^q', action: () => callbacks.onQuit?.(), color: C.magenta },
-    { label: 'help [f1]', key: 'f1', action: () => callbacks.onHelp?.(), color: C.cyan },
+    { label: 'new', binding: 'sidebar.add', action: () => callbacks.onNew?.(), color: C.green },
+    { label: 'edit', binding: 'sidebar.edit', action: () => callbacks.onEdit?.(), color: C.yellow },
+    { label: 'connect', binding: 'sidebar.connect', action: () => callbacks.onConnect?.(), color: C.blue },
+    { label: 'delete', binding: 'sidebar.delete', action: () => callbacks.onDelete?.(), color: C.red },
+    { label: 'quit', binding: 'app.quit', action: () => callbacks.onQuit?.(), color: C.magenta },
+    { label: 'help', binding: 'help.toggle', action: () => callbacks.onHelp?.(), color: C.cyan },
   ];
 
   for (const item of items) {
@@ -80,7 +88,7 @@ export function createToolbar(
     });
 
     const labelText = Text({ content: ` ${item.label}`, fg: item.color });
-    const keyText = Text({ content: `[${item.key}]`, fg: C.textMuted });
+    const keyText = Text({ content: `[${bindingShortcut(item.binding)}]`, fg: C.textMuted });
     btn.add(labelText);
     btn.add(keyText);
     toolbar.add(btn);
