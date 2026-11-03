@@ -13,9 +13,11 @@
  * 因此每次扫描都把上一块的最后 `TAIL_SIZE` 字节拼回来。重叠部分重复命中的
  * 是同一段序列，而 h/l 只是赋值，重复应用是幂等的。
  */
-const ALT_SCREEN = /\x1b\[\?(?:47|1047|1049)([hl])/g;
-/** 最长序列是 `ESC[?1049h`，共 8 字节 */
-const TAIL_SIZE = 8;
+const ALT_SCREEN = /\x1b\[\?([0-9;]*)([hl])/g;
+/** Modes that switch to the alternate buffer; 1048 only saves the cursor. */
+const ALT_SCREEN_MODES = new Set(['47', '1047', '1049']);
+/** Combined modes (`ESC[?1049;25h`) can be longer than the 8-byte form. */
+const TAIL_SIZE = 32;
 
 export interface AltScreenTracker {
   /** 喂入一块 SSH 数据并更新状态 */
@@ -43,7 +45,10 @@ export function createAltScreenTracker(): AltScreenTracker {
       ALT_SCREEN.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = ALT_SCREEN.exec(text)) !== null) {
-        active = match[1] === 'h';
+        // 多模式写法：只要参数里包含备用屏模式就生效（1048 忽略）
+        const modes = match[1].split(';');
+        if (!modes.some((mode) => ALT_SCREEN_MODES.has(mode))) continue;
+        active = match[2] === 'h';
       }
     },
 

@@ -1,8 +1,8 @@
 import { Box, ScrollBox, Text, TextRenderable } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
-import { readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, rename, rmdir, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, isAbsolute, resolve, sep as pathSep } from 'node:path';
+import { dirname, join, isAbsolute, resolve, sep as pathSep } from 'node:path';
 import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
@@ -38,6 +38,8 @@ const log = createLogger('sftp-tab');
 const REFRESH_TTL_MS = 2000;
 /** Transfer progress is redrawn at most ~10 times per second. */
 const PROGRESS_INTERVAL_MS = 100;
+/** Command-line history is bounded so long sessions do not grow forever. */
+const CMD_HISTORY_LIMIT = 100;
 
 /** Human-readable progress line, e.g. `Uploading a.txt 42% (420B/1.0K)`. */
 export function formatTransferProgress(label: string, transferred: number, total: number): string {
@@ -496,8 +498,7 @@ export function createSftpTab(
 
     let newPath: string;
     if (side === 'local') {
-      // Use node:path for correct Windows/Unix path joining
-      const { join } = await import('node:path');
+      // node:path handles Windows/Unix joining correctly
       newPath = join(state.currentPath, item.name);
     } else {
       // Remote is always Unix-style paths
@@ -517,8 +518,6 @@ export function createSftpTab(
     const state = side === 'local' ? localState : remoteState;
 
     if (side === 'local') {
-      // Use node:path for correct Windows/Unix path handling
-      const { dirname } = await import('node:path');
       const parent = dirname(state.currentPath);
       if (parent === state.currentPath) return; // Already at root
       renderStatus(`Going to ${parent}...`);
@@ -563,7 +562,6 @@ export function createSftpTab(
       const attrs = await sftpClient.stat(p);
       return attrs.isDirectory();
     }
-    const { stat } = await import('node:fs/promises');
     return (await stat(p)).isDirectory();
   }
 
@@ -663,7 +661,6 @@ export function createSftpTab(
           if (activeSide === 'remote') {
             await sftpClient.mkdir(fullPath);
           } else {
-            const { mkdir } = await import('node:fs/promises');
             await mkdir(fullPath);
           }
           renderStatus(`Created: ${name}`, C.green);
@@ -728,7 +725,6 @@ export function createSftpTab(
               await sftpClient.unlink(fullPath);
             }
           } else {
-            const { unlink, rmdir } = await import('node:fs/promises');
             if (isDir) {
               await rmdir(fullPath);
             } else {
@@ -788,7 +784,6 @@ export function createSftpTab(
           if (activeSide === 'remote') {
             await sftpClient.rename(oldPath, newPath);
           } else {
-            const { rename } = await import('node:fs/promises');
             await rename(oldPath, newPath);
           }
           renderStatus(`Moved: ${pathName(oldPath)} → ${pathName(newPath)}`, C.green);
@@ -991,6 +986,8 @@ export function createSftpTab(
         cmdCursorPos = 0;
         if (cmd) {
           cmdHistory.push(cmd);
+          // Keep the history bounded for long-running sessions.
+          if (cmdHistory.length > CMD_HISTORY_LIMIT) cmdHistory.shift();
           cmdHistoryIdx = cmdHistory.length;
           const ok = await executeCommand(cmd);
           if (ok) {

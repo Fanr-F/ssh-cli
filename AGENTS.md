@@ -157,6 +157,7 @@ onMouseDrag: (e: MouseEvent) => {
 - **ScrollBox scrolling**: Each list is a `ScrollBox` (built-in scrollbar / wheel / auto-hide, `viewportCulling`); `ensureIndexVisible()` calls `scrollTo()` to keep the selected row in view
 - **Chunked list rendering**: File lines are grouped into 32-line `TextRenderable`s. Moving the cursor redraws only the old/new chunks (O(32)) instead of the whole directory; directory reloads rebuild the chunks
 - **Load generation + TTL**: Local and remote loads each have a token so stale responses are discarded; switching back to a tab reuses the listing for 2 seconds
+- **Transfer progress**: `upload`/`download` pass `onProgress` and redraw the SFTP status line at most ~10 times per second, showing percentage / bytes / speed; `command history` keeps the last 100 entries
 - **Remote cd resolution**: Relative paths resolved against `remoteState.currentPath`
 - **Tab close independence**: Closing one tab doesn't affect others
 
@@ -193,7 +194,7 @@ No linter or formatter configured. TypeScript strict mode and tests are enforced
 - **ssh2-no-cpu-features** — Used over ssh2 because native cpu-features module fails on Bun.
 - **Native VT** — Terminal emulation is `EmbeddedTerminalRenderable` from `@opentui/core` (Ghostty VT), NOT a custom ANSI parser. Scrollback lives inside the native terminal (`maxScrollback`).
 - **No public scroll API** — PageUp/PageDown call the zig binding `contextEmbeddedTerminalScroll` via `(term as any).lib` (negative = older lines); mouse wheel scrolling is built in.
-- **PageUp/PageDown routing** — `src/ssh/alt-screen.ts` scans the SSH byte stream for `ESC[?(47|1047|1049)(h|l)` and exposes `active`. While active (vim/less/htop/mc/tmux), `PageUp`/`PageDown` are re-encoded with `term.encodeKey()` and written to the shell instead of scrolling locally; `Shift+PageUp/PageDown` always scroll locally. `1048` is intentionally NOT matched — it only saves/restores the cursor, it does not switch buffers.
+- **PageUp/PageDown routing** — `src/ssh/alt-screen.ts` scans the SSH byte stream for `ESC[?<modes>(h|l)` and exposes `active`; combined private modes such as `ESC[?1049;25h` are supported. While active (vim/less/htop/mc/tmux), `PageUp`/`PageDown` are re-encoded with `term.encodeKey()` and written to the shell instead of scrolling locally; `Shift+PageUp/PageDown` always scroll locally. `1048` is intentionally NOT matched — it only saves/restores the cursor, it does not switch buffers.
 - **Credentials are not in config.json** — Passwords and key passphrases are stored via `Bun.secrets` (OS keychain). `~/.ssh-cli/config.json` contains metadata only; legacy plaintext entries are migrated on load and stripped by `storage/schema.ts`. On Linux this requires a Secret Service provider.
 - **Host keys are pinned (TOFU)** — `ssh/known-hosts.ts` stores SHA-256 fingerprints in `~/.ssh-cli/known_hosts.json`; a changed key rejects the connection. The first connection is auto-trusted and logged.
 - **Logs are private and opt-in for I/O** — `~/.ssh-cli/ssh-cli.log` is `0600`, rotates at 2 MB, and terminal I/O previews require both debug logging and `SSH_CLI_LOG_IO=1`; previews are redacted.
