@@ -172,7 +172,13 @@ All core layers are implemented and integrated.
 src/
 ├── index.ts              # Entry point — creates renderer and initializes App
 ├── app.ts                # Main application class — layout, focus management, keyboard dispatch
+├── theme.ts              # Tokyo Night palette + semantic colour tokens
+├── color.ts              # Hex → RGBA conversion cache for StyledText chunks
 ├── logger.ts             # Logging system (LogTape, writes to ~/.ssh-cli/ssh-cli.log)
+├── app/                  # Extracted application helpers
+│   ├── clipboard.ts      #   Selection copy + paste target routing
+│   ├── terminal-tab.ts   #   EmbeddedTerminalRenderable factory
+│   └── tab-navigation.ts #   Pure next/previous/jump tab helpers
 ├── keymap/               # Keyboard shortcut definitions (single source of truth)
 │   ├── bindings.ts       #   Every binding: scope, key, group, docs text
 │   ├── matcher.ts        #   Key normalization + pattern matching
@@ -186,7 +192,10 @@ src/
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    #   SFTP client wrapper (readdir, mkdir, upload, download)
 │   ├── sftp-tab.ts       #   SFTP dual-panel tab (cmd mode, chunked file list, ScrollBox)
-│   └── types.ts          #   SFTP types (FileEntry, TransferTask, PanelSide)
+│   ├── file-list.ts      #   Directory listing, formatting, 32-line chunk rendering
+│   ├── command-parser.ts #   `:` command parsing, path resolution, completion
+│   ├── paths.ts          #   Remote POSIX path helpers
+│   └── types.ts          #   SFTP types (FileEntry, PanelSide)
 ├── storage/              # Persistence layer
 │   ├── config.ts         #   Config paths, 0600/0700 permissions, atomic writes
 │   ├── connections.ts    #   ConnectionStore CRUD + legacy credential migration
@@ -203,6 +212,8 @@ src/
     ├── tab-bar.ts        #   Multi-tab bar (F2-F12, type: terminal|sftp)
     ├── toolbar.ts        #   Clickable shortcut toolbar
     ├── divider.ts        #   Draggable sidebar divider
+    ├── form-model.ts     #   Add/edit form state, validation, config building
+    ├── password-field.ts #   Hand-rendered masked password input
     └── help-popup.ts     #   Draggable help popup (F1) with SFTP shortcuts
 ```
 
@@ -231,8 +242,13 @@ bun run start -- --log-level debug
 # Run with trace logging (most verbose)
 bun run start -- --log-level trace
 
-# Compile a standalone Windows executable
-bun run build:win
+# Compile standalone executables (outputs in dist/)
+bun run build:win       # Windows x64 → dist/ssh-cli.exe
+bun run build:linux     # Linux x64 → dist/ssh-cli-linux-x64
+bun run build:mac       # macOS arm64 → dist/ssh-cli-macos-arm64
+# Also available: build:linux-arm64, build:mac-x64
+# Cross-compiling requires the target native package, e.g.
+# bun install --os=linux --cpu=x64 (CI builds each target on its own runner)
 
 # Regenerate the shortcut tables in README.md / README.zh.md
 bun run docs

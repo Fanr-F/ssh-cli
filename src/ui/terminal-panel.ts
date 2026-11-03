@@ -1,6 +1,7 @@
 import { Box, Text, stringToStyledText, type EmbeddedTerminalRenderable } from '@opentui/core';
 import type { CliRenderer } from '@opentui/core';
 import { createLogger } from '../logger';
+import { theme } from '../theme';
 
 const log = createLogger('terminal-panel');
 
@@ -72,10 +73,12 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   // ── Shared styling constants ──────────────────────────────────────────
   // Tokyo Night palette
   const C = {
-    bg: '#1a1b26',
-    textDim: '#565f89',
-    yellow: '#e0af68',
-    red: '#f7768e',
+    bg: theme.panelBg,
+    textDim: theme.textDim,
+    yellow: theme.yellow,
+    red: theme.red,
+    border: theme.border,
+    focusBorder: theme.focusBorder,
   };
 
   const overlayProps = {
@@ -123,7 +126,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       flexGrow: 1,
       backgroundColor: C.bg,
       borderStyle: 'rounded',
-      borderColor: '#3b4261',
+      borderColor: C.border,
     },
     idleBox,
     connectingBox,
@@ -279,7 +282,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
 
     setFocused(value: boolean): void {
       const r = resolve();
-      if (r) r.container.borderColor = value ? '#7aa2f7' : '#3b4261';
+      if (r) r.container.borderColor = value ? C.focusBorder : C.border;
       if (!value) {
         // 离开终端时释放键盘焦点，避免后台 tab 继续收键
         for (const term of terminals.values()) term.blur();

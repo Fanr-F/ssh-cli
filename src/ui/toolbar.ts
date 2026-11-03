@@ -1,19 +1,20 @@
 import { Box, Text } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import type { FocusZone } from '../keymap';
+import { theme } from '../theme';
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
-  surface: '#16161e',
-  border: '#3b4261',
-  red: '#f7768e',
-  green: '#9ece6a',
-  yellow: '#e0af68',
-  blue: '#7aa2f7',
-  magenta: '#bb9af7',
-  cyan: '#7dcfff',
-  textDim: '#565f89',
-  textMuted: '#414868',
+  surface: theme.appBg,
+  border: theme.border,
+  red: theme.red,
+  green: theme.green,
+  yellow: theme.yellow,
+  blue: theme.accent,
+  magenta: theme.magenta,
+  cyan: theme.cyan,
+  textDim: theme.textDim,
+  textMuted: theme.textMuted,
 };
 
 export interface ToolbarCallbacks {

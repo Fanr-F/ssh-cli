@@ -1,20 +1,21 @@
 import { Box, Text, ScrollBox, TextAttributes } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import { buildDocs } from '../keymap';
+import { theme } from '../theme';
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
-  bg: '#1a1b26',
-  bgOverlay: '#16161e',
-  border: '#3b4261',
-  text: '#a9b1d6',
-  textDim: '#565f89',
-  textActive: '#c0caf5',
-  cyan: '#7dcfff',
-  green: '#9ece6a',
-  yellow: '#e0af68',
-  red: '#f7768e',
-  magenta: '#bb9af7',
+  bg: theme.panelBg,
+  bgOverlay: theme.appBg,
+  border: theme.border,
+  text: theme.textSecondary,
+  textDim: theme.textDim,
+  textActive: theme.text,
+  cyan: theme.cyan,
+  green: theme.green,
+  yellow: theme.yellow,
+  red: theme.red,
+  magenta: theme.magenta,
 };
 
 export interface HelpPopupAPI {

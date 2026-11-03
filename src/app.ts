@@ -7,7 +7,7 @@ import {
   createHostClipboard,
   createRendererClipboardAdapter,
 } from '@opentui/core';
-import type { CliRenderer, ClipboardService, KeyEvent, PasteEvent, Selection } from '@opentui/core';
+import type { CliRenderer, KeyEvent, PasteEvent, Selection } from '@opentui/core';
 import type { ConnectionConfig } from './types/connection';
 import { ConnectionStore } from './storage/connections';
 import { createSidebar, type SidebarAPI } from './ui/sidebar';
@@ -31,6 +31,12 @@ import {
   type NormalizedKey,
   type Scope,
 } from './keymap';
+import {
+  ClipboardController,
+  type ClipboardPasteTarget,
+} from './app/clipboard';
+import { createTerminalRenderable } from './app/terminal-tab';
+import { nextTabId, previousTabId, tabIdAt } from './app/tab-navigation';
 
 /** 一个标签页持有的运行态（终端标签与 SFTP 标签共用同一份结构）。 */
 interface TabState {
@@ -45,7 +51,7 @@ interface TabState {
 
 export class App {
   private renderer: CliRenderer;
-  private clipboard: ClipboardService;
+  private clipboard: ClipboardController;
   private store!: ConnectionStore;
   private mainContainer!: ReturnType<typeof Box>;
   private toolbar!: ToolbarAPI;
@@ -119,10 +125,31 @@ export class App {
   constructor(renderer: CliRenderer) {
     this.renderer = renderer;
     // 复制：OSC52（终端）+ 系统剪贴板都写；粘贴：只有系统剪贴板可读。
-    this.clipboard = createClipboard({
+    const service = createClipboard({
       host: createHostClipboard(),
       terminal: createRendererClipboardAdapter(renderer),
     });
+    this.clipboard = new ClipboardController(service, {
+      setStatus: (text, kind) => this.statusBar.setStatus(text, kind),
+      requestRender: () => this.renderer.requestRender(),
+      getPasteTarget: () => this.getPasteTarget(),
+    });
+  }
+
+  /** Resolve where a paste should land based on the current focus. */
+  private getPasteTarget(): ClipboardPasteTarget {
+    if (this.focus === 'terminal') {
+      const tab = this.getActiveTab();
+      if (tab) return { kind: 'terminal', term: tab.term, ssh: tab.ssh };
+    }
+    if (this.focus === 'form' && this.form) {
+      return { kind: 'form', form: this.form };
+    }
+    if (this.focus === 'sftp') {
+      const tab = this.getActiveTab();
+      if (tab?.sftpTab) return { kind: 'sftp', tab: tab.sftpTab };
+    }
+    return { kind: 'none' };
   }
 
   async init(): Promise<void> {
@@ -228,7 +255,7 @@ export class App {
         logDebug(`[COPY] getSelectedText failed: ${err}`);
       }
       if (!text) return;
-      void this.copyText(text);
+      void this.clipboard.copy(text);
     });
 
     // Handle terminal-initiated paste (bracketed paste from Windows Terminal, etc.)
@@ -503,54 +530,17 @@ export class App {
     const ssh = new SshConnection();
 
     // Ghostty VT 终端（原生解析器）：键盘编码、粘贴、滚轮、选区、resize 全部内建
-    const term = new EmbeddedTerminalRenderable(this.renderer as any, {
-      id: `tab-terminal-${tabId}`,
-      width: '100%',
-      height: '100%',
+    const term = createTerminalRenderable({
+      renderer: this.renderer,
+      tabId,
       cols,
       rows,
-      // 单位是字节；10000 太小，按 200k 留够回滚
-      maxScrollback: 200_000,
-      // 默认背景用面板底色（Tokyo Night），而不是原生默认黑
-      transparentBackground: true,
-      selectable: true,
+      ssh,
+      onRightClickPaste: () => {
+        this.focusTerminal();
+        void this.clipboard.paste();
+      },
     });
-    // 键盘输入 + 终端响应（DSR/DA 等）都要回写远端
-    term.onData = (data, _source) => {
-      const text = Buffer.from(data).toString('utf8');
-      if (!text) return;
-      logIO('OUT', text);
-      ssh.writeToShell(text);
-    };
-    // Yoga 布局尺寸变化 → 同步远端 PTY
-    term.onTerminalResize = (c, r) => ssh.resizePty(c, r);
-
-    // ── 右键 = 粘贴 ──────────────────────────────────────────────
-    // EmbeddedTerminalRenderable 的 setupMouse() 把鼠标处理器换成了
-    // 「先转发给远端、再调回调」的包装，所以必须在构造之后整体接管按下/抬起：
-    // 右键留在本地粘贴，其他按键继续走它原本的转发逻辑（鼠标上报、选区等）。
-    {
-      const termAny = term as any;
-      const forwardMouse = termAny.forwardMouse.bind(term);
-      term.onMouseDown = (e) => {
-        if (e.button === 2) {
-          e.preventDefault();
-          e.stopPropagation();
-          this.focusTerminal();
-          void this.handlePaste();
-          return;
-        }
-        forwardMouse(e, 'press');
-      };
-      term.onMouseUp = (e) => {
-        if (e.button === 2) {
-          e.preventDefault();
-          e.stopPropagation();
-          return;
-        }
-        forwardMouse(e, 'release');
-      };
-    }
 
     // Register with terminal panel
     logDebug(`[CONNECT] registering terminal ${tabId}`);
@@ -714,31 +704,18 @@ export class App {
   }
 
   private switchToTabIndex(index: number): void {
-    const ids = this.tabBar.getTabIds();
-    if (index < ids.length) {
-      this.switchToTab(ids[index]);
-    }
+    const id = tabIdAt(this.tabBar.getTabIds(), index);
+    if (id) this.switchToTab(id);
   }
 
   private cycleNextTab(): void {
-    const ids = this.tabBar.getTabIds();
-    if (ids.length === 0) return;
-
-    const currentId = this.tabBar.getActiveTabId();
-    const currentIndex = currentId ? ids.indexOf(currentId) : -1;
-    const nextIndex = (currentIndex + 1) % ids.length;
-    this.switchToTab(ids[nextIndex]);
+    const id = nextTabId(this.tabBar.getTabIds(), this.tabBar.getActiveTabId());
+    if (id) this.switchToTab(id);
   }
 
   private cyclePrevTab(): void {
-    const ids = this.tabBar.getTabIds();
-    if (ids.length === 0) return;
-
-    const currentId = this.tabBar.getActiveTabId();
-    const currentIndex = currentId ? ids.indexOf(currentId) : -1;
-    // 没有激活标签或已在第一个时，回绕到最后一个
-    const prevIndex = currentIndex <= 0 ? ids.length - 1 : currentIndex - 1;
-    this.switchToTab(ids[prevIndex]);
+    const id = previousTabId(this.tabBar.getTabIds(), this.tabBar.getActiveTabId());
+    if (id) this.switchToTab(id);
   }
 
   private async closeTab(id: string): Promise<void> {
@@ -866,7 +843,7 @@ export class App {
         }
       });
       // 右键粘贴：剪贴板后端在 App 侧，表单只发请求
-      form.onPasteRequest(() => { void this.handlePaste(); });
+      form.onPasteRequest(() => { void this.clipboard.paste(); });
       this.form = form;
       this.renderer.root.add(form);
       // Activate keyboard input for the form
@@ -936,112 +913,6 @@ export class App {
     process.exit(0);
   }
 
-  // ── Clipboard handlers ─────────────────────────────────────────
-
-  /**
-   * 复制任意文本到剪贴板（OSC52 + 系统剪贴板）。
-   * 唯一入口：选中即复制（renderer 的 SELECTION 事件）。
-   */
-  private async copyText(text: string): Promise<void> {
-    if (!text) return;
-    logDebug(`[COPY] copying ${text.length} chars`);
-    const result = await this.clipboard
-      .writeText(text, {
-        destination: 'all-available',
-        selection: 'clipboard',
-        // 终端能力尚未探测完时 capabilities 为 null，adapter 会把 remote 默认为 true
-        // 并跳过本机剪贴板写入；这里显式允许，保证本机绑定永远生效。
-        allowRemoteHost: true,
-      })
-      .catch((err) => {
-        logDebug(`[COPY] writeText failed: ${err}`);
-        return null;
-      });
-    if (result) {
-      logDebug(
-        `[COPY] writeText: host=${result.host.status}, terminal=${result.terminal.status}/${result.terminal.capability}`,
-      );
-    }
-    const ok = !!result && (result.host.status === 'written' || result.terminal.status === 'attempted');
-    this.statusBar.setStatus(ok ? 'Copied to clipboard' : 'Copy failed', ok ? 'success' : 'error');
-    this.renderer.requestRender();
-  }
-
-  private async handlePaste(): Promise<void> {
-    const result = await this.clipboard
-      .read({ preferredTypes: ['text/plain'], selection: 'clipboard' })
-      .catch((err) => {
-        logDebug(`[PASTE] clipboard read failed: ${err}`);
-        return null;
-      });
-
-    if (!result) {
-      this.statusBar.setStatus('Clipboard read failed', 'error');
-      this.renderer.requestRender();
-      return;
-    }
-
-    if (result.status !== 'read') {
-      logDebug(`[PASTE] clipboard read status: ${result.status}`);
-      this.statusBar.setStatus(
-        result.status === 'empty'
-          ? 'Clipboard is empty'
-          : result.status === 'unsupported'
-            ? 'Clipboard unsupported'
-            : result.status === 'timed-out'
-              ? 'Clipboard read timed out'
-              : 'Clipboard read failed',
-        result.status === 'empty' ? 'warning' : 'error',
-      );
-      this.renderer.requestRender();
-      return;
-    }
-
-    // 统一行尾并去掉尾部空行：CRLF 直接灌进远程 shell 时，bracketed paste 会把 \r 当字面字符；
-    // 尾随换行则会让粘贴后立刻执行。
-    const text = new TextDecoder()
-      .decode(result.representation.bytes)
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .replace(/\n+$/, '');
-
-    if (!text) {
-      this.statusBar.setStatus('Clipboard is empty', 'warning');
-      this.renderer.requestRender();
-      return;
-    }
-
-    if (this.focus === 'terminal') {
-      // 交给终端的 encodePaste：远端开启 bracketed paste 时会自动包上标记，
-      // 多行文本不会被逐行执行。
-      const tab = this.getActiveTab();
-      if (tab?.ssh.isConnected()) {
-        const encoded = tab.term.encodePaste(new TextEncoder().encode(text));
-        tab.ssh.writeToShell(Buffer.from(encoded).toString('utf8'));
-        this.statusBar.setStatus('Pasted to terminal', 'success');
-      } else {
-        this.statusBar.setStatus('Not connected', 'warning');
-      }
-    } else if (this.focus === 'form' && this.form) {
-      // 插入到当前字段（普通字段 → InputRenderable，密码框 → 手写光标）
-      this.form.pasteText(text);
-      this.statusBar.setStatus('Pasted to form', 'success');
-    } else if (this.focus === 'sftp') {
-      // Paste to SFTP command/input buffer
-      const activeId = this.tabBar.getActiveTabId();
-      if (activeId) {
-        const tab = this.tabs.get(activeId);
-        if (tab?.sftpTab) {
-          tab.sftpTab.pasteText(text);
-          this.statusBar.setStatus('Pasted to SFTP', 'success');
-        }
-      }
-    } else {
-      this.statusBar.setStatus('Nothing to paste to', 'warning');
-    }
-    this.renderer.requestRender();
-  }
-
   // ── SFTP handlers ─────────────────────────────────────────────
 
   private async openSftpTab(): Promise<void> {
@@ -1084,7 +955,7 @@ export class App {
       const sftpTabComponent = createSftpTab(tabId, this.renderer, sftpClient, remotePwd, localPwd, () => {
         // 右键粘贴：仅命令行模式会触发（浏览模式没有输入目标）
         this.focusSftp();
-        void this.handlePaste();
+        void this.clipboard.paste();
       });
 
       this.tabs.set(tabId, {

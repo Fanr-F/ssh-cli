@@ -99,15 +99,3 @@ export async function writePrivateFileAtomic(
     throw err;
   }
 }
-
-/**
- * Check if the config file exists.
- */
-export async function configExists(): Promise<boolean> {
-  try {
-    await fs.access(getConfigPath());
-    return true;
-  } catch {
-    return false;
-  }
-}

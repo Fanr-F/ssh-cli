@@ -307,25 +307,6 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     });
   }
 
-  /** Get the remote working directory by executing `echo $PWD`. */
-  async getRemotePwd(): Promise<string> {
-    const channel = await this.startShell({ cols: 80, rows: 1 });
-    return new Promise<string>((resolve, reject) => {
-      let output = '';
-      const onData = (data: Buffer) => {
-        output += data.toString();
-      };
-      const onClose = () => {
-        channel.removeListener('data', onData);
-        const match = output.match(/\/[^\s]*/);
-        resolve(match ? match[0] : '/');
-      };
-      channel.on('data', onData);
-      channel.once('close', onClose);
-      channel.write('echo $PWD\n');
-    });
-  }
-
   private cleanup(): void {
     this.shellChannel = null;
     this.setState(SshConnectionState.Disconnected);

@@ -68,7 +68,7 @@ export function buildConnectConfig(connection: ConnectionConfig): SshConnectConf
  * List available SSH keys from ~/.ssh/ directory.
  * Returns absolute paths to found key files.
  */
-export function discoverKeys(): string[] {
+function discoverKeys(): string[] {
   const sshDir = path.join(os.homedir(), '.ssh');
   const keyNames = ['id_ed25519', 'id_ecdsa', 'id_rsa', 'id_dsa', 'id_ecdsa_sk', 'id_ed25519_sk'];
   const found: string[] = [];
@@ -97,21 +97,4 @@ export function discoverDefaultKey(): string {
     return keys[0];
   }
   return '~/.ssh/id_ed25519';
-}
-
-/**
- * Check if an SSH key file is valid.
- */
-export async function validateKey(keyPath: string): Promise<boolean> {
-  try {
-    const resolvedPath = keyPath.startsWith('~')
-      ? path.join(os.homedir(), keyPath.slice(1))
-      : keyPath;
-    const keyData = fs.readFileSync(resolvedPath);
-    const { utils } = await import('ssh2-no-cpu-features');
-    const parsedKey = utils.parseKey(keyData);
-    return !(parsedKey instanceof Error);
-  } catch {
-    return false;
-  }
 }

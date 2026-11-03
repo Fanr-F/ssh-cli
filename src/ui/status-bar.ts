@@ -1,5 +1,6 @@
 import { Box, Text } from '@opentui/core';
 import type { CliRenderer } from '@opentui/core';
+import { theme } from '../theme';
 
 export type StatusKind = 'info' | 'success' | 'warning' | 'error';
 
@@ -8,16 +9,15 @@ export interface StatusBarAPI {
   setStatus(text: string, kind?: StatusKind): void;
   setConnected(host: string): void;
   setDisconnected(): void;
-  setKeybindings(hints: string[]): void;
 }
 
 const C = {
-  bg: '#16161e',
-  info: '#7dcfff',
-  success: '#9ece6a',
-  warning: '#e0af68',
-  error: '#f7768e',
-  dim: '#565f89',
+  bg: theme.appBg,
+  info: theme.cyan,
+  success: theme.green,
+  warning: theme.yellow,
+  error: theme.red,
+  dim: theme.textDim,
 };
 
 const KIND_COLORS: Record<StatusKind, string> = {
@@ -101,10 +101,6 @@ export function createStatusBar(renderer: CliRenderer): StatusBarAPI {
 
     setDisconnected(): void {
       setStatus('Connection closed', 'warning');
-    },
-
-    setKeybindings(hints: string[]): void {
-      if (hints.length > 0) setStatus(hints.join('  '), 'info');
     },
   };
 }

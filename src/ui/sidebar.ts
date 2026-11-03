@@ -1,6 +1,7 @@
 import { ScrollBox, SelectRenderable } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import type { ConnectionConfig } from '../types/connection';
+import { theme } from '../theme';
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -34,14 +35,14 @@ export interface SidebarAPI {
 
 // ── Colour tokens (Tokyo Night) ────────────────────────────────────────────
 
-const BG_SIDEBAR = '#16161e';
-const BG_SELECTED = '#1f2335';
-const BORDER = '#3b4261';
-const BORDER_ACTIVE = '#7aa2f7';
-const TITLE = '#7aa2f7';
-const TEXT_SELECTED = '#c0caf5';
-const TEXT_NORMAL = '#a9b1d6';
-const TEXT_DIM = '#565f89';
+const BG_SIDEBAR = theme.appBg;
+const BG_SELECTED = theme.elevatedBg;
+const BORDER = theme.border;
+const BORDER_ACTIVE = theme.focusBorder;
+const TITLE = theme.accent;
+const TEXT_SELECTED = theme.text;
+const TEXT_NORMAL = theme.textSecondary;
+const TEXT_DIM = theme.textDim;
 
 /** Rows per connection entry: name line + user@host line. */
 const ITEM_LINES = 2;

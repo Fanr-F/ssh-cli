@@ -172,7 +172,13 @@
 src/
 ├── index.ts              # 入口文件 — 创建渲染器并初始化 App
 ├── app.ts                # 主应用类 — 布局、焦点管理、键盘分发
+├── theme.ts              # Tokyo Night 调色板 + 语义配色 token
+├── color.ts              # StyledText 分块用的十六进制 → RGBA 转换缓存
 ├── logger.ts             # 日志系统（LogTape，写入 ~/.ssh-cli/ssh-cli.log）
+├── app/                  # 从主应用拆出的辅助模块
+│   ├── clipboard.ts      #   选区复制 + 粘贴目标路由
+│   ├── terminal-tab.ts   #   EmbeddedTerminalRenderable 工厂
+│   └── tab-navigation.ts #   纯函数：上一/下一/跳转标签页
 ├── keymap/               # 快捷键定义（唯一事实来源）
 │   ├── bindings.ts       #   全部绑定：作用域、按键、分组、文档文案
 │   ├── matcher.ts        #   按键归一化 + 模式匹配
@@ -186,7 +192,10 @@ src/
 ├── sftp/                 # SFTP 文件管理器模块
 │   ├── sftp-client.ts    #   SFTP 客户端封装（readdir、mkdir、upload、download）
 │   ├── sftp-tab.ts       #   SFTP 双面板标签页（cmd 模式、分块文件列表、ScrollBox）
-│   └── types.ts          #   SFTP 类型（FileEntry、TransferTask、PanelSide）
+│   ├── file-list.ts      #   目录读取、格式化、32 行分块渲染
+│   ├── command-parser.ts #   `:` 命令解析、路径解析、补全
+│   ├── paths.ts          #   远程 POSIX 路径辅助函数
+│   └── types.ts          #   SFTP 类型（FileEntry、PanelSide）
 ├── storage/              # 持久化层
 │   ├── config.ts         #   配置路径、0600/0700 权限、原子写入
 │   ├── connections.ts    #   ConnectionStore CRUD + 旧凭据迁移
@@ -203,6 +212,8 @@ src/
     ├── tab-bar.ts        #   多标签栏（F2-F12，类型：terminal|sftp）
     ├── toolbar.ts        #   可点击的快捷键工具栏
     ├── divider.ts        #   可拖动的侧边栏分隔线
+    ├── form-model.ts     #   添加/编辑表单状态、校验、配置构建
+    ├── password-field.ts #   手写渲染的掩码密码输入
     └── help-popup.ts     #   可拖动的帮助弹窗（F1）含 SFTP 快捷键
 ```
 
@@ -231,8 +242,13 @@ bun run start -- --log-level debug
 # 以 trace 级别运行（最详细）
 bun run start -- --log-level trace
 
-# 编译为独立的 Windows 可执行文件
-bun run build:win
+# 编译为独立可执行文件（输出到 dist/）
+bun run build:win       # Windows x64 → dist/ssh-cli.exe
+bun run build:linux     # Linux x64 → dist/ssh-cli-linux-x64
+bun run build:mac       # macOS arm64 → dist/ssh-cli-macos-arm64
+# 另有：build:linux-arm64、build:mac-x64
+# 跨平台编译需先安装目标平台原生包，例如
+# bun install --os=linux --cpu=x64（CI 在各自 runner 上构建）
 
 # 重新生成 README.md / README.zh.md 中的快捷键表格
 bun run docs

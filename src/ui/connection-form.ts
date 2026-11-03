@@ -1,48 +1,25 @@
-import { BoxRenderable, TextRenderable, StyledText, InputRenderable, type TextChunk } from "@opentui/core";
+import { BoxRenderable, TextRenderable, InputRenderable } from "@opentui/core";
 import type { CliRenderer, KeyEvent, MouseEvent, RenderContext } from "@opentui/core";
 import type { ConnectionConfig } from "../types/connection.js";
 import { createLogger } from "../logger";
-import { toRGBA } from "../color";
+import { theme } from "../theme";
 import { findBinding, normalizeKey, type KeyContext } from "../keymap";
+import {
+  applyPasswordKey,
+  applyPasswordPaste,
+  buildConnectionConfig,
+  createFormState,
+  maskPassword,
+  validateForm,
+  type FormState,
+} from "./form-model";
+import { createStyledWithCursor, makeStyledText } from "./password-field";
 
 const logForm = createLogger('form');
-
-/** Create a StyledText from a plain string with optional per-char styling */
-function makeStyledText(text: string, fg?: string): StyledText {
-  const chunks: TextChunk[] = [];
-  const color = toRGBA(fg);
-  for (const ch of text) {
-    chunks.push({ __isChunk: true, text: ch, fg: color, attributes: 0 });
-  }
-  return new StyledText(chunks);
-}
-
-/** Create StyledText with cursor character highlighted (background color) */
-function createStyledWithCursor(text: string, pos: number, fg: string = C.fieldText): StyledText {
-  const chunks: TextChunk[] = [];
-  const fieldFg = toRGBA(fg);
-  const cursorFg = toRGBA('#1a1b26');
-  const cursorBg = toRGBA(C.cursorBg);
-  for (let i = 0; i < text.length; i++) {
-    if (i === pos) {
-      // Highlight character at cursor position
-      chunks.push({ __isChunk: true, text: text[i], fg: cursorFg, bg: cursorBg, attributes: 0 });
-    } else {
-      chunks.push({ __isChunk: true, text: text[i], fg: fieldFg, attributes: 0 });
-    }
-  }
-  // When cursor is at end, add a cursor marker (space with inverted colors)
-  if (pos >= text.length && text.length > 0) {
-    chunks.push({ __isChunk: true, text: ' ', fg: cursorFg, bg: cursorBg, attributes: 0 });
-  }
-  return new StyledText(chunks);
-}
 
 // ─── Public API ───────────────────────────────────────────────
 
 export interface FormAPI {
-  /** Returns the form data as a ConnectionConfig, or null if invalid */
-  getFormData(): ConnectionConfig | null;
   /** Returns an array of validation error messages (empty = valid) */
   validate(): string[];
   /** Register a callback for form submission. May be async; the form locks until it settles. */
@@ -72,44 +49,24 @@ export interface FormAPI {
 }
 
 // ─── Design tokens ────────────────────────────────────────────
-// Tokyo Night palette — vibrant, high-contrast
 const C = {
-  overlayBg: '#000000cc',
-  surfaceBg: '#16161e',
-  surfaceBorder: '#3b4261',
-  titleFg: '#7aa2f7',
-  labelFg: '#565f89',
-  fieldBg: '#1a1b26',
-  fieldBorder: '#3b4261',
-  fieldFocusedBorder: '#7aa2f7',
-  fieldText: '#c0caf5',
-  btnDefault: '#565f89',
-  btnSave: '#9ece6a',
-  btnDanger: '#f7768e',
-  authActive: '#bb9af7',
-  authInactive: '#414868',
-  cursorBg: '#7aa2f7',  // Cursor highlight background
+  overlayBg: theme.overlay,
+  surfaceBg: theme.appBg,
+  surfaceBorder: theme.border,
+  titleFg: theme.accent,
+  labelFg: theme.textDim,
+  fieldBg: theme.panelBg,
+  fieldBorder: theme.border,
+  fieldFocusedBorder: theme.focusBorder,
+  fieldText: theme.text,
+  btnDefault: theme.textDim,
+  btnSave: theme.green,
+  btnDanger: theme.red,
+  authActive: theme.magenta,
+  authInactive: theme.textMuted,
+  cursorBg: theme.accent,
   dialogWidth: 60,
 } as const;
-
-// ─── Helpers ──────────────────────────────────────────────────
-
-function maskPassword(pw: string): string {
-  return pw ? "•".repeat(pw.length) : " ";
-}
-
-// ─── State shape ──────────────────────────────────────────────
-
-interface FormState {
-  name: string;
-  host: string;
-  port: string;
-  username: string;
-  authType: "key" | "password";
-  privateKeyPath: string;
-  passphrase: string;
-  password: string;
-}
 
 // ─── Factory ──────────────────────────────────────────────────
 
@@ -121,16 +78,7 @@ export function createConnectionForm(
   const ctx = renderer as unknown as RenderContext;
 
   // ── State ──────────────────────────────────────────────
-  const state: FormState = {
-    name: existing?.name ?? "",
-    host: existing?.host ?? "",
-    port: existing?.port?.toString() ?? "22",
-    username: existing?.username ?? "",
-    authType: existing?.authType ?? "key",
-    privateKeyPath: existing?.privateKeyPath ?? "~/.ssh/id_ed25519",
-    passphrase: existing?.passphrase ?? "",
-    password: existing?.password ?? "",
-  };
+  const state: FormState = createFormState(existing);
 
   // ── Callbacks ──────────────────────────────────────────
   let onSubmitCb: ((data: ConnectionConfig) => void | Promise<void>) | null = null;
@@ -179,9 +127,6 @@ export function createConnectionForm(
   let authRow: BoxRenderable;
 
   // ── Key handler ────────────────────────────────────────
-  function isPrintable(key: KeyEvent): boolean {
-    return !!key.sequence && key.name.length === 1 && !key.ctrl && !key.meta && !key.option;
-  }
 
   /**
    * 让当前聚焦字段对应的输入框获得光标（其余失焦）。
@@ -302,43 +247,13 @@ export function createConnectionForm(
 
   /** 密码框编辑（遮罩与显示/隐藏切换仍由本文件维护） */
   function editPassword(key: KeyEvent): void {
-    if (key.name === "left") {
-      replaceOnType = false;
-      passwordCursor = Math.max(0, passwordCursor - 1);
-    } else if (key.name === "right") {
-      replaceOnType = false;
-      passwordCursor = Math.min(state.password.length, passwordCursor + 1);
-    } else if (key.name === "home") {
-      replaceOnType = false;
-      passwordCursor = 0;
-    } else if (key.name === "end") {
-      replaceOnType = false;
-      passwordCursor = state.password.length;
-    } else if (key.name === "backspace") {
-      if (replaceOnType) {
-        state.password = "";
-        passwordCursor = 0;
-      } else if (passwordCursor > 0) {
-        state.password = state.password.slice(0, passwordCursor - 1) + state.password.slice(passwordCursor);
-        passwordCursor--;
-      }
-      replaceOnType = false;
-    } else if (key.name === "delete") {
-      if (!replaceOnType && passwordCursor < state.password.length) {
-        state.password = state.password.slice(0, passwordCursor) + state.password.slice(passwordCursor + 1);
-      }
-      replaceOnType = false;
-    } else if (isPrintable(key)) {
-      const ch = key.sequence;
-      if (replaceOnType) {
-        state.password = ch;
-        passwordCursor = ch.length;
-      } else {
-        state.password = state.password.slice(0, passwordCursor) + ch + state.password.slice(passwordCursor);
-        passwordCursor += ch.length;
-      }
-      replaceOnType = false;
-    }
+    const next = applyPasswordKey(
+      { password: state.password, cursor: passwordCursor, replaceOnType },
+      key,
+    );
+    state.password = next.password;
+    passwordCursor = next.cursor;
+    replaceOnType = next.replaceOnType;
     refreshConditional();
   }
 
@@ -710,45 +625,7 @@ export function createConnectionForm(
   // ── Actions ────────────────────────────────────────────
 
   function validate(): string[] {
-    const errors: string[] = [];
-    if (!state.name.trim()) errors.push("Name is required");
-    if (!state.host.trim()) {
-      errors.push("Host is required");
-    }
-    const portNum = parseInt(state.port, 10);
-    if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
-      errors.push("Port must be a number between 1 and 65535");
-    }
-    if (!state.username.trim()) errors.push("Username is required");
-    if (state.authType === "password" && !state.password) {
-      errors.push("Password is required when auth type is Password");
-    }
-    return errors;
-  }
-
-  function buildConnectionConfig(): ConnectionConfig | null {
-    const portNum = parseInt(state.port, 10);
-    if (isNaN(portNum) || portNum < 1 || portNum > 65535) return null;
-    if (!state.name.trim() || !state.host.trim() || !state.username.trim()) return null;
-    if (state.authType === "password" && !state.password) return null;
-
-    return {
-      id: existing?.id ?? crypto.randomUUID(),
-      name: state.name.trim(),
-      host: state.host.trim(),
-      port: portNum,
-      username: state.username.trim(),
-      authType: state.authType,
-      privateKeyPath: state.authType === "key" ? (state.privateKeyPath || "~/.ssh/id_ed25519") : undefined,
-      passphrase: state.authType === "key" ? (state.passphrase || undefined) : undefined,
-      password: state.authType === "password" ? state.password : undefined,
-      createdAt: existing?.createdAt ?? new Date().toISOString(),
-      lastConnectedAt: existing?.lastConnectedAt,
-    };
-  }
-
-  function getFormData(): ConnectionConfig | null {
-    return buildConnectionConfig();
+    return validateForm(state);
   }
 
   function getFocusedFieldIndex(): number {
@@ -782,16 +659,13 @@ export function createConnectionForm(
     }
 
     if (focusedField === 5 && state.authType === "password") {
-      const clean = text.replace(/[\n\r]/g, "");
-      if (!clean) return;
-      if (replaceOnType) {
-        state.password = "";
-        passwordCursor = 0;
-        replaceOnType = false;
-      }
-      state.password =
-        state.password.slice(0, passwordCursor) + clean + state.password.slice(passwordCursor);
-      passwordCursor += clean.length;
+      const next = applyPasswordPaste(
+        { password: state.password, cursor: passwordCursor, replaceOnType },
+        text,
+      );
+      state.password = next.password;
+      passwordCursor = next.cursor;
+      replaceOnType = next.replaceOnType;
       refreshConditional();
     }
   }
@@ -800,7 +674,7 @@ export function createConnectionForm(
     if (submitting) return;
     const errs = validate();
     if (errs.length > 0) return;
-    const data = getFormData();
+    const data = buildConnectionConfig(state, existing);
     if (!data || !onSubmitCb) return;
 
     submitting = true;
@@ -850,7 +724,6 @@ export function createConnectionForm(
   renderer.root.add(overlay);
 
   const api: FormAPI = {
-    getFormData,
     getFocusedFieldIndex,
     captureRawKeys,
     pasteText,

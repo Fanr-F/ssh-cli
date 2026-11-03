@@ -94,16 +94,6 @@ export class SftpClient {
     });
   }
 
-  /** Change file permissions. */
-  async chmod(path: string, mode: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.sftp.chmod(path, mode, (err: Error | null | undefined) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-
   /** Get real path (resolve symlinks, ~, etc). */
   async realpath(path: string): Promise<string> {
     return new Promise((resolve, reject) => {

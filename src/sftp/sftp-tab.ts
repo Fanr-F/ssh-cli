@@ -1,47 +1,53 @@
-import { Box, ScrollBox, Text, TextRenderable, StyledText, type TextChunk } from '@opentui/core';
+import { Box, ScrollBox, Text, TextRenderable } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
-import { readdir, stat as fsStat } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
+import { join, isAbsolute, resolve, sep as pathSep } from 'node:path';
 import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
-import { toRGBA } from '../color';
+import { theme } from '../theme';
 import { findBinding, normalizeKey, type KeyContext } from '../keymap';
-import { basename, isAbsolute, join, resolve, sep as pathSep } from 'node:path';
 import { remoteParentPath, resolveRemotePath } from './paths';
+import {
+  buildListChunk,
+  getWindowsSystemNames,
+  LIST_CHUNK_SIZE,
+  readLocalDir,
+} from './file-list';
+import {
+  commonPrefix,
+  completeCommandName,
+  hasTrailingSeparator,
+  isSameOrDescendantPath,
+  parseCommand,
+  pathDisplayName,
+  resolveCommandPath,
+  resolveCompletionScope,
+  resolveDownloadTarget,
+  resolveMkdirTarget,
+  resolveUploadTarget,
+} from './command-parser';
 
 const log = createLogger('sftp-tab');
 
-const KNOWN_COMMANDS = ['upload', 'download', 'mkdir', 'rm', 'mv', 'cd', 'refresh', 'hidden'];
-
-/** One-line items are rendered in chunks so moving the cursor is not O(n). */
-const LIST_CHUNK_SIZE = 32;
-/** Concurrent stat calls for local directories. */
-const LOCAL_STAT_CONCURRENCY = 32;
 /** How long a switched-to SFTP tab may reuse its last directory listing. */
 const REFRESH_TTL_MS = 2000;
-/** Windows `attrib` is expensive; cache system-file names briefly. */
-const SYSTEM_NAMES_TTL_MS = 10_000;
-const systemNamesCache = new Map<string, { names: Set<string>; expiresAt: number }>();
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
-  bg: '#16161e',
-  surface: '#1a1b26',
-  border: '#3b4261',
-  borderActive: '#7aa2f7',
-  text: '#c0caf5',
-  textDim: '#565f89',
-  textActive: '#c0caf5',
-  blue: '#7aa2f7',
-  cyan: '#7dcfff',
-  green: '#9ece6a',
-  yellow: '#e0af68',
-  red: '#f7768e',
-  dirFg: '#7aa2f7',
-  fileFg: '#c0caf5',
-  execFg: '#9ece6a',
-  selectedBg: '#33467c',
-  statusBarBg: '#24283b',
+  bg: theme.appBg,
+  surface: theme.panelBg,
+  border: theme.border,
+  borderActive: theme.focusBorder,
+  text: theme.text,
+  textDim: theme.textDim,
+  blue: theme.accent,
+  cyan: theme.cyan,
+  green: theme.green,
+  yellow: theme.yellow,
+  red: theme.red,
+  selectedBg: theme.selectionBg,
+  statusBarBg: theme.statusBarBg,
 };
 
 export interface SftpTabAPI {
@@ -49,7 +55,6 @@ export interface SftpTabAPI {
   readonly id: string;
   handleKey(key: KeyEvent): void;
   pasteText(text: string): void;
-  getSelectedFilePath(): string | null;
   /** 是否处于 `:` 命令行模式（供 keymap 的 when 条件使用）。 */
   isCommandMode(): boolean;
   focus(): void;
@@ -61,108 +66,6 @@ interface FileListState {
   currentPath: string;
   items: FileItem[];
   selectedIndex: number;
-}
-
-/**
- * Collect names of Windows system-protected files (System attribute) in a
- * directory. Node's fs.stat does not expose DOS attributes, so we shell out to
- * `attrib` once per directory. Returns an empty set on non-Windows platforms or
- * if `attrib` fails (graceful degradation: show everything).
- */
-async function getWindowsSystemNames(dir: string): Promise<Set<string>> {
-  const names = new Set<string>();
-  if (process.platform !== 'win32') return names;
-
-  const cached = systemNamesCache.get(dir);
-  if (cached && cached.expiresAt > Date.now()) return cached.names;
-
-  try {
-    const { execFile } = await import('node:child_process');
-    const output = await new Promise<string>((resolve, reject) => {
-      execFile('attrib', [`${dir}\\*`], { windowsHide: true }, (err, stdout) => {
-        if (err) reject(err);
-        else resolve(stdout);
-      });
-    });
-    for (const line of output.split(/\r?\n/)) {
-      const sep = line.indexOf(':');
-      if (sep < 0) continue;
-      const flags = line.slice(0, sep);
-      if (flags.includes('S')) {
-        names.add(basename(line.slice(sep - 1)));
-      }
-    }
-    if (systemNamesCache.size > 64) systemNamesCache.clear();
-    systemNamesCache.set(dir, { names, expiresAt: Date.now() + SYSTEM_NAMES_TTL_MS });
-  } catch {
-    // attrib unavailable — fall back to showing everything
-  }
-  return names;
-}
-
-/** Read local directory contents. */
-async function readLocalDir(path: string, hideSystem = true): Promise<FileItem[]> {
-  const entries = await readdir(path, { withFileTypes: true });
-  const systemNames = hideSystem ? await getWindowsSystemNames(path) : new Set<string>();
-  const visible = entries.filter(
-    (entry) => entry.name !== '.' && entry.name !== '..' && !systemNames.has(entry.name),
-  );
-  const items: FileItem[] = [];
-
-  // Batch stat calls instead of awaiting them one by one. This is the main
-  // difference between a fast and a visibly stalling large directory.
-  for (let offset = 0; offset < visible.length; offset += LOCAL_STAT_CONCURRENCY) {
-    const batch = visible.slice(offset, offset + LOCAL_STAT_CONCURRENCY);
-    const results = await Promise.all(batch.map(async (entry): Promise<FileItem | null> => {
-      try {
-        const fullPath = join(path, entry.name);
-        // `stat` follows symlinks, so a symlink to a directory is navigable
-        // and is classified consistently with the target it points at.
-        const stats = await fsStat(fullPath);
-        return {
-          name: entry.name,
-          isDirectory: stats.isDirectory(),
-          isFile: stats.isFile(),
-          isSymlink: entry.isSymbolicLink(),
-          size: stats.size,
-          mode: stats.mode,
-          mtime: Math.floor(stats.mtimeMs / 1000),
-          longname: '',
-        };
-      } catch {
-        // Skip files we can't stat
-        return null;
-      }
-    }));
-    for (const item of results) {
-      if (item) items.push(item);
-    }
-  }
-
-  items.sort((a, b) => {
-    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  return items;
-}
-
-/** Format file size for display. */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}G`;
-}
-
-/** Format timestamp for display. */
-function formatTime(ts: number): string {
-  const d = new Date(ts * 1000);
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const hour = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${month}-${day} ${hour}:${min}`;
 }
 
 /** Create the SFTP dual-panel tab. */
@@ -360,37 +263,6 @@ export function createSftpTab(
   }
 
   /** Build one column of rendered lines; also used to refresh a single chunk. */
-  function buildListChunk(state: FileListState, start: number, end: number): StyledText {
-    const chunks: TextChunk[] = [];
-    const selectedFg = toRGBA(C.bg);
-    const selectedBg = toRGBA(C.textDim);
-    const normalFg = toRGBA(C.textDim);
-
-    for (let i = start; i < end; i++) {
-      const item = state.items[i];
-      if (!item) continue;
-      if (i > start) {
-        chunks.push({ __isChunk: true, text: '\n', fg: normalFg, attributes: 0 });
-      }
-
-      const prefix = item.isDirectory ? '/' : ' ';
-      const sizeStr = item.isDirectory ? '' : ` ${formatSize(item.size).padStart(8)}`;
-      const timeStr = item.mtime ? ` ${formatTime(item.mtime)}` : '';
-      const line = ` ${prefix}${item.name}${sizeStr}${timeStr} `;
-      const isSelected = i === state.selectedIndex;
-
-      chunks.push({
-        __isChunk: true,
-        text: line,
-        fg: isSelected ? selectedFg : normalFg,
-        ...(isSelected ? { bg: selectedBg } : {}),
-        attributes: 0,
-      });
-    }
-
-    return new StyledText(chunks);
-  }
-
   function rebuildList(state: FileListState, side: PanelSide): void {
     const container = side === 'local' ? _resolvedLocalList : _resolvedRemoteList;
     if (!container) return;
@@ -593,15 +465,17 @@ export function createSftpTab(
   // ── 路径解析（rm / mv 共用）─────────────────────────────────────
   /** 把命令参数解析成绝对路径：本地走 node:path，远端按 '/' 拼接 */
   function toAbsPath(p: string): string {
-    const state = activeSide === 'local' ? localState : remoteState;
-    if (activeSide === 'local') return isAbsolute(p) ? p : resolve(state.currentPath, p);
-    return resolveRemotePath(state.currentPath, p);
+    return resolveCommandPath(
+      activeSide,
+      localState.currentPath,
+      remoteState.currentPath,
+      p,
+    );
   }
 
   /** 取路径最后一段，用于提示文案 */
   function pathName(p: string): string {
-    if (activeSide === 'local') return basename(p);
-    return p.split('/').filter(Boolean).pop() ?? p;
+    return pathDisplayName(activeSide, p);
   }
 
   /** 判断路径是否为目录；不依赖列表缓存，因此支持当前目录之外的路径 */
@@ -615,9 +489,7 @@ export function createSftpTab(
   }
 
   async function executeCommand(input: string): Promise<boolean> {
-    const parts = input.trim().split(/\s+/);
-    const cmd = parts[0];
-    const args = parts.slice(1);
+    const { command: cmd, args } = parseCommand(input);
     let ok = true;
 
     log.debug(`[SFTP CMD] cmd:${cmd} args:${JSON.stringify(args)} activeSide:${activeSide}`);
@@ -629,17 +501,15 @@ export function createSftpTab(
           renderStatus('Usage: upload <local_path> [remote_path]', C.red);
           return false;
         }
-        const src = args[0];
-        const localPath = isAbsolute(src) ? src : resolve(localState.currentPath, src);
-        const fileBase = basename(src);
-        const rawDest = args[1];
-        const remotePath = !rawDest || rawDest === '.' || rawDest === './'
-          ? resolveRemotePath(remoteState.currentPath, fileBase)
-          : resolveRemotePath(remoteState.currentPath, rawDest);
+        const target = resolveUploadTarget(remoteState.currentPath, args[0], args[1]);
+        const localPath = isAbsolute(target.localPath)
+          ? target.localPath
+          : resolve(localState.currentPath, target.localPath);
+        const { remotePath, fileName } = target;
         renderStatus(`Uploading ${localPath} → ${remotePath}...`, C.yellow);
         try {
           await sftpClient.upload(localPath, remotePath);
-          renderStatus(`Uploaded: ${fileBase}`, C.green);
+          renderStatus(`Uploaded: ${fileName}`, C.green);
           await loadRemoteDir(remoteState.currentPath);
           return true;
         } catch (err) {
@@ -655,17 +525,16 @@ export function createSftpTab(
           renderStatus('Usage: download <remote_path> [local_path]', C.red);
           return false;
         }
-        const src = args[0];
-        const remotePath = resolveRemotePath(remoteState.currentPath, src);
-        const fileBase = basename(src);
-        const rawDest = args[1];
-        const localPath = !rawDest || rawDest === '.' || rawDest === '.\\' || rawDest === './'
-          ? resolve(localState.currentPath, fileBase)
-          : (isAbsolute(rawDest) ? rawDest : resolve(localState.currentPath, rawDest));
+        const target = resolveDownloadTarget(
+          localState.currentPath,
+          resolveRemotePath(remoteState.currentPath, args[0]),
+          args[1],
+        );
+        const { remotePath, localPath, fileName } = target;
         renderStatus(`Downloading ${remotePath} → ${localPath}...`, C.yellow);
         try {
           await sftpClient.download(remotePath, localPath);
-          renderStatus(`Downloaded: ${fileBase}`, C.green);
+          renderStatus(`Downloaded: ${fileName}`, C.green);
           await loadLocalDir(localState.currentPath);
           return true;
         } catch (err) {
@@ -681,10 +550,12 @@ export function createSftpTab(
           return false;
         }
         const name = args[0];
-        const state = activeSide === 'local' ? localState : remoteState;
-        const fullPath = activeSide === 'local'
-          ? join(state.currentPath, name)
-          : resolveRemotePath(state.currentPath, name);
+        const fullPath = resolveMkdirTarget(
+          activeSide,
+          localState.currentPath,
+          remoteState.currentPath,
+          name,
+        );
         try {
           if (activeSide === 'remote') {
             await sftpClient.mkdir(fullPath);
@@ -766,7 +637,7 @@ export function createSftpTab(
         const oldPath = toAbsPath(args[0]);
         let newPath = toAbsPath(args[1]);
         // dst 是已存在的目录（或以分隔符结尾）→ 移入该目录，保留原文件名
-        let dstIsDir = /[\\/]$/.test(args[1]);
+        let dstIsDir = hasTrailingSeparator(args[1]);
         if (!dstIsDir) {
           try {
             dstIsDir = await isDirectoryPath(newPath);
@@ -783,8 +654,7 @@ export function createSftpTab(
           renderStatus('Source and destination are the same', C.red);
           return false;
         }
-        const sep = activeSide === 'local' ? (oldPath.includes(pathSep) ? pathSep : '/') : '/';
-        if (newPath.startsWith(oldPath + sep)) {
+        if (isSameOrDescendantPath(activeSide, oldPath, newPath)) {
           renderStatus('Cannot move a directory into itself', C.red);
           return false;
         }
@@ -816,9 +686,8 @@ export function createSftpTab(
         }
         let targetPath = args[0];
         // Resolve relative path for remote side
-        if (activeSide === 'remote' && !targetPath.startsWith('/')) {
-          const sep = remoteState.currentPath.endsWith('/') ? '' : '/';
-          targetPath = `${remoteState.currentPath}${sep}${targetPath}`;
+        if (activeSide === 'remote') {
+          targetPath = resolveRemotePath(remoteState.currentPath, targetPath);
         }
         log.debug(`[SFTP CD] raw:${args[0]} resolved:${targetPath}`);
         renderStatus(`Changing directory: ${targetPath}...`, C.yellow);
@@ -870,7 +739,7 @@ export function createSftpTab(
 
     if (isFirstToken) {
       // Complete command name
-      const matches = KNOWN_COMMANDS.filter(c => c.startsWith(currentToken));
+      const matches = completeCommandName(currentToken);
       if (matches.length === 1) {
         parts[parts.length - 1] = matches[0];
         cmdBuffer = parts.join(' ') + ' ' + after;
@@ -880,36 +749,18 @@ export function createSftpTab(
       }
     } else {
       // Complete file path
-      const cmd = parts[0];
       const state = activeSide === 'local' ? localState : remoteState;
       const sep = activeSide === 'local' ? pathSep : '/';
-
-      // Resolve directory and prefix from currentToken
-      let dir = state.currentPath;
-      let prefix = currentToken;
-      const lastSep = Math.max(currentToken.lastIndexOf('/'), currentToken.lastIndexOf('\\'));
-      if (lastSep >= 0) {
-        const tokenDir = currentToken.slice(0, lastSep);
-        prefix = currentToken.slice(lastSep + 1);
-        if (activeSide === 'remote' && !tokenDir.startsWith('/')) {
-          dir = resolveRemotePath(state.currentPath, tokenDir);
-        } else if (activeSide === 'local') {
-          const { join } = await import('node:path');
-          dir = join(state.currentPath, tokenDir);
-        } else {
-          dir = tokenDir;
-        }
-      }
+      const scope = resolveCompletionScope(activeSide, state.currentPath, currentToken);
 
       // Get file list for completion
       let items: FileItem[] = [];
       try {
         if (activeSide === 'remote') {
-          items = await sftpClient.readdir(dir);
+          items = await sftpClient.readdir(scope.directory);
         } else {
-          const { readdir } = await import('node:fs/promises');
-          const systemNames = await getWindowsSystemNames(dir);
-          const entries = await readdir(dir, { withFileTypes: true });
+          const systemNames = await getWindowsSystemNames(scope.directory);
+          const entries = await readdir(scope.directory, { withFileTypes: true });
           items = entries
             .filter(e => e.name !== '.' && e.name !== '..' && !systemNames.has(e.name))
             .map(e => ({
@@ -928,29 +779,23 @@ export function createSftpTab(
         return;
       }
 
-      const matches = items.filter(i => i.name.startsWith(prefix));
+      const matches = items.filter(i => i.name.startsWith(scope.prefix));
       if (matches.length === 1) {
         const match = matches[0];
-        const completedName = currentToken.slice(0, lastSep + 1) + match.name;
+        const completedName = scope.tokenPrefix + match.name;
         const suffix = match.isDirectory ? sep : ' ';
         parts[parts.length - 1] = completedName + suffix;
         cmdBuffer = parts.join(' ') + after;
         cmdCursorPos = cmdBuffer.length - after.length;
       } else if (matches.length > 1) {
         // Complete common prefix
-        let common = matches[0].name;
-        for (const m of matches) {
-          while (!m.name.startsWith(common)) {
-            common = common.slice(0, -1);
-          }
-        }
-        if (common.length > prefix.length) {
-          const completedName = currentToken.slice(0, lastSep + 1) + common;
+        const common = commonPrefix(matches.map((match) => match.name));
+        if (common.length > scope.prefix.length) {
+          const completedName = scope.tokenPrefix + common;
           parts[parts.length - 1] = completedName;
           cmdBuffer = parts.join(' ') + after;
           cmdCursorPos = cmdBuffer.length - after.length;
         }
-        const dirMarker = matches.some(m => m.isDirectory) ? '/ ' : ' ';
         renderStatus(`Candidates: ${matches.slice(0, 8).map(m => m.name + (m.isDirectory ? '/' : '')).join('  ')}${matches.length > 8 ? '  ...' : ''}`, C.cyan);
       }
     }
@@ -1183,15 +1028,6 @@ export function createSftpTab(
     handleKey,
 
     pasteText,
-
-    getSelectedFilePath(): string | null {
-      const state = activeSide === 'local' ? localState : remoteState;
-      const item = state.items[state.selectedIndex];
-      if (!item) return null;
-      return activeSide === 'local'
-        ? join(state.currentPath, item.name)
-        : resolveRemotePath(state.currentPath, item.name);
-    },
 
     isCommandMode(): boolean {
       return cmdMode;

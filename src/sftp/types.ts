@@ -24,21 +24,5 @@ export interface FileItem {
   longname: string;
 }
 
-/** Transfer task status. */
-export type TransferStatus = 'pending' | 'active' | 'completed' | 'failed' | 'cancelled';
-
-/** A single file transfer task. */
-export interface TransferTask {
-  id: string;
-  direction: 'upload' | 'download';
-  localPath: string;
-  remotePath: string;
-  size: number;
-  transferred: number;
-  status: TransferStatus;
-  speed: number;
-  error?: string;
-}
-
 /** SFTP panel focus side. */
 export type PanelSide = 'local' | 'remote';

@@ -17,7 +17,13 @@
 src/
 ├── index.ts              # Entry point - creates renderer with { exitOnCtrlC: false, useMouse: true }
 ├── app.ts                # Main application class - layout, focus management, keyboard routing, multi-tab
+├── theme.ts              # Tokyo Night palette + semantic colour tokens
+├── color.ts              # Hex → RGBA conversion cache for StyledText chunks
 ├── logger.ts             # Logging system (LogTape, writes to ~/.ssh-cli/ssh-cli.log)
+├── app/                  # Extracted application helpers
+│   ├── clipboard.ts      # Selection copy + paste target routing
+│   ├── terminal-tab.ts   # EmbeddedTerminalRenderable factory
+│   └── tab-navigation.ts # Pure next/previous/jump tab helpers
 ├── ssh/                  # SSH connection layer
 │   ├── auth.ts           # Authentication config builder (key/password)
 │   ├── connection.ts     # SSH session lifecycle (SshConnection class) + startSftp()
@@ -27,7 +33,10 @@ src/
 ├── sftp/                 # SFTP file manager module
 │   ├── sftp-client.ts    # SFTP client wrapper (readdir, mkdir, upload, download, etc.)
 │   ├── sftp-tab.ts       # SFTP dual-panel tab (cmd mode, chunked file list, ScrollBox)
-│   └── types.ts          # SFTP types (FileEntry, TransferTask, PanelSide)
+│   ├── file-list.ts      # Directory listing, formatting, 32-line chunk rendering
+│   ├── command-parser.ts # `:` command parsing, path resolution, completion
+│   ├── paths.ts          # Remote POSIX path helpers
+│   └── types.ts          # SFTP types (FileEntry, PanelSide)
 ├── storage/              # Persistence layer
 │   ├── config.ts         # Config paths, 0600/0700 permissions, atomic writes
 │   ├── connections.ts    # ConnectionStore CRUD + legacy credential migration
@@ -43,6 +52,8 @@ src/
     ├── tab-bar.ts        # Multi-tab bar (Alt+↑/↓ cycle, F2-F12 jump, type field: terminal|sftp)
     ├── toolbar.ts        # Clickable shortcut toolbar at top
     ├── divider.ts        # Draggable sidebar divider
+    ├── form-model.ts     # Add/edit form state, validation, config building
+    ├── password-field.ts # Hand-rendered masked password input
     └── help-popup.ts     # Draggable help popup (F1) with SFTP shortcuts
 ```
 
@@ -154,8 +165,12 @@ bun run start       # Run the application
 bun run typecheck   # tsc --noEmit
 bun test            # Bun test suite
 bun run docs        # Regenerate shortcut tables in README.md / README.zh.md
-bun run build:win   # Compile the Windows executable
+bun run build:win   # Compile the Windows executable → dist/ssh-cli.exe
+bun run build:linux # Compile Linux x64 → dist/ssh-cli-linux-x64
+bun run build:mac   # Compile macOS arm64 → dist/ssh-cli-macos-arm64
 ```
+
+Cross-compiling from another OS requires the target native package first (for example `bun install --os=linux --cpu=x64`). CI builds each target on its own runner.
 
 No linter or formatter configured. TypeScript strict mode and tests are enforced by `.github/workflows/ci.yml`.
 

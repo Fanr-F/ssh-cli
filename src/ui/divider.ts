@@ -1,10 +1,11 @@
 import { Box } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
+import { theme } from '../theme';
 
 // ── Colour tokens (Tokyo Night) ────────────────────────────────────────────
 
-const DIVIDER_BG = '#3b4261';
-const DIVIDER_HOVER = '#565f89';
+const DIVIDER_BG = theme.border;
+const DIVIDER_HOVER = theme.textDim;
 const MIN_SIDEBAR_WIDTH = 15;
 const MAX_SIDEBAR_WIDTH = 80;
 

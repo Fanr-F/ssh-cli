@@ -1,21 +1,22 @@
 import { Box, Text } from '@opentui/core';
 import type { CliRenderer, MouseEvent } from '@opentui/core';
 import { createLogger } from '../logger';
+import { theme } from '../theme';
 
 const log = createLogger('tab-bar');
 
 // ── Tokyo Night palette ───────────────────────────────────────
 const C = {
-  bg: '#16161e',
-  bgActive: '#1f2335',
-  bgHover: '#292e42',
-  border: '#3b4261',
-  borderActive: '#7aa2f7',
-  text: '#a9b1d6',
-  textActive: '#c0caf5',
-  textDim: '#565f89',
-  cyan: '#7dcfff',
-  blue: '#7aa2f7',
+  bg: theme.appBg,
+  bgActive: theme.elevatedBg,
+  bgHover: theme.hoverBg,
+  border: theme.border,
+  borderActive: theme.focusBorder,
+  text: theme.textSecondary,
+  textActive: theme.text,
+  textDim: theme.textDim,
+  cyan: theme.cyan,
+  blue: theme.accent,
 };
 
 export interface TabBarAPI {
