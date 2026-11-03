@@ -576,16 +576,12 @@ export class App {
     logDebug(`[CONNECT] adding tab ${tabId} to tab bar`);
     this.tabBar.addTab(tabId, tabTitle, 'terminal');
 
-    // Track whether the SSH session was ever established
-    let wasConnected = false;
-
     ssh.on('ready', async () => {
       // The user may have closed the tab while the handshake was in flight.
       if (!this.tabs.has(tabId)) {
         await ssh.disconnect();
         return;
       }
-      wasConnected = true;
       // Update tab title with connected status
       this.tabBar.updateTabTitle(tabId, `SSH: ${config.username}@${config.host}`);
       // Persist the connection time and refresh the sidebar dot. Do not await:
@@ -627,13 +623,11 @@ export class App {
         channel.on('close', () => {
           logDebug(`[SSH CLOSE] Tab ${tabId} channel closed`);
           if (!this.tabs.has(tabId)) return;
+          // Keep the tab so the user can read the last output. Closing is
+          // explicit (double-click the tab) and losing scrollback is worse.
           this.terminalPanel.showDisconnected();
           this.statusBar.setDisconnected();
           this.renderer.requestRender();
-          // Auto-close tab on disconnect
-          if (wasConnected) {
-            this.closeTab(tabId);
-          }
         });
       } catch (err) {
         if (!this.tabs.has(tabId)) return;
@@ -655,9 +649,11 @@ export class App {
 
     ssh.on('close', () => {
       logDebug(`[SSH CLOSE] Tab ${tabId} connection closed`);
-      if (wasConnected && this.tabs.has(tabId)) {
-        this.closeTab(tabId);
-      }
+      if (!this.tabs.has(tabId)) return;
+      // Same as the channel close handler: keep the tab and its scrollback.
+      this.terminalPanel.showDisconnected();
+      this.statusBar.setDisconnected();
+      this.renderer.requestRender();
     });
 
     try {
