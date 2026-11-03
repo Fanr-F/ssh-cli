@@ -166,11 +166,7 @@ bun run typecheck   # tsc --noEmit
 bun test            # Bun test suite
 bun run docs        # Regenerate shortcut tables in README.md / README.zh.md
 bun run build:win   # Compile the Windows executable → dist/ssh-cli.exe
-bun run build:linux # Compile Linux x64 → dist/ssh-cli-linux-x64
-bun run build:mac   # Compile macOS arm64 → dist/ssh-cli-macos-arm64
 ```
-
-Cross-compiling from another OS requires the target native package first (for example `bun install --os=linux --cpu=x64`). CI builds each target on its own runner.
 
 No linter or formatter configured. TypeScript strict mode and tests are enforced by `.github/workflows/ci.yml`.
 

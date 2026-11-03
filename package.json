@@ -13,11 +13,7 @@
     "test": "bun test",
     "docs": "bun run scripts/gen-shortcuts.ts",
     "build": "bun run build:win",
-    "build:win": "bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist/ssh-cli.exe",
-    "build:linux": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/ssh-cli-linux-x64",
-    "build:linux-arm64": "bun build --compile --target=bun-linux-arm64 src/index.ts --outfile dist/ssh-cli-linux-arm64",
-    "build:mac": "bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/ssh-cli-macos-arm64",
-    "build:mac-x64": "bun build --compile --target=bun-darwin-x64 src/index.ts --outfile dist/ssh-cli-macos-x64"
+    "build:win": "bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist/ssh-cli.exe"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",

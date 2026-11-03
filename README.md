@@ -29,7 +29,7 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 - **Draggable UI** — Resize sidebar divider, drag help popup window
 - **Help System** — Press F1 to view all keyboard shortcuts
 
-> **Linux note**: credential storage uses `Bun.secrets`, which requires a Secret Service provider (GNOME Keyring, KWallet, etc.).
+> **Platform**: Windows x64 is the only supported target.
 
 <!-- shortcuts:begin -->
 
@@ -242,13 +242,8 @@ bun run start -- --log-level debug
 # Run with trace logging (most verbose)
 bun run start -- --log-level trace
 
-# Compile standalone executables (outputs in dist/)
+# Compile the standalone Windows executable (outputs to dist/)
 bun run build:win       # Windows x64 → dist/ssh-cli.exe
-bun run build:linux     # Linux x64 → dist/ssh-cli-linux-x64
-bun run build:mac       # macOS arm64 → dist/ssh-cli-macos-arm64
-# Also available: build:linux-arm64, build:mac-x64
-# Cross-compiling requires the target native package, e.g.
-# bun install --os=linux --cpu=x64 (CI builds each target on its own runner)
 
 # Regenerate the shortcut tables in README.md / README.zh.md
 bun run docs

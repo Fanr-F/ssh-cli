@@ -29,7 +29,7 @@
 - **可拖动 UI** — 调整侧边栏分隔线，拖动帮助弹窗
 - **帮助系统** — 按 F1 查看所有键盘快捷键
 
-> **Linux 说明**：凭据存储使用 `Bun.secrets`，需要系统提供 Secret Service 实现（GNOME Keyring、KWallet 等）。
+> **平台**：目前仅支持 Windows x64。
 
 <!-- shortcuts:begin -->
 
@@ -242,13 +242,8 @@ bun run start -- --log-level debug
 # 以 trace 级别运行（最详细）
 bun run start -- --log-level trace
 
-# 编译为独立可执行文件（输出到 dist/）
+# 编译为独立的 Windows 可执行文件（输出到 dist/）
 bun run build:win       # Windows x64 → dist/ssh-cli.exe
-bun run build:linux     # Linux x64 → dist/ssh-cli-linux-x64
-bun run build:mac       # macOS arm64 → dist/ssh-cli-macos-arm64
-# 另有：build:linux-arm64、build:mac-x64
-# 跨平台编译需先安装目标平台原生包，例如
-# bun install --os=linux --cpu=x64（CI 在各自 runner 上构建）
 
 # 重新生成 README.md / README.zh.md 中的快捷键表格
 bun run docs
