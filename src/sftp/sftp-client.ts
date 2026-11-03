@@ -1,10 +1,45 @@
+import { createReadStream, createWriteStream } from 'node:fs';
+import { stat as fsStat, unlink as fsUnlink } from 'node:fs/promises';
 import { posix } from 'node:path';
+import type { Readable, Writable } from 'node:stream';
 import type { SFTPWrapper, Stats } from 'ssh2-no-cpu-features';
 import type { FileEntry, FileItem } from './types';
 import { sortFileItems } from './file-list';
 import { createLogger } from '../logger';
 
 const log = createLogger('sftp');
+
+/** Optional knobs shared by `upload()` / `download()`. */
+export interface TransferOptions {
+  /** Called for every chunk with the running byte count and the file size. */
+  onProgress?: (transferred: number, total: number) => void;
+  /** Abort the transfer; the promise then rejects with `TransferCancelledError`. */
+  signal?: AbortSignal;
+}
+
+/** Thrown when a transfer was aborted through `TransferOptions.signal`. */
+export class TransferCancelledError extends Error {
+  constructor() {
+    super('Transfer cancelled');
+    this.name = 'TransferCancelledError';
+  }
+}
+
+/** True for the rejection produced by aborting a transfer. */
+export function isTransferCancelled(err: unknown): err is TransferCancelledError {
+  return err instanceof TransferCancelledError;
+}
+
+/** Best-effort stream teardown; ssh2 closes the remote handle in `_destroy`. */
+function destroyStream(stream: Readable | Writable): void {
+  try {
+    stream.destroy();
+  } catch (err) {
+    log.debug('Could not destroy transfer stream: {reason}', {
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /**
  * Promisified SFTP client wrapper.
@@ -107,40 +142,124 @@ export class SftpClient {
     return this.call<string>((cb) => this.sftp.realpath(path, cb));
   }
 
-  /** Upload a local file to remote with progress callback. */
-  async upload(
-    localPath: string,
-    remotePath: string,
-    onProgress?: (bytesUploaded: number, totalBytes: number) => void
+  /**
+   * Copy a readable into a writable while reporting progress and honouring an
+   * abort signal. Resolves on `finish`; the streams are destroyed on abort so
+   * the remote handle is closed and no more chunks are read.
+   */
+  private pipeTransfer(
+    source: Readable,
+    target: Writable,
+    total: number,
+    options: TransferOptions,
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.sftp.fastPut(localPath, remotePath, {
-        step: (totalTransferred: number, chunk: number, total: number) => {
-          onProgress?.(totalTransferred, total);
-        },
-      }, (err: Error | null | undefined) => {
-        if (err) reject(err);
-        else resolve();
+    const { onProgress, signal } = options;
+
+    return new Promise<void>((resolve, reject) => {
+      let transferred = 0;
+      let settled = false;
+
+      const settle = (err?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        if (err === undefined) {
+          resolve();
+          return;
+        }
+        destroyStream(source);
+        destroyStream(target);
+        reject(err);
+      };
+
+      const onAbort = (): void => settle(new TransferCancelledError());
+
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      source.on('data', (chunk: Buffer | string) => {
+        transferred += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+        onProgress?.(transferred, total);
       });
+      source.once('error', (err) => settle(err));
+      target.once('error', (err) => settle(err));
+      target.once('finish', () => settle());
+      // A write stream that closes without finishing means the remote side
+      // dropped the transfer; surface it instead of hanging forever.
+      target.once('close', () => {
+        if (!(target as Writable & { writableFinished?: boolean }).writableFinished) {
+          settle(new Error('Transfer interrupted'));
+        }
+      });
+
+      source.pipe(target);
     });
   }
 
-  /** Download a remote file to local with progress callback. */
+  /** Local file size, or 0 when it cannot be read (progress hides the total). */
+  private async localSize(path: string): Promise<number> {
+    try {
+      return (await fsStat(path)).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Remote file size, or 0 when it cannot be read. */
+  private async remoteSize(path: string): Promise<number> {
+    try {
+      return (await this.stat(path)).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Upload a local file to remote with progress and cancellation. */
+  async upload(
+    localPath: string,
+    remotePath: string,
+    options: TransferOptions = {},
+  ): Promise<void> {
+    const total = await this.localSize(localPath);
+    try {
+      await this.pipeTransfer(
+        createReadStream(localPath),
+        this.sftp.createWriteStream(remotePath),
+        total,
+        options,
+      );
+    } catch (err) {
+      // Do not leave a half-written file behind when the user cancels.
+      if (isTransferCancelled(err)) {
+        await this.unlink(remotePath).catch(() => {});
+      }
+      throw err;
+    }
+  }
+
+  /** Download a remote file to local with progress and cancellation. */
   async download(
     remotePath: string,
     localPath: string,
-    onProgress?: (bytesDownloaded: number, totalBytes: number) => void
+    options: TransferOptions = {},
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.sftp.fastGet(remotePath, localPath, {
-        step: (totalTransferred: number, chunk: number, total: number) => {
-          onProgress?.(totalTransferred, total);
-        },
-      }, (err: Error | null | undefined) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+    const total = await this.remoteSize(remotePath);
+    try {
+      await this.pipeTransfer(
+        this.sftp.createReadStream(remotePath),
+        createWriteStream(localPath),
+        total,
+        options,
+      );
+    } catch (err) {
+      if (isTransferCancelled(err)) {
+        await fsUnlink(localPath).catch(() => {});
+      }
+      throw err;
+    }
   }
 
   /** Close the SFTP session. */

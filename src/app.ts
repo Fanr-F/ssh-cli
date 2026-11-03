@@ -385,6 +385,7 @@ export class App {
       formOpen: !!this.form,
       confirmOpen: !!this.confirmDialog,
       sftpCmdMode: tab?.sftpTab?.isCommandMode() ?? false,
+      sftpTransferring: tab?.sftpTab?.isTransferring() ?? false,
       formField: this.form ? this.form.getFocusedFieldIndex() : -1,
       activeTabType: activeId ? this.tabBar.getTabType(activeId) : null,
     };

@@ -3,7 +3,7 @@ import type { CliRenderer, KeyEvent, MouseEvent } from '@opentui/core';
 import { mkdir, readdir, rename, rmdir, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, isAbsolute, resolve, sep as pathSep } from 'node:path';
-import { SftpClient } from './sftp-client';
+import { SftpClient, isTransferCancelled } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
 import { theme } from '../theme';
@@ -41,6 +41,9 @@ const REFRESH_TTL_MS = 2000;
 const PROGRESS_INTERVAL_MS = 100;
 /** Command-line history is bounded so long sessions do not grow forever. */
 const CMD_HISTORY_LIMIT = 100;
+/** Bottom help line; replaced by a cancel hint while a transfer runs. */
+const HELP_LINE_DEFAULT = ' :命令  upload download mkdir rm mv cd refresh hidden';
+const HELP_LINE_TRANSFER = ' Esc 取消传输 · Esc cancels the running transfer';
 
 /** Human-readable progress line, e.g. `Uploading a.txt 42% (420B/1.0K)`. */
 export function formatTransferProgress(label: string, transferred: number, total: number): string {
@@ -73,6 +76,8 @@ export interface SftpTabAPI {
   pasteText(text: string): void;
   /** 是否处于 `:` 命令行模式（供 keymap 的 when 条件使用）。 */
   isCommandMode(): boolean;
+  /** 是否正在上传/下载（供 keymap 的 when 条件使用）。 */
+  isTransferring(): boolean;
   focus(): void;
   destroy(): void;
   refresh(): void;
@@ -118,6 +123,10 @@ export function createSftpTab(
   let cmdCursorPos = 0;
   let cmdHistory: string[] = [];
   let cmdHistoryIdx = -1;
+
+  // ── Transfer state ─────────────────────────────────────────────
+  // 同一时间只允许一个传输；Esc 通过 AbortController 取消它。
+  let transferController: AbortController | null = null;
 
   // ── Build the UI ──────────────────────────────────────────────
   /**
@@ -190,7 +199,7 @@ export function createSftpTab(
 
   // Help line
   const helpLine = Text({
-    content: ' :命令  upload download mkdir rm mv cd refresh hidden',
+    content: HELP_LINE_DEFAULT,
     fg: C.textDim,
     id: 'sftp-help-line',
     height: 1,
@@ -229,6 +238,7 @@ export function createSftpTab(
   let _resolvedLocalScroll: ResolvedNode | null = null;
   let _resolvedRemoteScroll: ResolvedNode | null = null;
   let _resolvedStatus: ResolvedNode | null = null;
+  let _resolvedHelpLine: ResolvedNode | null = null;
   let _resolvedLocalPanel: ResolvedNode | null = null;
   let _resolvedRemotePanel: ResolvedNode | null = null;
 
@@ -240,7 +250,7 @@ export function createSftpTab(
   function resolveAll(): void {
     if (_resolvedLocalPath && _resolvedLocalList && _resolvedRemotePath && _resolvedRemoteList
       && _resolvedLocalScroll && _resolvedRemoteScroll && _resolvedStatus
-      && _resolvedLocalPanel && _resolvedRemotePanel) {
+      && _resolvedHelpLine && _resolvedLocalPanel && _resolvedRemotePanel) {
       return;
     }
 
@@ -250,6 +260,7 @@ export function createSftpTab(
     _resolvedRemotePath = resolveDescendant(root, 'sftp-remote-path');
     _resolvedRemoteList = resolveDescendant(root, 'sftp-remote-list');
     _resolvedStatus = resolveDescendant(root, 'sftp-status');
+    _resolvedHelpLine = resolveDescendant(root, 'sftp-help-line');
     _resolvedLocalPanel = resolveDescendant(root, 'sftp-local-panel');
     _resolvedRemotePanel = resolveDescendant(root, 'sftp-remote-panel');
     _resolvedLocalScroll = resolveDescendant(root, 'sftp-local-scroll');
@@ -362,9 +373,34 @@ export function createSftpTab(
     renderer.requestRender();
   }
 
+  /** 底栏在传输期间提示取消键，结束后恢复默认文案。 */
+  function renderHelpLine(transferring: boolean): void {
+    if (destroyed) return;
+    resolveAll();
+    if (_resolvedHelpLine && !_resolvedHelpLine.isDestroyed) {
+      _resolvedHelpLine.content = transferring ? HELP_LINE_TRANSFER : HELP_LINE_DEFAULT;
+    }
+    renderer.requestRender();
+  }
+
+  /** 开始一个传输；已有传输在跑时返回 null（拒绝并发）。 */
+  function beginTransfer(): AbortController | null {
+    if (transferController) return null;
+    const controller = new AbortController();
+    transferController = controller;
+    renderHelpLine(true);
+    return controller;
+  }
+
+  function endTransfer(controller: AbortController): void {
+    if (transferController !== controller) return;
+    transferController = null;
+    renderHelpLine(false);
+  }
+
   /**
-   * Throttled transfer progress reporter. fastPut/fastGet invoke `step` for
-   * every chunk; redrawing each time would flood the render loop.
+   * Throttled transfer progress reporter. The copy loop fires once per chunk;
+   * redrawing each time would flood the render loop.
    */
   function createProgressReporter(
     label: string,
@@ -605,21 +641,32 @@ export function createSftpTab(
         if (rawDest && !hasTrailingSeparator(rawDest) && await isRemoteDirectory(remotePath)) {
           remotePath = resolveRemotePath(remotePath, fileName);
         }
-        renderStatus(`Uploading ${localPath} → ${remotePath}...`, C.yellow);
+        const controller = beginTransfer();
+        if (!controller) {
+          renderStatus('Another transfer is running — press Esc to cancel it', C.yellow);
+          return false;
+        }
+        renderStatus(`Uploading ${localPath} → ${remotePath}... (Esc to cancel)`, C.yellow);
         try {
-          await sftpClient.upload(
-            localPath,
-            remotePath,
-            createProgressReporter(`Uploading ${fileName}`),
-          );
+          await sftpClient.upload(localPath, remotePath, {
+            signal: controller.signal,
+            onProgress: createProgressReporter(`Uploading ${fileName}`),
+          });
           renderStatus(`Uploaded: ${fileName}`, C.green);
           await loadRemoteDir(remoteState.currentPath);
           return true;
         } catch (err) {
+          if (isTransferCancelled(err)) {
+            renderStatus(`Upload cancelled: ${fileName}`, C.yellow);
+            await loadRemoteDir(remoteState.currentPath);
+            return false;
+          }
           const msg = err instanceof Error ? err.message : 'Upload failed';
           log.error(`[SFTP UPLOAD] ${localPath} → ${remotePath}: ${msg}`);
           renderStatus(`Upload failed: ${msg}`, C.red);
           return false;
+        } finally {
+          endTransfer(controller);
         }
       }
       case 'download': {
@@ -641,21 +688,32 @@ export function createSftpTab(
         if (rawDest && !hasTrailingSeparator(rawDest) && await isLocalDirectory(localPath)) {
           localPath = resolve(localPath, fileName);
         }
-        renderStatus(`Downloading ${remotePath} → ${localPath}...`, C.yellow);
+        const controller = beginTransfer();
+        if (!controller) {
+          renderStatus('Another transfer is running — press Esc to cancel it', C.yellow);
+          return false;
+        }
+        renderStatus(`Downloading ${remotePath} → ${localPath}... (Esc to cancel)`, C.yellow);
         try {
-          await sftpClient.download(
-            remotePath,
-            localPath,
-            createProgressReporter(`Downloading ${fileName}`),
-          );
+          await sftpClient.download(remotePath, localPath, {
+            signal: controller.signal,
+            onProgress: createProgressReporter(`Downloading ${fileName}`),
+          });
           renderStatus(`Downloaded: ${fileName}`, C.green);
           await loadLocalDir(localState.currentPath);
           return true;
         } catch (err) {
+          if (isTransferCancelled(err)) {
+            renderStatus(`Download cancelled: ${fileName}`, C.yellow);
+            await loadLocalDir(localState.currentPath);
+            return false;
+          }
           const msg = err instanceof Error ? err.message : 'Download failed';
           log.error(`[SFTP DOWNLOAD] ${remotePath} → ${localPath}: ${msg}`);
           renderStatus(`Download failed: ${msg}`, C.red);
           return false;
+        } finally {
+          endTransfer(controller);
         }
       }
       case 'mkdir': {
@@ -975,6 +1033,7 @@ export function createSftpTab(
       formOpen: false,
       confirmOpen: false,
       sftpCmdMode: cmdMode,
+      sftpTransferring: transferController !== null,
       formField: -1,
       activeTabType: 'sftp',
     };
@@ -982,6 +1041,14 @@ export function createSftpTab(
     log.debug(`[SFTP KEY] name:${k.name} ctrl:${k.ctrl} cmd:${cmdMode} binding:${binding?.id ?? '-'}`);
 
     switch (binding?.id) {
+      // ── 传输取消（Esc，优先于退出命令行模式）───────────────────
+      case 'sftp.cancelTransfer':
+        if (transferController) {
+          renderStatus('Cancelling transfer...', C.yellow);
+          transferController.abort();
+        }
+        return;
+
       // ── 命令行模式 ────────────────────────────────────────────
       case 'sftp.cmd.execute': {
         const cmd = cmdBuffer.trim();
@@ -1162,6 +1229,10 @@ export function createSftpTab(
       return cmdMode;
     },
 
+    isTransferring(): boolean {
+      return transferController !== null;
+    },
+
     focus(): void {
       renderFileList(localState, 'local');
       renderFileList(remoteState, 'remote');
@@ -1172,6 +1243,8 @@ export function createSftpTab(
       destroyed = true;
       localLoadToken++;
       remoteLoadToken++;
+      // 关闭标签时中止进行中的传输，否则 ssh2 会继续往已销毁的组件写进度。
+      transferController?.abort();
       sftpClient.close();
     },
 

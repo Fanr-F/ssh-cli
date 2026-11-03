@@ -62,6 +62,8 @@ export interface KeyContext {
   confirmOpen: boolean;
   /** SFTP 是否处于 `:` 命令行模式。 */
   sftpCmdMode: boolean;
+  /** SFTP 是否有上传/下载在跑（此时 Esc 取消传输）。 */
+  sftpTransferring: boolean;
   /** 表单当前聚焦字段索引（-1 表示不在表单内）。 */
   formField: number;
   /** 当前激活标签的类型。 */

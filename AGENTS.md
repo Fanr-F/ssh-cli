@@ -161,7 +161,7 @@ onMouseDrag: (e: MouseEvent) => {
 - **ScrollBox scrolling**: Each list is a `ScrollBox` (built-in scrollbar / wheel / auto-hide, `viewportCulling`); `ensureIndexVisible()` calls `scrollTo()` to keep the selected row in view
 - **Chunked list rendering**: File lines are grouped into 32-line `TextRenderable`s. Moving the cursor redraws only the old/new chunks (O(32)) instead of the whole directory; directory reloads rebuild the chunks
 - **Load generation + TTL**: Local and remote loads each have a token so stale responses are discarded; switching back to a tab reuses the listing for 2 seconds
-- **Transfer progress**: `upload`/`download` pass `onProgress` and redraw the SFTP status line at most ~10 times per second, showing percentage / bytes / speed; `command history` keeps the last 100 entries
+- **Transfer progress & cancellation**: `upload`/`download` copy through `createReadStream`/`createWriteStream` (not `fastPut`/`fastGet`) so they accept an `AbortSignal`; progress redraws the SFTP status line at most ~10 times per second, showing percentage / bytes / speed. While a transfer runs, the bottom help line shows `Esc 取消传输 · Esc cancels the running transfer`; `sftp.cancelTransfer` matches Esc first (via `ctx.sftpTransferring`) and aborts the copy, removing the partial remote/local file. Only one transfer runs at a time, and closing the tab aborts it; `command history` keeps the last 100 entries
 - **Remote cd resolution**: Relative paths resolved against `remoteState.currentPath`
 - **Tab close independence**: Closing one tab doesn't affect others
 

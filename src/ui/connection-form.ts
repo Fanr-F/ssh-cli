@@ -184,6 +184,7 @@ export function createConnectionForm(
       formOpen: true,
       confirmOpen: false,
       sftpCmdMode: false,
+      sftpTransferring: false,
       formField: focusedField,
       activeTabType: null,
     };

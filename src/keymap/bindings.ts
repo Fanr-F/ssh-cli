@@ -159,6 +159,17 @@ export const BINDINGS: Binding[] = [
 
   // ── sftp：两种子状态（命令模式 / 浏览模式）──────────────────────
   {
+    // 必须排在 sftp.cmd.cancel 之前：传输中 Esc 先取消传输，而不是退出命令行。
+    id: 'sftp.cancelTransfer',
+    scope: 'sftp',
+    key: { name: 'escape' },
+    group: 'sftp',
+    owner: 'component',
+    when: (ctx) => ctx.sftpTransferring,
+    en: 'Cancel the running upload / download',
+    zh: '取消正在进行的上传 / 下载',
+  },
+  {
     id: 'sftp.cmd.execute',
     scope: 'sftp',
     key: ENTER,

@@ -70,6 +70,7 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 
 | Key | Action |
 |---|---|
+| `Esc` | Cancel the running upload / download |
 | `PageUp` | Page up in the active panel |
 | `PageDown` | Page down in the active panel |
 | `Tab` | Switch panel (local ↔ remote) |

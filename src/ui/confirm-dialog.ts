@@ -155,6 +155,7 @@ export function createConfirmDialog(
       formOpen: false,
       confirmOpen: true,
       sftpCmdMode: false,
+      sftpTransferring: false,
       formField: -1,
       activeTabType: null,
     };

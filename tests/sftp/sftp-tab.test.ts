@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSftpTab, formatTransferProgress } from '../../src/sftp/sftp-tab';
+import { TransferCancelledError } from '../../src/sftp/sftp-client';
 
 function key(name: string, sequence: string) {
   return {
@@ -119,6 +120,73 @@ describe('createSftpTab', () => {
       await t.renderOnce();
 
       expect(remoteReads).toContain('/home/me');
+    } finally {
+      tab.destroy();
+      await t.dispose();
+    }
+  });
+});
+
+describe('createSftpTab transfer cancellation', () => {
+  test('Esc aborts the running upload and restores the help line', async () => {
+    const localDir = await mkdtemp(join(tmpdir(), 'ssh-cli-sftp-local-'));
+    tempDirs.push(localDir);
+    const localPath = join(localDir, 'big.bin');
+    await writeFile(localPath, 'x', 'utf-8');
+
+    let uploadSignal: AbortSignal | undefined;
+    let uploadStarted = false;
+    const fakeClient = {
+      realpath: async () => '/remote',
+      readdir: async () => [],
+      stat: async () => {
+        throw new Error('ENOENT');
+      },
+      close: () => {},
+      upload: (_local: string, _remote: string, options: {
+        signal: AbortSignal;
+      }) => {
+        uploadStarted = true;
+        uploadSignal = options.signal;
+        return new Promise<void>((_resolve, reject) => {
+          options.signal.addEventListener(
+            'abort',
+            () => reject(new TransferCancelledError()),
+            { once: true },
+          );
+        });
+      },
+    };
+
+    const t = await createTestRenderer({ width: 120, height: 30 });
+    const tab = createSftpTab('sftp-cancel', t.renderer, fakeClient as any, '~', localDir);
+
+    try {
+      t.renderer.root.add(tab.component);
+      await t.renderOnce();
+      await tab.refresh();
+
+      await (tab.handleKey as any)(key(':', ':'));
+      for (const char of `upload ${localPath}`) {
+        await (tab.handleKey as any)(key(char === ' ' ? 'space' : char, char));
+      }
+
+      // Enter starts the transfer, which only settles once it is cancelled.
+      const pending = (tab.handleKey as any)(key('enter', '\r'));
+      await Promise.resolve();
+
+      expect(uploadStarted).toBe(true);
+      expect(tab.isTransferring()).toBe(true);
+      await t.renderOnce();
+      expect(t.captureCharFrame()).toContain('cancels');
+
+      await (tab.handleKey as any)(key('escape', '\x1b'));
+      expect(uploadSignal?.aborted).toBe(true);
+
+      await pending;
+      await t.renderOnce();
+      expect(tab.isTransferring()).toBe(false);
+      expect(t.captureCharFrame()).not.toContain('cancels');
     } finally {
       tab.destroy();
       await t.dispose();
