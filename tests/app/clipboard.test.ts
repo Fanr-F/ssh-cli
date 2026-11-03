@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { ClipboardController, normalizePasteText, type ClipboardPasteTarget } from './clipboard';
-import type { StatusKind } from '../ui/status-bar';
+import { ClipboardController, normalizePasteText, type ClipboardPasteTarget } from '../../src/app/clipboard';
+import type { StatusKind } from '../../src/ui/status-bar';
 
 function makeController(options: {
   writeResult?: any;

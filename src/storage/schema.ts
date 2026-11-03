@@ -28,16 +28,25 @@ function optionalSecret(record: UnknownRecord, key: string, index: number): stri
   return value ? value : undefined;
 }
 
+function parsePort(value: unknown, index: number): number {
+  // Only a real integer or a digits-only string is a port. `Number(true)` /
+  // `Number([22])` / `parseInt('22abc')` used to let malformed data through.
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535) {
+    return value;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const port = Number(value.trim());
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) return port;
+  }
+  throw new Error(`Invalid connection at index ${index}: "port" must be an integer between 1 and 65535`);
+}
+
 function parseConnection(value: unknown, index: number): ConnectionConfig {
   if (!isRecord(value)) {
     throw new Error(`Invalid connection at index ${index}: expected an object`);
   }
 
-  const portValue = value.port;
-  const port = typeof portValue === 'number' ? portValue : Number(portValue);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`Invalid connection at index ${index}: "port" must be an integer between 1 and 65535`);
-  }
+  const port = parsePort(value.port, index);
 
   const authType = value.authType;
   if (authType !== 'key' && authType !== 'password') {
@@ -77,7 +86,17 @@ export function parseConnections(raw: string): ConnectionConfig[] {
     throw new Error('Connection config must be a JSON array');
   }
 
-  return parsed.map((entry, index) => parseConnection(entry, index));
+  const connections = parsed.map((entry, index) => parseConnection(entry, index));
+
+  const seenIds = new Set<string>();
+  for (const connection of connections) {
+    if (seenIds.has(connection.id)) {
+      throw new Error(`Invalid connection config: duplicate id "${connection.id}"`);
+    }
+    seenIds.add(connection.id);
+  }
+
+  return connections;
 }
 
 /** Remove credentials before writing metadata to disk. */

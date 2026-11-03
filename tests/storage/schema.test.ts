@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseConnections, serializeConnections } from './schema';
+import { parseConnections, serializeConnections } from '../../src/storage/schema';
 
 const validConnection = {
   id: 'conn-1',
@@ -24,6 +24,13 @@ describe('parseConnections', () => {
     expect(connection.port).toBe(2222);
   });
 
+  test('accepts the port boundaries', () => {
+    for (const port of [1, 65535]) {
+      const [connection] = parseConnections(JSON.stringify([{ ...validConnection, port }]));
+      expect(connection.port).toBe(port);
+    }
+  });
+
   test('rejects malformed JSON', () => {
     expect(() => parseConnections('{not json')).toThrow('not valid JSON');
   });
@@ -33,8 +40,16 @@ describe('parseConnections', () => {
   });
 
   test('rejects invalid ports', () => {
-    expect(() => parseConnections(JSON.stringify([{ ...validConnection, port: 70000 }])))
-      .toThrow('port');
+    for (const port of [70000, 0, true, [22], '22abc', '22.9', null]) {
+      expect(() => parseConnections(JSON.stringify([{ ...validConnection, port }])))
+        .toThrow('port');
+    }
+  });
+
+  test('rejects duplicate ids', () => {
+    const second = { ...validConnection, name: 'Duplicate' };
+    expect(() => parseConnections(JSON.stringify([validConnection, second])))
+      .toThrow('duplicate id');
   });
 
   test('rejects missing required fields', () => {

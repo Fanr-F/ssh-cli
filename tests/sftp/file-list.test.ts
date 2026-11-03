@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatFileLine, formatSize, formatTime, readLocalDir, sortFileItems } from './file-list';
-import type { FileItem } from './types';
+import { formatFileLine, formatSize, formatTime, readLocalDir, sortFileItems } from '../../src/sftp/file-list';
+import type { FileItem } from '../../src/sftp/types';
 
 const tempDirs: string[] = [];
 

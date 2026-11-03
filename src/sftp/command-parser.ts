@@ -34,6 +34,22 @@ export function resolveLocalPath(base: string, target: string): string {
   return isAbsolute(target) ? target : resolve(base, target);
 }
 
+/**
+ * Expand a leading `~` in a local path. A trailing separator is preserved so
+ * directory-intent detection keeps working (Windows separators included).
+ */
+export function expandLocalTilde(target: string, home: string): string {
+  if (!home) return target;
+  if (target === '~') return home;
+  if (!target.startsWith('~/') && !target.startsWith('~\\')) return target;
+
+  const rest = target.slice(2);
+  const wantsTrailingSeparator = /[\\/]$/.test(rest);
+  const joined = join(home, rest);
+  if (wantsTrailingSeparator && !/[\\/]$/.test(joined)) return joined + pathSep;
+  return joined;
+}
+
 /** Resolve a path for whichever panel is active. */
 export function resolveCommandPath(
   side: PanelSide,
@@ -63,9 +79,17 @@ export function resolveUploadTarget(
   rawDest?: string,
 ): { localPath: string; remotePath: string; fileName: string } {
   const fileName = basename(source);
-  const remotePath = !rawDest || rawDest === '.' || rawDest === './'
-    ? resolveRemotePath(remoteCwd, fileName)
-    : resolveRemotePath(remoteCwd, rawDest);
+  const isDefaultDest = !rawDest || rawDest === '.' || rawDest === './';
+  let remotePath: string;
+  if (isDefaultDest) {
+    remotePath = resolveRemotePath(remoteCwd, fileName);
+  } else {
+    const resolved = resolveRemotePath(remoteCwd, rawDest);
+    // `upload a.txt docs/` names a directory, not the file itself.
+    remotePath = hasTrailingSeparator(rawDest)
+      ? resolveRemotePath(resolved, fileName)
+      : resolved;
+  }
   return { localPath: source, remotePath, fileName };
 }
 
@@ -76,9 +100,17 @@ export function resolveDownloadTarget(
   rawDest?: string,
 ): { remotePath: string; localPath: string; fileName: string } {
   const fileName = remoteBasename(source);
-  const localPath = !rawDest || rawDest === '.' || rawDest === '.\\' || rawDest === './'
-    ? resolve(localCwd, fileName)
-    : resolveLocalPath(localCwd, rawDest);
+  const isDefaultDest = !rawDest || rawDest === '.' || rawDest === '.\\' || rawDest === './';
+  let localPath: string;
+  if (isDefaultDest) {
+    localPath = resolve(localCwd, fileName);
+  } else {
+    const resolved = resolveLocalPath(localCwd, rawDest);
+    // `download f dir/` means "put f inside dir", not "overwrite dir".
+    localPath = hasTrailingSeparator(rawDest)
+      ? resolve(resolved, fileName)
+      : resolved;
+  }
   return { remotePath: source, localPath, fileName };
 }
 

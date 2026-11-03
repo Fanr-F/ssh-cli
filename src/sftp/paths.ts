@@ -19,3 +19,20 @@ export function resolveRemotePath(base: string, target: string): string {
   if (target.startsWith('/')) return posix.normalize(target);
   return posix.join(base || '/', target);
 }
+
+/**
+ * Expand a leading `~` in a remote path. The home directory is supplied by
+ * the caller (SFTP `realpath('.')`), so this stays a pure function.
+ * A trailing slash is preserved: callers use it to detect directory targets.
+ */
+export function expandRemoteTilde(target: string, home: string): string {
+  if (!home) return target;
+  if (target === '~') return posix.normalize(home);
+  if (!target.startsWith('~/')) return target;
+
+  const rest = target.slice(2);
+  const wantsTrailingSeparator = rest.endsWith('/');
+  const joined = posix.join(home, rest);
+  if (wantsTrailingSeparator && !joined.endsWith('/')) return `${joined}/`;
+  return joined;
+}

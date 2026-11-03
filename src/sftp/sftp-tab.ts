@@ -1,13 +1,15 @@
 import { Box, ScrollBox, Text, TextRenderable } from '@opentui/core';
 import type { CliRenderer, KeyEvent } from '@opentui/core';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join, isAbsolute, resolve, sep as pathSep } from 'node:path';
 import { SftpClient } from './sftp-client';
 import type { FileItem, PanelSide } from './types';
 import { createLogger } from '../logger';
 import { theme } from '../theme';
 import { findBinding, normalizeKey, type KeyContext } from '../keymap';
-import { remoteParentPath, resolveRemotePath } from './paths';
+import type { ConfirmRequest } from '../ui/confirm-dialog';
+import { expandRemoteTilde, remoteParentPath, resolveRemotePath } from './paths';
 import {
   buildListChunk,
   getWindowsSystemNames,
@@ -17,6 +19,7 @@ import {
 import {
   commonPrefix,
   completeCommandName,
+  expandLocalTilde,
   hasTrailingSeparator,
   isSameOrDescendantPath,
   parseCommand,
@@ -77,6 +80,8 @@ export function createSftpTab(
   local初始Path: string,
   /** 右键粘贴请求（剪贴板后端在 App 侧）；仅在命令行模式触发。 */
   requestPaste?: () => void,
+  /** 危险操作的二次确认（由 App 提供模态弹窗）；未提供时直接执行。 */
+  requestConfirm?: (options: ConfirmRequest) => Promise<boolean>,
 ): SftpTabAPI {
   const localState: FileListState = {
     currentPath: local初始Path,
@@ -344,16 +349,53 @@ export function createSftpTab(
   let remoteLoadToken = 0;
   let lastRefreshAt = 0;
   let refreshInFlight: Promise<void> | null = null;
+  let remoteHomePath: string | null = null;
+
+  /** Resolve and cache the remote home directory (for `~` expansion). */
+  async function getRemoteHome(): Promise<string> {
+    if (remoteHomePath === null) {
+      remoteHomePath = await sftpClient.realpath('.');
+    }
+    return remoteHomePath;
+  }
+
+  /** Expand a command argument's leading `~`; leave it untouched on failure. */
+  async function expandRemoteArg(value: string): Promise<string> {
+    if (value !== '~' && !value.startsWith('~/')) return value;
+    try {
+      return expandRemoteTilde(value, await getRemoteHome());
+    } catch (err) {
+      log.debug(`[SFTP] could not resolve remote home: ${err}`);
+      return value;
+    }
+  }
+
+  function expandLocalArg(value: string): string {
+    return expandLocalTilde(value, homedir());
+  }
+
+  async function isRemoteDirectory(path: string): Promise<boolean> {
+    try {
+      return (await sftpClient.stat(path)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  async function isLocalDirectory(path: string): Promise<boolean> {
+    try {
+      return (await stat(path)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
 
   async function loadRemoteDir(path: string): Promise<void> {
     const token = ++remoteLoadToken;
     log.debug(`[SFTP LOAD REMOTE] path:${path}`);
     try {
-      if (path === '~') {
-        path = await sftpClient.realpath('.');
-      } else if (path.startsWith('~/')) {
-        const home = await sftpClient.realpath('.');
-        path = home + path.slice(1);
+      if (path === '~' || path.startsWith('~/')) {
+        path = expandRemoteTilde(path, await getRemoteHome());
       }
       if (token !== remoteLoadToken || destroyed) return;
 
@@ -501,11 +543,18 @@ export function createSftpTab(
           renderStatus('Usage: upload <local_path> [remote_path]', C.red);
           return false;
         }
-        const target = resolveUploadTarget(remoteState.currentPath, args[0], args[1]);
+        const source = expandLocalArg(args[0]);
+        const rawDest = args[1] === undefined ? undefined : await expandRemoteArg(args[1]);
+        const target = resolveUploadTarget(remoteState.currentPath, source, rawDest);
         const localPath = isAbsolute(target.localPath)
           ? target.localPath
           : resolve(localState.currentPath, target.localPath);
-        const { remotePath, fileName } = target;
+        const { fileName } = target;
+        let remotePath = target.remotePath;
+        // `upload a.txt docs` (no trailing slash) still means "into docs".
+        if (rawDest && !hasTrailingSeparator(rawDest) && await isRemoteDirectory(remotePath)) {
+          remotePath = resolveRemotePath(remotePath, fileName);
+        }
         renderStatus(`Uploading ${localPath} → ${remotePath}...`, C.yellow);
         try {
           await sftpClient.upload(localPath, remotePath);
@@ -525,12 +574,19 @@ export function createSftpTab(
           renderStatus('Usage: download <remote_path> [local_path]', C.red);
           return false;
         }
+        const rawSource = await expandRemoteArg(args[0]);
+        const rawDest = args[1] === undefined ? undefined : expandLocalArg(args[1]);
         const target = resolveDownloadTarget(
           localState.currentPath,
-          resolveRemotePath(remoteState.currentPath, args[0]),
-          args[1],
+          resolveRemotePath(remoteState.currentPath, rawSource),
+          rawDest,
         );
-        const { remotePath, localPath, fileName } = target;
+        const { remotePath, fileName } = target;
+        let localPath = target.localPath;
+        // `download f dir` (no trailing slash) still means "into dir".
+        if (rawDest && !hasTrailingSeparator(rawDest) && await isLocalDirectory(localPath)) {
+          localPath = resolve(localPath, fileName);
+        }
         renderStatus(`Downloading ${remotePath} → ${localPath}...`, C.yellow);
         try {
           await sftpClient.download(remotePath, localPath);
@@ -549,7 +605,9 @@ export function createSftpTab(
           renderStatus('Usage: mkdir <name>', C.red);
           return false;
         }
-        const name = args[0];
+        const name = activeSide === 'remote'
+          ? await expandRemoteArg(args[0])
+          : expandLocalArg(args[0]);
         const fullPath = resolveMkdirTarget(
           activeSide,
           localState.currentPath,
@@ -596,11 +654,28 @@ export function createSftpTab(
           name = item.name;
           isDirHint = item.isDirectory;
         } else {
-          fullPath = toAbsPath(args[0]);
+          const rawPath = activeSide === 'remote'
+            ? await expandRemoteArg(args[0])
+            : expandLocalArg(args[0]);
+          fullPath = toAbsPath(rawPath);
           name = pathName(fullPath);
         }
         try {
           const isDir = isDirHint ?? await isDirectoryPath(fullPath);
+          if (requestConfirm) {
+            const confirmed = await requestConfirm({
+              title: activeSide === 'remote' ? 'Delete remote item' : 'Delete local item',
+              message: `Delete ${isDir ? 'directory' : 'file'} "${name}"?${
+                isDir ? ' The directory must be empty.' : ''
+              } This cannot be undone.`,
+              confirmLabel: 'Delete',
+              danger: true,
+            });
+            if (!confirmed) {
+              renderStatus('Delete cancelled', C.yellow);
+              return false;
+            }
+          }
           if (activeSide === 'remote') {
             if (isDir) {
               await sftpClient.rmdir(fullPath);
@@ -634,10 +709,16 @@ export function createSftpTab(
           renderStatus('Usage: mv <src> <dst>', C.red);
           return false;
         }
-        const oldPath = toAbsPath(args[0]);
-        let newPath = toAbsPath(args[1]);
+        const srcArg = activeSide === 'remote'
+          ? await expandRemoteArg(args[0])
+          : expandLocalArg(args[0]);
+        const dstArg = activeSide === 'remote'
+          ? await expandRemoteArg(args[1])
+          : expandLocalArg(args[1]);
+        const oldPath = toAbsPath(srcArg);
+        let newPath = toAbsPath(dstArg);
         // dst 是已存在的目录（或以分隔符结尾）→ 移入该目录，保留原文件名
-        let dstIsDir = hasTrailingSeparator(args[1]);
+        let dstIsDir = hasTrailingSeparator(dstArg);
         if (!dstIsDir) {
           try {
             dstIsDir = await isDirectoryPath(newPath);
@@ -684,7 +765,9 @@ export function createSftpTab(
           renderStatus('Usage: cd <path>', C.red);
           return false;
         }
-        let targetPath = args[0];
+        let targetPath = activeSide === 'remote'
+          ? await expandRemoteArg(args[0])
+          : expandLocalArg(args[0]);
         // Resolve relative path for remote side
         if (activeSide === 'remote') {
           targetPath = resolveRemotePath(remoteState.currentPath, targetPath);
@@ -847,6 +930,7 @@ export function createSftpTab(
       focus: 'sftp',
       helpOpen: false,
       formOpen: false,
+      confirmOpen: false,
       sftpCmdMode: cmdMode,
       formField: -1,
       activeTabType: 'sftp',

@@ -18,6 +18,11 @@ import { createToolbar, type ToolbarAPI } from './ui/toolbar';
 import { createDivider } from './ui/divider';
 import { createTabBar, type TabBarAPI } from './ui/tab-bar';
 import { createHelpPopup, type HelpPopupAPI } from './ui/help-popup';
+import {
+  createConfirmDialog,
+  type ConfirmDialogAPI,
+  type ConfirmRequest,
+} from './ui/confirm-dialog';
 import { SshConnection } from './ssh/connection';
 import { createAltScreenTracker, type AltScreenTracker } from './ssh/alt-screen';
 import { SftpClient } from './sftp/sftp-client';
@@ -62,6 +67,7 @@ export class App {
   private statusBar!: StatusBarAPI;
   private tabBar!: TabBarAPI;
   private helpPopup!: HelpPopupAPI;
+  private confirmDialog: ConfirmDialogAPI | null = null;
   private form: any = null;
   private formOpening = false;
   private shuttingDown = false;
@@ -356,6 +362,7 @@ export class App {
       focus: this.focus,
       helpOpen: this.helpPopup?.isVisible() ?? false,
       formOpen: !!this.form,
+      confirmOpen: !!this.confirmDialog,
       sftpCmdMode: tab?.sftpTab?.isCommandMode() ?? false,
       formField: this.form ? this.form.getFocusedFieldIndex() : -1,
       activeTabType: activeId ? this.tabBar.getTabType(activeId) : null,
@@ -367,6 +374,8 @@ export class App {
    *   system（Ctrl+Q / F1） → 模态（help / form）→ global → 当前焦点
    */
   private scopesFor(ctx: KeyContext): Scope[] {
+    // The confirmation dialog is modal: only Ctrl+Q stays active behind it.
+    if (ctx.confirmOpen) return ['system', 'confirm'];
     if (ctx.helpOpen) return ['system', 'help'];
     if (ctx.formOpen) return ['system', 'form'];
     return ['system', 'global', ctx.focus];
@@ -384,6 +393,11 @@ export class App {
       const binding = findBinding(scope, key, ctx);
 
       if (!binding) {
+        if (scope === 'confirm') {
+          // Modal: unmatched keys must not leak to the widget behind the dialog.
+          raw.preventDefault();
+          return;
+        }
         if (scope === 'sftp') {
           // SFTP 命令行模式的自由输入由组件自己收键
           this.delegateKey(scope, raw);
@@ -404,6 +418,9 @@ export class App {
       }
 
       logDebug(`[KEY] matched ${binding.id} (${scope})`);
+
+      // While a confirmation is pending, only quitting is allowed through.
+      if (ctx.confirmOpen && scope === 'system' && binding.id !== 'app.quit') continue;
 
       if (binding.owner === 'component') {
         this.delegateKey(scope, raw);
@@ -432,6 +449,10 @@ export class App {
 
   /** 把按键交给组件处理（组件内部查同一张绑定表）。 */
   private delegateKey(scope: Scope, raw: KeyEvent): void {
+    if (scope === 'confirm') {
+      this.confirmDialog?.handleKey(raw);
+      return;
+    }
     if (scope === 'form') {
       this.form?.handleKey(raw);
       return;
@@ -831,6 +852,14 @@ export class App {
         }
       });
       form.onDelete(async (id: string) => {
+        const conn = this.connections.find((c) => c.id === id) ?? existing;
+        const confirmed = await this.requestConfirm({
+          title: 'Delete connection',
+          message: `Delete "${conn?.name ?? id}"? This cannot be undone.`,
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!confirmed) return;
         try {
           await this.store.remove(id);
           this.connections = await this.store.getAll();
@@ -874,7 +903,60 @@ export class App {
     }
   }
 
+  /** Restore keyboard focus after a modal closes. */
+  private restoreFocus(zone: FocusZone): void {
+    if (zone === 'form' && this.form) {
+      this.focusForm();
+      this.form.resume?.();
+      return;
+    }
+    if (zone === 'terminal') {
+      this.focusTerminal();
+      return;
+    }
+    if (zone === 'sftp') {
+      this.focusSftp();
+      return;
+    }
+    this.focusSidebar();
+  }
+
+  /**
+   * Show a modal confirmation and resolve with the user's choice.
+   * Only one dialog can be open at a time; a second request resolves false.
+   */
+  private requestConfirm(options: ConfirmRequest): Promise<boolean> {
+    if (this.confirmDialog) return Promise.resolve(false);
+
+    const previousFocus = this.focus;
+    // Release native focus so keys/types cannot reach a widget behind the modal.
+    this.form?.suspend?.();
+    this.terminalPanel?.setFocused(false);
+
+    return new Promise<boolean>((resolve) => {
+      const dialog = createConfirmDialog(this.renderer, {
+        ...options,
+        onResolve: (confirmed) => {
+          if (this.confirmDialog === dialog) this.confirmDialog = null;
+          dialog.destroy();
+          resolve(confirmed);
+          this.restoreFocus(previousFocus);
+        },
+      });
+      this.confirmDialog = dialog;
+      this.renderer.requestRender();
+    });
+  }
+
   private async deleteConnection(conn: ConnectionConfig): Promise<void> {
+    const confirmed = await this.requestConfirm({
+      title: 'Delete connection',
+      message: `Delete "${conn.name}" (${conn.username}@${conn.host})? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
+
     try {
       await this.store.remove(conn.id);
       this.connections = await this.store.getAll();
@@ -936,8 +1018,25 @@ export class App {
       this.statusBar.setStatus(`Opening SFTP to ${config.host}...`);
       const authConfig = await this.store.withCredentials(config);
       sftpSsh = new SshConnection();
-      await sftpSsh.connect(authConfig);
-      const sftp = await sftpSsh.startSftp();
+      // Subscribe before connecting: ssh2 may report a transport error during
+      // the handshake, and an unhandled EventEmitter 'error' would kill the TUI.
+      const sshForSftp = sftpSsh;
+      sshForSftp.on('error', (err: Error) => {
+        logDebug(`[SFTP ERROR] ${err.message}`);
+        this.statusBar.setStatus(`SFTP error: ${err.message}`, 'error');
+        this.renderer.requestRender();
+        if (sftpTabId && this.tabs.has(sftpTabId)) {
+          void this.disposeTab(sftpTabId, { keepPanel: true });
+        }
+      });
+      sshForSftp.on('close', () => {
+        if (!sftpTabId || !this.tabs.has(sftpTabId)) return;
+        logDebug(`[SFTP CLOSE] ${sftpTabId}`);
+        this.statusBar.setStatus('SFTP connection closed', 'warning');
+        void this.disposeTab(sftpTabId, { keepPanel: true });
+      });
+      await sshForSftp.connect(authConfig);
+      const sftp = await sshForSftp.startSftp();
 
       // The originating terminal tab may have been closed while we connected.
       if (!this.tabs.has(activeId)) {
@@ -956,7 +1055,7 @@ export class App {
         // 右键粘贴：仅命令行模式会触发（浏览模式没有输入目标）
         this.focusSftp();
         void this.clipboard.paste();
-      });
+      }, (options) => this.requestConfirm(options));
 
       this.tabs.set(tabId, {
         term: tab.term,

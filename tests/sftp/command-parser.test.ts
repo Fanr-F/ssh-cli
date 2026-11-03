@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import {
   commonPrefix,
   completeCommandName,
+  expandLocalTilde,
   hasTrailingSeparator,
   isSameOrDescendantPath,
   parseCommand,
@@ -13,7 +14,7 @@ import {
   resolveDownloadTarget,
   resolveMkdirTarget,
   resolveUploadTarget,
-} from './command-parser';
+} from '../../src/sftp/command-parser';
 
 describe('SFTP command parser', () => {
   test('splits commands and collapses whitespace', () => {
@@ -43,6 +44,16 @@ describe('SFTP command parser', () => {
     });
   });
 
+  test('treats a trailing-separator upload destination as a directory', () => {
+    expect(resolveUploadTarget('/home/me', 'a.txt', 'docs/')).toEqual({
+      localPath: 'a.txt',
+      remotePath: '/home/me/docs/a.txt',
+      fileName: 'a.txt',
+    });
+    expect(resolveUploadTarget('/home/me', 'a.txt', '/srv/inbox/').remotePath)
+      .toBe('/srv/inbox/a.txt');
+  });
+
   test('resolves download destinations against the local cwd', () => {
     const target = resolveDownloadTarget('/local', '/remote/a.txt');
     expect(target.remotePath).toBe('/remote/a.txt');
@@ -51,6 +62,21 @@ describe('SFTP command parser', () => {
 
     expect(resolveDownloadTarget('/local', '/remote/a.txt', 'renamed.txt').localPath)
       .toBe(resolve('/local', 'renamed.txt'));
+  });
+
+  test('treats a trailing-separator download destination as a directory', () => {
+    expect(resolveDownloadTarget('/local', '/remote/a.txt', 'dir/').localPath)
+      .toBe(resolve('/local', 'dir', 'a.txt'));
+    expect(resolveDownloadTarget('/local', '/remote/a.txt', '/abs/dir/').localPath)
+      .toBe(resolve('/abs/dir', 'a.txt'));
+  });
+
+  test('expands a leading local tilde', () => {
+    expect(expandLocalTilde('~', '/home/me')).toBe('/home/me');
+    expect(expandLocalTilde('~/docs', '/home/me')).toBe(join('/home/me', 'docs'));
+    expect(expandLocalTilde('~\\docs', '/home/me')).toBe(join('/home/me', 'docs'));
+    expect(expandLocalTilde('/etc/hosts', '/home/me')).toBe('/etc/hosts');
+    expect(expandLocalTilde('relative', '/home/me')).toBe('relative');
   });
 
   test('resolves mkdir on both panels', () => {

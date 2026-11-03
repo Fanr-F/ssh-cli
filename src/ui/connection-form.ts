@@ -27,7 +27,7 @@ export interface FormAPI {
   /** Register a callback for cancellation */
   onCancel(cb: () => void): void;
   /** Register a callback for deletion (only fires when editing) */
-  onDelete(cb: (id: string) => void): void;
+  onDelete(cb: (id: string) => void | Promise<void>): void;
   /** Focus the first form field */
   focus(): void;
   /** Handle a key event (used when form has keyboard focus) */
@@ -46,6 +46,10 @@ export interface FormAPI {
   getFocusedFieldIndex(): number;
   /** Remove the form from the renderer and clean up */
   destroy(): void;
+  /** Release native input focus while a modal (confirmation) is on top. */
+  suspend(): void;
+  /** Restore native input focus after the modal closes. */
+  resume(): void;
 }
 
 // ─── Design tokens ────────────────────────────────────────────
@@ -83,13 +87,14 @@ export function createConnectionForm(
   // ── Callbacks ──────────────────────────────────────────
   let onSubmitCb: ((data: ConnectionConfig) => void | Promise<void>) | null = null;
   let onCancelCb: (() => void) | null = null;
-  let onDeleteCb: ((id: string) => void) | null = null;
+  let onDeleteCb: ((id: string) => void | Promise<void>) | null = null;
   let onPasteRequestCb: (() => void) | null = null;
 
   let hasFocus = false;
   let focusedField = 0;
   let passwordRevealed = false;
   let submitting = false;
+  let deleting = false;
 
   // 光标位置只剩密码框还需要手写维护（其余字段由 InputRenderable 管理）
   let passwordCursor = 0;
@@ -166,6 +171,7 @@ export function createConnectionForm(
       focus: "form",
       helpOpen: false,
       formOpen: true,
+      confirmOpen: false,
       sftpCmdMode: false,
       formField: focusedField,
       activeTabType: null,
@@ -183,7 +189,21 @@ export function createConnectionForm(
 
       case "form.submit":
         key.preventDefault();
+        // Enter activates the focused button: Cancel / Delete / (default) Save.
+        if (focusedField === 7) {
+          if (onCancelCb) onCancelCb();
+          return;
+        }
+        if (focusedField === 8) {
+          void requestDelete();
+          return;
+        }
         void handleSubmit();
+        return;
+
+      case "form.delete":
+        key.preventDefault();
+        if (focusedField === 8) void requestDelete();
         return;
 
       case "form.nextField":
@@ -493,6 +513,16 @@ export function createConnectionForm(
 
   body.add(conditionalBox);
 
+  // Inline validation feedback: one line so the dialog height stays stable.
+  const errorText = new TextRenderable(ctx, {
+    id: "conn-form-error",
+    content: " ",
+    fg: C.btnDanger,
+    height: 1,
+    wrapMode: "none",
+  });
+  body.add(errorText);
+
   // ── Button row ─────────────────────────────────────────
   const btnRow = new BoxRenderable(ctx, {
     flexDirection: "row",
@@ -547,7 +577,7 @@ export function createConnectionForm(
         e.stopPropagation();
         e.preventDefault();
         if (e.button === 2) return;
-        if (onDeleteCb) onDeleteCb(existing.id);
+        void requestDelete();
       },
     });
     deleteBtnText = new TextRenderable(ctx, { content: " Delete ", fg: C.btnDanger });
@@ -670,18 +700,40 @@ export function createConnectionForm(
     }
   }
 
+  /** Show the first validation / submit error; an empty list clears the line. */
+  function showErrors(errors: string[]): void {
+    errorText.content = errors.length > 0 ? ` ${errors[0]}` : " ";
+  }
+
+  /** Delete the edited connection, guarded against double activation. */
+  async function requestDelete(): Promise<void> {
+    if (deleting || !existing || !onDeleteCb) return;
+    deleting = true;
+    try {
+      await onDeleteCb(existing.id);
+    } finally {
+      deleting = false;
+    }
+  }
+
   async function handleSubmit(): Promise<void> {
     if (submitting) return;
     const errs = validate();
-    if (errs.length > 0) return;
+    if (errs.length > 0) {
+      showErrors(errs);
+      return;
+    }
+    showErrors([]);
     const data = buildConnectionConfig(state, existing);
     if (!data || !onSubmitCb) return;
 
     submitting = true;
     try {
       await onSubmitCb(data);
-    } catch {
-      // The owner surfaces the error; just unlock so the form can be retried.
+    } catch (err) {
+      // The owner surfaces the error in the status bar too; showing it inside
+      // the dialog explains why the save did not close the form.
+      showErrors([err instanceof Error ? err.message : 'Save failed']);
     } finally {
       submitting = false;
     }
@@ -713,6 +765,17 @@ export function createConnectionForm(
     onPasteRequestCb = null;
   }
 
+  function suspend() {
+    hasFocus = false;
+    for (const input of textInputs) input.blur();
+    keyPathInput.blur();
+  }
+
+  function resume() {
+    hasFocus = true;
+    focusCurrentInput(false);
+  }
+
   // ── Sync initial UI state ────────────────────────────────
   // The state is correctly initialised from `existing` (authType, password,
   // etc.) but the rendered toggle / conditional field only update on user
@@ -735,6 +798,8 @@ export function createConnectionForm(
     focus,
     handleKey: handleKeyDown,
     destroy,
+    suspend,
+    resume,
   };
 
   return Object.assign(overlay, api) as BoxRenderable & FormAPI;

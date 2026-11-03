@@ -57,7 +57,7 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 | `Enter` | Connect to selected server |
 | `A` | Add new connection |
 | `E` | Edit selected connection |
-| `Delete` | Delete selected connection (no confirmation) |
+| `Delete` | Delete selected connection (asks for confirmation) |
 
 #### Terminal
 
@@ -118,13 +118,23 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 | Key | Action |
 |---|---|
 | `Esc` | Cancel and close form |
-| `Enter` | Save connection |
+| `Enter` | Save connection (or activate the focused button) |
+| `Delete` | Delete connection (when the Delete button is focused) |
 | `Tab` | Next field |
 | `Shift+Tab` | Previous field |
 | `↓` | Next field (same as Tab) |
 | `↑` | Previous field (same as Shift+Tab) |
 | `←` | Switch auth type to Key (on Auth row) |
 | `→` | Switch auth type to Password (on Auth row) |
+
+#### Confirmation
+
+| Key | Action |
+|---|---|
+| `Esc` | Cancel the pending action |
+| `Enter` | Activate the focused button (Cancel is focused by default) |
+| `Tab / →` | Next button |
+| `Shift+Tab / ←` | Previous button |
 
 ### Mouse Shortcuts
 

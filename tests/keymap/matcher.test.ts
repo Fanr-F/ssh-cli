@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { KeyEvent } from '@opentui/core';
-import { matchesKey, normalizeKey } from './matcher';
-import type { NormalizedKey } from './types';
+import { matchesKey, normalizeKey } from '../../src/keymap/matcher';
+import type { NormalizedKey } from '../../src/keymap/types';
 
 function key(overrides: Partial<KeyEvent>): KeyEvent {
   return {

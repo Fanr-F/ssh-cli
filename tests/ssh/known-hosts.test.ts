@@ -7,7 +7,7 @@ import {
   KnownHostsStore,
   knownHostKeyId,
   parseKnownHosts,
-} from './known-hosts';
+} from '../../src/ssh/known-hosts';
 
 const tempDirs: string[] = [];
 

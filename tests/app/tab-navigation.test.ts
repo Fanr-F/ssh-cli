@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { nextTabId, previousTabId, tabIdAt } from './tab-navigation';
+import { nextTabId, previousTabId, tabIdAt } from '../../src/app/tab-navigation';
 
 describe('tab navigation', () => {
   test('reads ids by index with bounds checks', () => {

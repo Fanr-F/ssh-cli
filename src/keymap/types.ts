@@ -16,7 +16,7 @@ export type FocusZone = 'sidebar' | 'terminal' | 'form' | 'sftp';
  * 分发顺序（前面的优先级更高）：
  *   system → help / form（模态） → global → 当前焦点
  */
-export type Scope = 'system' | 'help' | 'form' | 'global' | 'sidebar' | 'terminal' | 'sftp';
+export type Scope = 'system' | 'help' | 'form' | 'confirm' | 'global' | 'sidebar' | 'terminal' | 'sftp';
 
 /** 帮助弹窗与 README 的分组。 */
 export type Group =
@@ -27,6 +27,7 @@ export type Group =
   | 'sftp-prompt'
   | 'sftp-command'
   | 'form'
+  | 'confirm'
   | 'mouse';
 
 /** 一个按键模式。未写的修饰键表示「不关心」。 */
@@ -57,6 +58,8 @@ export interface KeyContext {
   focus: FocusZone;
   helpOpen: boolean;
   formOpen: boolean;
+  /** 确认弹窗是否打开（模态，吞掉其余按键）。 */
+  confirmOpen: boolean;
   /** SFTP 是否处于 `:` 命令行模式。 */
   sftpCmdMode: boolean;
   /** 表单当前聚焦字段索引（-1 表示不在表单内）。 */
@@ -108,6 +111,7 @@ export const GROUP_TITLES: Record<Group, { en: string; zh: string }> = {
   'sftp-prompt': { en: 'SFTP Command Line', zh: 'SFTP 命令行编辑' },
   'sftp-command': { en: 'SFTP Commands', zh: 'SFTP 命令' },
   form: { en: 'Form', zh: '表单' },
+  confirm: { en: 'Confirmation', zh: '确认弹窗' },
   mouse: { en: 'Mouse', zh: '鼠标' },
 };
 
@@ -120,6 +124,7 @@ export const GROUP_ORDER: Group[] = [
   'sftp-prompt',
   'sftp-command',
   'form',
+  'confirm',
   'mouse',
 ];
 

@@ -3,7 +3,19 @@ import { createTestRenderer } from '@opentui/core/testing';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSftpTab } from './sftp-tab';
+import { createSftpTab } from '../../src/sftp/sftp-tab';
+
+function key(name: string, sequence: string) {
+  return {
+    name,
+    sequence,
+    ctrl: false,
+    shift: false,
+    meta: false,
+    option: false,
+    preventDefault: () => {},
+  } as any;
+}
 
 const tempDirs: string[] = [];
 
@@ -61,6 +73,52 @@ describe('createSftpTab', () => {
       const readsAfterFirstRefresh = remoteReads;
       await tab.refresh();
       expect(remoteReads).toBe(readsAfterFirstRefresh);
+    } finally {
+      tab.destroy();
+      await t.dispose();
+    }
+  });
+
+  test('cd ~ expands to the remote home directory', async () => {
+    const localDir = await mkdtemp(join(tmpdir(), 'ssh-cli-sftp-local-'));
+    tempDirs.push(localDir);
+    const remoteReads: string[] = [];
+
+    const fakeClient = {
+      realpath: async () => '/home/me',
+      readdir: async (path: string) => {
+        remoteReads.push(path);
+        return [];
+      },
+      stat: async () => {
+        throw new Error('ENOENT');
+      },
+      close: () => {},
+    };
+
+    const t = await createTestRenderer({ width: 120, height: 30 });
+    const tab = createSftpTab(
+      'sftp-tilde',
+      t.renderer,
+      fakeClient as any,
+      '~',
+      localDir,
+    );
+
+    try {
+      t.renderer.root.add(tab.component);
+      await t.renderOnce();
+      await tab.refresh();
+      remoteReads.length = 0;
+
+      await (tab.handleKey as any)(key(':', ':'));
+      for (const char of 'cd ~') {
+        await (tab.handleKey as any)(key(char === ' ' ? 'space' : char, char));
+      }
+      await (tab.handleKey as any)(key('enter', '\r'));
+      await t.renderOnce();
+
+      expect(remoteReads).toContain('/home/me');
     } finally {
       tab.destroy();
       await t.dispose();

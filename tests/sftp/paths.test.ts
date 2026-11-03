@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { remoteParentPath, resolveRemotePath } from './paths';
+import { expandRemoteTilde, remoteParentPath, resolveRemotePath } from '../../src/sftp/paths';
 
 describe('remoteParentPath', () => {
   test('returns null at the remote root', () => {
@@ -34,5 +34,25 @@ describe('resolveRemotePath', () => {
 
   test('normalizes parent segments', () => {
     expect(resolveRemotePath('/home/user', '../other')).toBe('/home/other');
+  });
+});
+
+describe('expandRemoteTilde', () => {
+  test('expands a bare tilde to the remote home', () => {
+    expect(expandRemoteTilde('~', '/home/me')).toBe('/home/me');
+  });
+
+  test('expands a tilde prefix', () => {
+    expect(expandRemoteTilde('~/docs', '/home/me')).toBe('/home/me/docs');
+  });
+
+  test('preserves a trailing separator used to signal a directory', () => {
+    expect(expandRemoteTilde('~/docs/', '/home/me')).toBe('/home/me/docs/');
+  });
+
+  test('leaves other paths untouched', () => {
+    expect(expandRemoteTilde('/etc/ssh', '/home/me')).toBe('/etc/ssh');
+    expect(expandRemoteTilde('relative/path', '/home/me')).toBe('relative/path');
+    expect(expandRemoteTilde('~', '')).toBe('~');
   });
 });

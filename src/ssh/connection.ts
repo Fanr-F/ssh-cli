@@ -46,6 +46,7 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
 
   private setupClientHandlers(client: Client): void {
     client.on('ready', () => {
+      if (this.client !== client) return;
       log.info('SSH connection ready');
       this.setState(SshConnectionState.Connected);
       this._lastError = null; // Clear error on successful connection
@@ -53,23 +54,33 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     });
 
     client.on('close', () => {
+      // Ignore delayed events from a client that has already been replaced
+      // or torn down: they must not reset the state of a newer connection.
+      if (this.client !== client) return;
       log.info('SSH connection closed');
-      this.setState(SshConnectionState.Disconnected);
       this.shellChannel = null;
-      if (this.client === client) this.client = null;
+      this.client = null;
+      this.setState(SshConnectionState.Disconnected);
       this.emit('close');
     });
 
     client.on('error', (err: Error) => {
+      if (this.client !== client) return;
       log.error('SSH connection error: {error}', { error: err.message });
       this._lastError = err; // Track the error
-      this.emit('error', err);
+      // EventEmitter throws ERR_UNHANDLED_ERROR when no listener is attached.
+      // Callers (e.g. the SFTP tab) may not subscribe, so only emit when safe;
+      // the error is always available through getLastError().
+      if (this.listenerCount('error') > 0) this.emit('error', err);
     });
 
     client.on('end', () => {
+      if (this.client !== client) return;
       log.debug('SSH connection ended');
-      this.setState(SshConnectionState.Disconnected);
+      // Keep `this.client` so a later disconnect() can still destroy the
+      // half-closed transport; the `close` handler (or disconnect) clears it.
       this.shellChannel = null;
+      this.setState(SshConnectionState.Disconnected);
     });
   }
 
@@ -223,11 +234,13 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
     if (this.disconnectPromise) return this.disconnectPromise;
 
     const client = this.client;
-    if (this._state === SshConnectionState.Disconnected || !client) {
+    if (!client) {
       this.setState(SshConnectionState.Disconnected);
       return Promise.resolve();
     }
 
+    // A client kept around after its `end` event (state already Disconnected)
+    // must still be destroyed: skipping it would leak the transport.
     this.setState(SshConnectionState.Closing);
 
     this.disconnectPromise = new Promise<void>((resolve) => {
@@ -251,12 +264,24 @@ export class SshConnection extends EventEmitter<SshConnectionEvents> {
         resolve();
       };
 
-      const onClose = (): void => finish(false);
+      const onClose = (): void => {
+        // The client's own `close` handler runs first and clears
+        // `this.client`; only a *different* live client means this event
+        // belongs to a stale transport that must not settle the promise.
+        if (this.client !== null && this.client !== client) return;
+        finish(false);
+      };
 
       client.once('close', onClose);
       timer = setTimeout(() => {
-        // Best effort: the transport may already be half-closed.
-        try { client.end(); } catch {}
+        // Best effort: the transport may already be half-closed. `destroy()`
+        // (unlike `end()`) guarantees the underlying socket is released.
+        try {
+          if (typeof client.destroy === 'function') client.destroy();
+          else client.end();
+        } catch {
+          try { client.end(); } catch {}
+        }
         finish(true);
       }, this.disconnectTimeoutMs);
       (timer as { unref?: () => void }).unref?.();

@@ -27,42 +27,102 @@ interface SecretFields {
 
 const ALL_SECRETS: SecretFields = { password: true, passphrase: true };
 
+/** Keychain operations used by the store; injectable for tests. */
+export interface CredentialStore {
+  get(id: string, kind: CredentialKind): Promise<string | null>;
+  set(id: string, kind: CredentialKind, value: string | undefined): Promise<void>;
+  deleteAll(id: string): Promise<void>;
+}
+
+/** Optional overrides; the defaults target the real config file and keychain. */
+export interface ConnectionStoreOptions {
+  configPath?: string;
+  readFile?: (path: string) => Promise<string | null>;
+  writeFile?: (path: string, contents: string) => Promise<void>;
+  credentials?: CredentialStore;
+}
+
+const DEFAULT_CREDENTIALS: CredentialStore = {
+  get: getCredential,
+  set: setCredential,
+  deleteAll: deleteConnectionCredentials,
+};
+
 export class ConnectionStore {
   private migrationChecked = false;
+  private firstLoad: Promise<ConnectionConfig[]> | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
+  /** >0 while a queued write task is running (load() must not re-enqueue). */
+  private queueDepth = 0;
+
+  private readonly configPath: string;
+  private readonly readFile: (path: string) => Promise<string | null>;
+  private readonly writeFile: (path: string, contents: string) => Promise<void>;
+  private readonly credentials: CredentialStore;
+
+  constructor(options: ConnectionStoreOptions = {}) {
+    this.configPath = options.configPath ?? getConfigPath();
+    this.readFile = options.readFile ?? readPrivateFile;
+    this.writeFile = options.writeFile ?? writePrivateFileAtomic;
+    this.credentials = options.credentials ?? DEFAULT_CREDENTIALS;
+  }
 
   /**
    * Load connection metadata. Missing files return an empty list; malformed
    * JSON or invalid entries throw so they cannot be silently overwritten.
+   *
+   * The one-time legacy migration runs inside the write queue so it cannot
+   * race with a queued save/add/update.
    */
   async load(): Promise<ConnectionConfig[]> {
-    const filePath = getConfigPath();
+    if (this.migrationChecked) {
+      return this.readConnections();
+    }
+
+    if (!this.firstLoad) {
+      const migrate = async (): Promise<ConnectionConfig[]> => {
+        const connections = await this.readConnections();
+        await this.migrateLegacySecrets(connections);
+        return connections;
+      };
+
+      const run = this.queueDepth > 0 ? migrate() : this.enqueue(migrate);
+      this.firstLoad = run.then(
+        (connections) => {
+          this.migrationChecked = true;
+          return connections;
+        },
+        (err) => {
+          // Allow a later load to retry after a transient read failure.
+          this.firstLoad = null;
+          throw err;
+        },
+      );
+    }
+
+    const connections = await this.firstLoad;
+    // Hand out copies: callers such as add() mutate the list they receive.
+    return connections.map((connection) => ({ ...connection }));
+  }
+
+  private async readConnections(): Promise<ConnectionConfig[]> {
+    const filePath = this.configPath;
     let raw: string | null;
     try {
-      raw = await readPrivateFile(filePath);
+      raw = await this.readFile(filePath);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(`Could not read ${filePath}: ${reason}`);
     }
 
-    if (raw === null) {
-      this.migrationChecked = true;
-      return [];
-    }
+    if (raw === null) return [];
 
-    let connections: ConnectionConfig[];
     try {
-      connections = parseConnections(raw);
+      return parseConnections(raw);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(`Could not load ${filePath}: ${reason}`);
     }
-
-    if (!this.migrationChecked) {
-      this.migrationChecked = true;
-      await this.migrateLegacySecrets(connections);
-    }
-    return connections;
   }
 
   /**
@@ -79,11 +139,11 @@ export class ConnectionStore {
       let count = 0;
       for (const connection of connections) {
         if (connection.password !== undefined) {
-          await setCredential(connection.id, 'password', connection.password);
+          await this.credentials.set(connection.id, 'password', connection.password);
           count++;
         }
         if (connection.passphrase !== undefined) {
-          await setCredential(connection.id, 'passphrase', connection.passphrase);
+          await this.credentials.set(connection.id, 'passphrase', connection.passphrase);
           count++;
         }
       }
@@ -130,7 +190,7 @@ export class ConnectionStore {
       } catch (err) {
         // The config was not committed, so remove any credentials just staged
         // for this brand-new id.
-        await deleteConnectionCredentials(newConn.id);
+        await this.credentials.deleteAll(newConn.id);
         throw err;
       }
       await this.clearSecrets(toClear);
@@ -157,9 +217,18 @@ export class ConnectionStore {
         passphrase: authChanged || Object.prototype.hasOwnProperty.call(updates, 'passphrase'),
       };
 
-      const toClear = await this.stageSecrets(next, fields);
-      connections[index] = next;
-      await this.writeConnections(connections);
+      // Remember the current credentials before staging so a failed config
+      // write can roll the keychain back instead of leaving it out of sync.
+      const snapshot = await this.snapshotSecrets(id, fields);
+      let toClear: Array<{ id: string; kind: CredentialKind }> = [];
+      try {
+        toClear = await this.stageSecrets(next, fields);
+        connections[index] = next;
+        await this.writeConnections(connections);
+      } catch (err) {
+        await this.restoreSecrets(id, snapshot);
+        throw err;
+      }
       await this.clearSecrets(toClear);
     });
   }
@@ -177,7 +246,7 @@ export class ConnectionStore {
       }
 
       await this.writeConnections(filtered);
-      await deleteConnectionCredentials(id);
+      await this.credentials.deleteAll(id);
     });
   }
 
@@ -212,14 +281,14 @@ export class ConnectionStore {
 
     try {
       if (connection.authType === 'password' && !result.password) {
-        result.password = (await getCredential(connection.id, 'password')) ?? undefined;
+        result.password = (await this.credentials.get(connection.id, 'password')) ?? undefined;
         if (!result.password && requirePassword) {
           throw new Error(`No password is stored for "${connection.name}"`);
         }
       }
 
       if (connection.authType === 'key' && !result.passphrase) {
-        result.passphrase = (await getCredential(connection.id, 'passphrase')) ?? undefined;
+        result.passphrase = (await this.credentials.get(connection.id, 'passphrase')) ?? undefined;
       }
     } catch (err) {
       if (connection.authType === 'password' && requirePassword) {
@@ -242,7 +311,7 @@ export class ConnectionStore {
 
     if (fields.password) {
       if (connection.authType === 'password' && connection.password) {
-        await setCredential(connection.id, 'password', connection.password);
+        await this.credentials.set(connection.id, 'password', connection.password);
       } else {
         toClear.push({ id: connection.id, kind: 'password' });
       }
@@ -250,7 +319,7 @@ export class ConnectionStore {
 
     if (fields.passphrase) {
       if (connection.authType === 'key' && connection.passphrase) {
-        await setCredential(connection.id, 'passphrase', connection.passphrase);
+        await this.credentials.set(connection.id, 'passphrase', connection.passphrase);
       } else {
         toClear.push({ id: connection.id, kind: 'passphrase' });
       }
@@ -264,7 +333,7 @@ export class ConnectionStore {
   ): Promise<void> {
     for (const entry of entries) {
       try {
-        await setCredential(entry.id, entry.kind, undefined);
+        await this.credentials.set(entry.id, entry.kind, undefined);
       } catch (err) {
         // The config write already committed; a stale keychain entry is
         // preferable to reporting a failed save that actually succeeded.
@@ -278,13 +347,67 @@ export class ConnectionStore {
     }
   }
 
+  /**
+   * Capture the current keychain values for the fields an update may change.
+   * A read failure is recorded as "unknown" so the rollback never deletes a
+   * credential it could not inspect.
+   */
+  private async snapshotSecrets(
+    id: string,
+    fields: SecretFields,
+  ): Promise<Partial<Record<CredentialKind, string | null>>> {
+    const snapshot: Partial<Record<CredentialKind, string | null>> = {};
+    for (const kind of ['password', 'passphrase'] as const) {
+      if (!fields[kind]) continue;
+      try {
+        snapshot[kind] = await this.credentials.get(id, kind);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        log.warn('Could not snapshot credential {kind} for {id}: {reason}', {
+          kind,
+          id,
+          reason,
+        });
+      }
+    }
+    return snapshot;
+  }
+
+  /** Best-effort rollback of the credentials staged by a failed update. */
+  private async restoreSecrets(
+    id: string,
+    snapshot: Partial<Record<CredentialKind, string | null>>,
+  ): Promise<void> {
+    for (const kind of ['password', 'passphrase'] as const) {
+      if (!(kind in snapshot)) continue;
+      try {
+        await this.credentials.set(id, kind, snapshot[kind] ?? undefined);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        log.warn('Could not restore credential {kind} for {id}: {reason}', {
+          kind,
+          id,
+          reason,
+        });
+      }
+    }
+  }
+
   private async writeConnections(connections: ConnectionConfig[]): Promise<void> {
-    await writePrivateFileAtomic(getConfigPath(), serializeConnections(connections));
+    await this.writeFile(this.configPath, serializeConnections(connections));
   }
 
   /** Serialize read-modify-write cycles so concurrent saves cannot clobber each other. */
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
-    const result = this.writeQueue.then(task, task);
+    const run = async (): Promise<T> => {
+      this.queueDepth += 1;
+      try {
+        return await task();
+      } finally {
+        this.queueDepth -= 1;
+      }
+    };
+    const result = this.writeQueue.then(run, run);
     this.writeQueue = result.then(() => undefined, () => undefined);
     return result;
   }

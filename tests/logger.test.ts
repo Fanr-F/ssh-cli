@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { redactSensitive } from './logger';
+import { redactSensitive } from '../src/logger';
 
 describe('redactSensitive', () => {
   test('masks common key/value secrets', () => {

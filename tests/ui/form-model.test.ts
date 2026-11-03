@@ -6,8 +6,9 @@ import {
   createFormState,
   createPasswordEdit,
   maskPassword,
+  parsePortInput,
   validateForm,
-} from './form-model';
+} from '../../src/ui/form-model';
 
 describe('form model', () => {
   test('creates defaults for a new connection', () => {
@@ -101,6 +102,36 @@ describe('form model', () => {
     expect(buildConnectionConfig(createFormState())).toBeNull();
   });
 
+  test('parses ports strictly', () => {
+    expect(parsePortInput('22')).toBe(22);
+    expect(parsePortInput(' 1 ')).toBe(1);
+    expect(parsePortInput('65535')).toBe(65535);
+
+    for (const bad of ['0', '65536', '22abc', '22.9', '', '  ', '-1', '1e3', '0x16']) {
+      expect(parsePortInput(bad)).toBeNull();
+    }
+  });
+
+  test('rejects dirty ports instead of truncating them', () => {
+    const state = {
+      ...createFormState(),
+      name: 'box',
+      host: 'h',
+      port: '22abc',
+      username: 'u',
+      authType: 'key' as const,
+      privateKeyPath: 'k',
+    };
+    expect(validateForm(state)).toContain('Port must be a number between 1 and 65535');
+    expect(buildConnectionConfig(state)).toBeNull();
+
+    state.port = '22.9';
+    expect(buildConnectionConfig(state)).toBeNull();
+
+    state.port = '2222';
+    expect(buildConnectionConfig(state)?.port).toBe(2222);
+  });
+
   test('masks passwords using one bullet per character', () => {
     expect(maskPassword('abc')).toBe('•••');
     expect(maskPassword('')).toBe(' ');
@@ -148,5 +179,20 @@ describe('password field model', () => {
   test('pasting only newlines is a no-op', () => {
     const edit = createPasswordEdit('keep');
     expect(applyPasswordPaste(edit, '\r\n')).toBe(edit);
+  });
+
+  test('accepts the space key', () => {
+    const edit = applyPasswordKey(
+      { password: 'ab', cursor: 2, replaceOnType: false },
+      { name: 'space', sequence: ' ' },
+    );
+    expect(edit.password).toBe('ab ');
+    expect(edit.cursor).toBe(3);
+  });
+
+  test('rejects control keys that look printable', () => {
+    const edit = createPasswordEdit('keep');
+    const next = applyPasswordKey(edit, { name: 'a', sequence: '\x01', ctrl: true });
+    expect(next).toEqual(edit);
   });
 });

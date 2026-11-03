@@ -135,8 +135,8 @@ export const BINDINGS: Binding[] = [
     scope: 'sidebar',
     key: { name: 'delete' },
     group: 'sidebar',
-    en: 'Delete selected connection (no confirmation)',
-    zh: '删除选中的连接（无二次确认）',
+    en: 'Delete selected connection (asks for confirmation)',
+    zh: '删除选中的连接（需二次确认）',
   },
 
   // ── terminal：仅在终端聚焦时生效 ────────────────────────────────
@@ -375,8 +375,18 @@ export const BINDINGS: Binding[] = [
     key: ENTER,
     group: 'form',
     owner: 'component',
-    en: 'Save connection',
-    zh: '保存连接',
+    en: 'Save connection (or activate the focused button)',
+    zh: '保存连接（或执行当前聚焦的按钮）',
+  },
+  {
+    id: 'form.delete',
+    scope: 'form',
+    key: { name: 'delete' },
+    group: 'form',
+    owner: 'component',
+    when: (ctx) => ctx.formField === 8,
+    en: 'Delete connection (when the Delete button is focused)',
+    zh: '删除连接（焦点在 Delete 按钮时）',
   },
   {
     id: 'form.nextField',
@@ -433,6 +443,44 @@ export const BINDINGS: Binding[] = [
     when: (ctx) => ctx.formField === 4,
     en: 'Switch auth type to Password (on Auth row)',
     zh: '切换认证方式为 Password（在认证行）',
+  },
+
+  // ── confirm：模态确认弹窗（删除等危险操作）────────────────────
+  {
+    id: 'confirm.cancel',
+    scope: 'confirm',
+    key: { name: 'escape' },
+    group: 'confirm',
+    owner: 'component',
+    en: 'Cancel the pending action',
+    zh: '取消待确认的操作',
+  },
+  {
+    id: 'confirm.confirm',
+    scope: 'confirm',
+    key: ENTER,
+    group: 'confirm',
+    owner: 'component',
+    en: 'Activate the focused button (Cancel is focused by default)',
+    zh: '执行当前聚焦的按钮（默认聚焦 Cancel）',
+  },
+  {
+    id: 'confirm.next',
+    scope: 'confirm',
+    key: [{ name: 'tab' }, { name: 'right' }],
+    group: 'confirm',
+    owner: 'component',
+    en: 'Next button',
+    zh: '下一个按钮',
+  },
+  {
+    id: 'confirm.prev',
+    scope: 'confirm',
+    key: [{ name: 'tab', shift: true }, { name: 'left' }],
+    group: 'confirm',
+    owner: 'component',
+    en: 'Previous button',
+    zh: '上一个按钮',
   },
 
   // ── help：模态，只响应滚动与关闭 ────────────────────────────────

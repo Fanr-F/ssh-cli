@@ -54,8 +54,13 @@ src/
     ├── divider.ts        # Draggable sidebar divider
     ├── form-model.ts     # Add/edit form state, validation, config building
     ├── password-field.ts # Hand-rendered masked password input
+    ├── confirm-dialog.ts # Reusable modal confirmation (dangerous actions)
     └── help-popup.ts     # Draggable help popup (F1) with SFTP shortcuts
 ```
+
+`tests/` mirrors the `src/` layout (`tests/sftp/sftp-tab.test.ts`,
+`tests/ui/connection-form.test.ts`, …). Tests run with `bun test`; `tsc --noEmit`
+typechecks both `src/` and `tests/`.
 
 ## Key Patterns
 

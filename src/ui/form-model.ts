@@ -27,13 +27,21 @@ export function createFormState(existing?: ConnectionConfig): FormState {
   };
 }
 
+/** Parse a port field strictly: digits only, integer, 1-65535. */
+export function parsePortInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const port = Number(trimmed);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return port;
+}
+
 /** Returns human-readable validation errors; empty means valid. */
 export function validateForm(state: FormState): string[] {
   const errors: string[] = [];
   if (!state.name.trim()) errors.push('Name is required');
   if (!state.host.trim()) errors.push('Host is required');
-  const portNum = parseInt(state.port, 10);
-  if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+  if (parsePortInput(state.port) === null) {
     errors.push('Port must be a number between 1 and 65535');
   }
   if (!state.username.trim()) errors.push('Username is required');
@@ -49,7 +57,8 @@ export function buildConnectionConfig(
   existing?: ConnectionConfig,
 ): ConnectionConfig | null {
   if (validateForm(state).length > 0) return null;
-  const portNum = parseInt(state.port, 10);
+  const portNum = parsePortInput(state.port);
+  if (portNum === null) return null;
 
   return {
     id: existing?.id ?? crypto.randomUUID(),
@@ -96,7 +105,12 @@ export function createPasswordEdit(password = ''): PasswordEdit {
 }
 
 export function isPrintablePasswordKey(key: PasswordKeyInput): boolean {
-  return !!key.sequence && key.name.length === 1 && !key.ctrl && !key.meta && !key.option;
+  if (!key.sequence || key.ctrl || key.meta || key.option) return false;
+  // OpenTUI reports the space bar as `name: 'space'` (sequence ' ').
+  const printableName = key.name === 'space' || key.name.length === 1;
+  if (!printableName) return false;
+  // Reject control characters that still carry a single-char sequence.
+  return !/^[\x00-\x1f\x7f]/.test(key.sequence);
 }
 
 /** Apply a key press to the password buffer without mutating the input. */

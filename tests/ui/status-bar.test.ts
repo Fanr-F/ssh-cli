@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { createTestRenderer } from '@opentui/core/testing';
-import { createStatusBar } from './status-bar';
+import { createStatusBar } from '../../src/ui/status-bar';
 
 describe('createStatusBar', () => {
   test('renders status messages on the single status line', async () => {

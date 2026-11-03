@@ -1,6 +1,18 @@
 import { describe, expect, test } from 'bun:test';
 import { createTestRenderer } from '@opentui/core/testing';
-import { App } from './app';
+import { App } from '../src/app';
+
+function key(name: string, sequence: string) {
+  return {
+    name,
+    sequence,
+    ctrl: false,
+    shift: false,
+    meta: false,
+    option: false,
+    preventDefault: () => {},
+  } as any;
+}
 
 describe('App tab teardown', () => {
   test('disposeTab removes the tab, disconnects once, and shows idle', async () => {
@@ -51,6 +63,7 @@ describe('App tab teardown', () => {
   });
 
   test('disposing the active tab switches to the remaining tab', async () => {
+
     const t = await createTestRenderer({ width: 80, height: 24 });
     const app = new App(t.renderer);
 
@@ -85,6 +98,58 @@ describe('App tab teardown', () => {
 
       expect((app as any).tabs.size).toBe(1);
       expect((app as any).tabBar.getActiveTabId()).toBe('t1');
+    } finally {
+      await (app as any).clipboard?.dispose?.();
+      await t.dispose();
+    }
+  });
+});
+
+describe('App confirmation modal', () => {
+  test('blocks other keys, resolves on Escape, and restores focus', async () => {
+    const t = await createTestRenderer({ width: 100, height: 30 });
+    const app = new App(t.renderer);
+
+    try {
+      (app as any).connections = [];
+      (app as any).buildLayout();
+
+      const pending = (app as any).requestConfirm({
+        title: 'Test',
+        message: 'Delete "x"?',
+      });
+      expect((app as any).buildKeyContext().confirmOpen).toBe(true);
+
+      await (app as any).dispatchKey(key('escape', '\x1b'));
+
+      expect(await pending).toBe(false);
+      expect((app as any).confirmDialog).toBeNull();
+      expect((app as any).buildKeyContext().confirmOpen).toBe(false);
+      expect((app as any).focus).toBe('sidebar');
+    } finally {
+      await (app as any).clipboard?.dispose?.();
+      await t.dispose();
+    }
+  });
+
+  test('Tab then Enter confirms', async () => {
+    const t = await createTestRenderer({ width: 100, height: 30 });
+    const app = new App(t.renderer);
+
+    try {
+      (app as any).connections = [];
+      (app as any).buildLayout();
+
+      const pending = (app as any).requestConfirm({
+        title: 'Test',
+        message: 'Delete "x"?',
+      });
+
+      await (app as any).dispatchKey(key('tab', '\t'));
+      await (app as any).dispatchKey(key('enter', '\r'));
+
+      expect(await pending).toBe(true);
+      expect((app as any).confirmDialog).toBeNull();
     } finally {
       await (app as any).clipboard?.dispose?.();
       await t.dispose();
