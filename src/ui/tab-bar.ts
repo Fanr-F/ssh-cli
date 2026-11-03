@@ -64,7 +64,16 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
   }
 
   // ── Track child IDs for rebuild ─────────────────────────────
-  let childIds: string[] = [];
+  /** True when tabs were added/removed before the bar was mounted. */
+  let needsRebuild = false;
+
+  /** Resolved nodes per tab, so title/active changes never rebuild the tree. */
+  interface TabNodes {
+    box: any;
+    title: any;
+    close: any;
+  }
+  const nodeRefs = new Map<string, TabNodes>();
 
   function buildChildren(): ReturnType<typeof Box>[] {
     return tabs.map((tab) => {
@@ -74,7 +83,7 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
           id: `tab-${tab.id}`,
           flexDirection: 'row',
           paddingX: 1,
-          backgroundColor: isActive ? C.bgActive : undefined,
+          backgroundColor: isActive ? C.bgActive : C.bg,
           // NOTE: this was `borderBottom: <color>`, which is not an OpenTUI Box option and
           // was silently ignored. A real bottom border (`border: ['bottom']`) would consume
           // the single row this 1-high tab bar has and clip the tab titles, so the active
@@ -96,30 +105,64 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
             }
           },
         },
-        Text({ content: ` ${tab.title} `, fg: isActive ? C.textActive : C.text }),
-        Text({ content: '\u00D7', fg: isActive ? C.cyan : C.textDim }),
+        Text({ id: `tab-title-${tab.id}`, content: ` ${tab.title} `, fg: isActive ? C.textActive : C.text }),
+        Text({ id: `tab-close-${tab.id}`, content: '\u00D7', fg: isActive ? C.cyan : C.textDim }),
       );
     });
   }
 
+  function resolveNodes(instance: any): void {
+    nodeRefs.clear();
+    for (const tab of tabs) {
+      const box = instance.findDescendantById(`tab-${tab.id}`);
+      const title = instance.findDescendantById(`tab-title-${tab.id}`);
+      const close = instance.findDescendantById(`tab-close-${tab.id}`);
+      if (box && title && close) nodeRefs.set(tab.id, { box, title, close });
+    }
+  }
+
+  /** Update titles and active colours in place; O(tabs), no tree rebuild. */
+  function applyTabStyles(): void {
+    for (const tab of tabs) {
+      const refs = nodeRefs.get(tab.id);
+      if (!refs) continue;
+      const isActive = tab.id === activeTabId;
+      refs.box.backgroundColor = isActive ? C.bgActive : C.bg;
+      refs.title.content = ` ${tab.title} `;
+      refs.title.fg = isActive ? C.textActive : C.text;
+      refs.close.fg = isActive ? C.cyan : C.textDim;
+    }
+  }
+
+  /** Rebuild the tab row. Only needed when tabs are added or removed. */
   function rebuild(): void {
     const instance = getInstance();
-    if (!instance) return;
+    if (!instance) {
+      // Tabs added before mounting: remember to rebuild once mounted.
+      needsRebuild = true;
+      return;
+    }
+    needsRebuild = false;
 
-    // Remove old children. Since @opentui/core 0.6.x remove() takes the renderable
-    // object itself, not its id (0.4.0 looked the id up and skipped if missing).
-    for (const child of instance.getChildren() ?? []) {
-      if (childIds.includes(child.id)) instance.remove(child);
+    // Remove every tab node; the model above is the source of truth for what
+    // should exist, so stale tabs cannot survive a rebuild.
+    for (const child of [...(instance.getChildren() ?? [])]) {
+      if (typeof child.id === 'string' && child.id.startsWith('tab-')) {
+        instance.remove(child);
+      }
     }
 
-    // Insert fresh children
-    const fresh = buildChildren();
-    for (const child of fresh) {
+    for (const child of buildChildren()) {
       instance.add(child);
     }
 
-    childIds = tabs.map((tab) => `tab-${tab.id}`);
+    resolveNodes(instance);
+    applyTabStyles();
     renderer.requestRender();
+  }
+
+  function ensureRebuilt(): void {
+    if (needsRebuild && getInstance()) rebuild();
   }
 
   function switchTo(id: string): void {
@@ -129,7 +172,9 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
       return;
     }
     activeTabId = id;
-    rebuild();
+    ensureRebuilt();
+    applyTabStyles();
+    renderer.requestRender();
     log.debug(`[TAB BAR] switchTo: calling onSwitchCb for ${id}`);
     onSwitchCb?.(id);
   }
@@ -178,10 +223,11 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
 
     updateTabTitle(id: string, title: string): void {
       const tab = tabs.find((t) => t.id === id);
-      if (tab) {
-        tab.title = title;
-        rebuild();
-      }
+      if (!tab || tab.title === title) return;
+      tab.title = title;
+      ensureRebuilt();
+      applyTabStyles();
+      renderer.requestRender();
     },
 
     onTabSwitch(callback: (id: string) => void): void {
@@ -193,6 +239,7 @@ export function createTabBar(renderer: CliRenderer): TabBarAPI {
     },
 
     setVisible(visible: boolean): void {
+      ensureRebuilt();
       const instance = getInstance();
       if (instance) instance.visible = visible;
     },
