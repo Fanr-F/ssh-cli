@@ -18,10 +18,83 @@ export interface ParsedCommand {
   args: string[];
 }
 
-/** Split an SFTP command line into the command name and arguments. */
+/**
+ * Split an SFTP command line into the command name and arguments.
+ *
+ * Supports single/double quotes and backslash escaping. Unquoted backslashes
+ * are kept literally unless they escape whitespace, a quote or another
+ * backslash, so Windows paths like `C:\tmp\a.txt` survive unchanged.
+ */
 export function parseCommand(input: string): ParsedCommand {
-  const parts = input.trim().split(/\s+/).filter(Boolean);
-  return { command: parts[0] ?? '', args: parts.slice(1) };
+  const tokens = tokenize(input.trim());
+  return { command: tokens[0] ?? '', args: tokens.slice(1) };
+}
+
+function tokenize(input: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let inToken = false;
+  let quote: '"' | "'" | null = null;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    const next = input[i + 1];
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else current += ch;
+      inToken = true;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+      } else if (ch === '\\' && (next === '"' || next === '\\')) {
+        // Only `\"` and `\\` are escapes inside double quotes.
+        current += next;
+        i += 1;
+      } else {
+        current += ch;
+      }
+      inToken = true;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      inToken = true;
+      continue;
+    }
+
+    if (ch === '\\') {
+      if (next !== undefined && (/\s/.test(next) || next === '"' || next === "'" || next === '\\')) {
+        // Escape the next character (space, quote, backslash).
+        current += next;
+        i += 1;
+      } else {
+        // Windows path separator: keep it literally.
+        current += ch;
+      }
+      inToken = true;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      if (inToken) {
+        tokens.push(current);
+        current = '';
+        inToken = false;
+      }
+      continue;
+    }
+
+    current += ch;
+    inToken = true;
+  }
+
+  if (inToken) tokens.push(current);
+  return tokens;
 }
 
 /** Command-name completions for the first token of the command line. */

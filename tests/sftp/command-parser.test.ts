@@ -26,6 +26,30 @@ describe('SFTP command parser', () => {
     expect(parseCommand('')).toEqual({ command: '', args: [] });
   });
 
+  test('supports quoted arguments with spaces', () => {
+    expect(parseCommand('upload "my file.txt" "docs/my dir/"')).toEqual({
+      command: 'upload',
+      args: ['my file.txt', 'docs/my dir/'],
+    });
+    expect(parseCommand("mkdir 'a b'")).toEqual({ command: 'mkdir', args: ['a b'] });
+    expect(parseCommand('upload "" dest')).toEqual({ command: 'upload', args: ['', 'dest'] });
+  });
+
+  test('supports backslash escapes without breaking Windows paths', () => {
+    expect(parseCommand('upload my\\ file.txt dest').args).toEqual(['my file.txt', 'dest']);
+    expect(parseCommand('upload C:\\tmp\\a.txt dest').args).toEqual(['C:\\tmp\\a.txt', 'dest']);
+    // Inside double quotes only \" and \\ are escapes.
+    expect(parseCommand('upload "C:\\tmp\\a b.txt"').args).toEqual(['C:\\tmp\\a b.txt']);
+    expect(parseCommand('upload "a \\"quoted\\" name"').args).toEqual(['a "quoted" name']);
+  });
+
+  test('treats an unterminated quote as the rest of the line', () => {
+    expect(parseCommand('upload "unterminated')).toEqual({
+      command: 'upload',
+      args: ['unterminated'],
+    });
+  });
+
   test('completes command names by prefix', () => {
     expect(completeCommandName('m')).toEqual(['mkdir', 'mv']);
     expect(completeCommandName('down')).toEqual(['download']);
