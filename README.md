@@ -13,6 +13,16 @@ A terminal-based SSH client with an interactive TUI, built with [Bun](https://bu
 
 **SSH CLI** is a keyboard-driven SSH client that runs entirely in your terminal. Manage connections, authenticate with key or password, interact with remote shells — all without leaving the command line.
 
+### Screenshots
+
+![SSH terminal session in ssh-cli](docs/assets/screenshot-terminal.svg)
+
+*Live SSH session — sidebar connection list, tabs, native VT emulation and the Tokyo Night theme.*
+
+![SFTP dual-panel file manager in ssh-cli](docs/assets/screenshot-sftp.svg)
+
+*SFTP file manager — local/remote dual panel with command-line mode.*
+
 ### Features
 
 - **Connection Manager** — Add, edit, delete connections via keyboard-driven sidebar UI

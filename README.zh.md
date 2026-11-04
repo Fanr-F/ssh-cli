@@ -13,6 +13,16 @@
 
 **SSH CLI** 是一个完全运行在终端中的 SSH 客户端，使用键盘驱动。无需离开命令行即可管理连接、认证和操作远程 shell。
 
+### 效果预览
+
+![在 ssh-cli 中使用 SSH 终端会话](docs/assets/screenshot-terminal.svg)
+
+*实时 SSH 会话 —— 侧边栏连接列表、多标签页、原生终端模拟与东京夜景（Tokyo Night）主题。*
+
+![在 ssh-cli 中使用 SFTP 双面板文件管理器](docs/assets/screenshot-sftp.svg)
+
+*SFTP 文件管理器 —— 本地/远程双面板，支持命令行模式。*
+
 ### 功能特性
 
 - **连接管理** — 通过键盘驱动的侧边栏界面添加、编辑、删除 SSH 连接

@@ -194,6 +194,39 @@ describe('createSftpTab transfer cancellation', () => {
   });
 });
 
+describe('createSftpTab panel switching', () => {
+  test('Tab toggles between the local and remote panels in browse mode', async () => {
+    const localDir = await mkdtemp(join(tmpdir(), 'ssh-cli-sftp-local-'));
+    tempDirs.push(localDir);
+
+    const fakeClient = {
+      realpath: async () => '/remote',
+      readdir: async () => [],
+      close: () => {},
+    };
+
+    const t = await createTestRenderer({ width: 120, height: 30 });
+    const tab = createSftpTab('sftp-tab-key', t.renderer, fakeClient as any, '~', localDir);
+
+    try {
+      t.renderer.root.add(tab.component);
+      await t.renderOnce();
+      await tab.refresh();
+
+      await (tab.handleKey as any)(key('tab', '\t'));
+      await t.renderOnce();
+      expect(t.captureCharFrame()).toContain('Panel: Local');
+
+      await (tab.handleKey as any)(key('tab', '\t'));
+      await t.renderOnce();
+      expect(t.captureCharFrame()).toContain('Panel: Remote');
+    } finally {
+      tab.destroy();
+      await t.dispose();
+    }
+  });
+});
+
 describe('formatTransferProgress', () => {
   test('renders percentage, transferred and total bytes', () => {
     expect(formatTransferProgress('Uploading a.txt', 512, 1024))

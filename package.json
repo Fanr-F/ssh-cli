@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "docs": "bun run scripts/gen-shortcuts.ts",
+    "screenshots": "bun run scripts/capture-screenshots.ts",
     "build": "bun run build:win",
     "build:win": "bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist/ssh-cli.exe"
   },
