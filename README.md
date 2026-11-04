@@ -386,3 +386,9 @@ Press `Ctrl+Q` to quit the application.
 - **Dynamic import** — `ssh2-no-cpu-features` is imported via `await import()` because it ships ESM with top-level await
 - **File-only logging** — All logs write to `~/.ssh-cli/ssh-cli.log` (no console output to preserve TUI integrity)
 - **Keychain credentials** — Passwords/passphrases never go into `config.json`; legacy plaintext entries are migrated on first launch when the OS keychain is available
+
+---
+
+## License
+
+[MIT](LICENSE)
