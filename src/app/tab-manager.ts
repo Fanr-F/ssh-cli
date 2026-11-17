@@ -11,6 +11,8 @@ export interface TabState {
   term: EmbeddedTerminalRenderable;
   ssh: SshConnection;
   config: ConnectionConfig;
+  /** Set once the SSH handshake succeeded, so switching back can restore UI state. */
+  connected?: boolean;
   /** Remote alternate-screen state; SFTP tabs reuse the terminal tab's tracker. */
   altScreen: AltScreenTracker;
   sftpClient?: SftpClient;

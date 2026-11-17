@@ -25,6 +25,7 @@ import {
   type ConfirmRequest,
 } from './ui/confirm-dialog';
 import { SshConnection } from './ssh/connection';
+import { SshConnectionState } from './ssh/types';
 import { createAltScreenTracker } from './ssh/alt-screen';
 import { SftpClient } from './sftp/sftp-client';
 import { createSftpTab } from './sftp/sftp-tab';
@@ -532,6 +533,43 @@ export class App {
     this.renderer.requestRender();
   }
 
+  /** True when `tabId` owns the terminal the user is currently looking at. */
+  private isVisibleTab(tabId: string): boolean {
+    return this.terminalPanel.getActiveTabId() === tabId;
+  }
+
+  /**
+   * Report a connection error without hijacking another tab's terminal.
+   *
+   * The terminal panel is shared by every tab, so a late failure from a
+   * background tab (typically a slow host that finally times out after the
+   * user already connected somewhere else) must only repaint the panel when
+   * that tab is on screen. Otherwise a healthy session looks like it timed
+   * out too, because `showError()` hides the active terminal.
+   */
+  private reportTabError(tabId: string, host: string, message: string, label = 'Error'): void {
+    if (!this.tabs.has(tabId)) return;
+    if (this.isVisibleTab(tabId)) {
+      this.terminalPanel.showError(message);
+      this.statusBar.setStatus(`${label}: ${message}`, 'error');
+    } else {
+      this.statusBar.setStatus(`${label} (${host}): ${message}`, 'error');
+    }
+    this.renderer.requestRender();
+  }
+
+  /** Same scoping rule as `reportTabError`, for a closed connection/shell. */
+  private reportTabClosed(tabId: string, host: string): void {
+    if (!this.tabs.has(tabId)) return;
+    if (this.isVisibleTab(tabId)) {
+      this.terminalPanel.showDisconnected();
+      this.statusBar.setDisconnected();
+    } else {
+      this.statusBar.setStatus(`Connection closed (${host})`, 'warning');
+    }
+    this.renderer.requestRender();
+  }
+
   private async connectTo(config: ConnectionConfig): Promise<void> {
     logDebug(`[CONNECT] host=${config.host}, username=${config.username}, current tabs=${this.tabs.size}`);
     
@@ -604,6 +642,7 @@ export class App {
         await ssh.disconnect();
         return;
       }
+      tab.connected = true;
       // Update tab title with connected status
       this.tabBar.updateTabTitle(tabId, `SSH: ${config.username}@${config.host}`);
       // Persist the connection time and refresh the sidebar dot. Do not await:
@@ -644,38 +683,27 @@ export class App {
         channel.stderr.on('data', onSshData);
         channel.on('close', () => {
           logDebug(`[SSH CLOSE] Tab ${tabId} channel closed`);
-          if (!this.tabs.has(tabId)) return;
           // Keep the tab so the user can read the last output. Closing is
           // explicit (double-click the tab) and losing scrollback is worse.
-          this.terminalPanel.showDisconnected();
-          this.statusBar.setDisconnected();
-          this.renderer.requestRender();
+          this.reportTabClosed(tabId, config.host);
         });
       } catch (err) {
         if (!this.tabs.has(tabId)) return;
         const msg = err instanceof Error ? err.message : 'Unknown error';
-        this.terminalPanel.showError('Shell error: ' + msg);
-        this.statusBar.setStatus(`Shell error: ${msg}`, 'error');
-        this.renderer.requestRender();
+        this.reportTabError(tabId, config.host, msg, 'Shell error');
         await this.tabs.dispose(tabId, { keepPanel: true });
       }
     });
 
     ssh.on('error', (err: Error) => {
       logDebug(`[SSH ERROR] Tab ${tabId}: ${err.message}`);
-      if (!this.tabs.has(tabId)) return;
-      this.terminalPanel.showError(err.message);
-      this.statusBar.setStatus(`Error: ${err.message}`, 'error');
-      this.renderer.requestRender();
+      this.reportTabError(tabId, config.host, err.message);
     });
 
     ssh.on('close', () => {
       logDebug(`[SSH CLOSE] Tab ${tabId} connection closed`);
-      if (!this.tabs.has(tabId)) return;
       // Same as the channel close handler: keep the tab and its scrollback.
-      this.terminalPanel.showDisconnected();
-      this.statusBar.setDisconnected();
-      this.renderer.requestRender();
+      this.reportTabClosed(tabId, config.host);
     });
 
     try {
@@ -685,9 +713,7 @@ export class App {
       // error or linger in the tab bar.
       if (!this.tabs.has(tabId)) return;
       const msg = err instanceof Error ? err.message : 'Connection failed';
-      this.terminalPanel.showError(msg);
-      this.statusBar.setStatus(`Connection failed: ${msg}`, 'error');
-      this.renderer.requestRender();
+      this.reportTabError(tabId, config.host, msg, 'Connection failed');
       await this.tabs.dispose(tabId, { keepPanel: true });
     }
   }
@@ -735,6 +761,14 @@ export class App {
       }
       this.terminalPanel.setVisible(true);
       this.terminalPanel.switchTerminal(id);
+      // The panel is shared: re-apply this tab's own state on switch, because
+      // background connection events no longer repaint it.
+      const lastError = tab.ssh.getLastError();
+      if (lastError && !tab.ssh.isConnected()) {
+        this.terminalPanel.showError(lastError.message);
+      } else if (tab.connected && tab.ssh.state === SshConnectionState.Disconnected) {
+        this.terminalPanel.showDisconnected();
+      }
       this.focusTerminal();
     }
 

@@ -105,6 +105,100 @@ describe('App tab teardown', () => {
   });
 });
 
+describe('App background tab events', () => {
+  test('a background tab error does not repaint the visible terminal', async () => {
+    const t = await createTestRenderer({ width: 100, height: 24 });
+    const app = new App(t.renderer);
+
+    try {
+      (app as any).connections = [];
+      (app as any).buildLayout();
+
+      const panelCalls: Array<[string, string]> = [];
+      (app as any).terminalPanel = {
+        getActiveTabId: () => 't2',
+        showError: (message: string) => panelCalls.push(['error', message]),
+        showDisconnected: () => panelCalls.push(['disconnected', '']),
+      };
+
+      const config = {
+        id: 'c1',
+        name: 'slow',
+        host: '192.168.10.46',
+        port: 22,
+        username: 'root',
+        authType: 'key' as const,
+        createdAt: '2026-11-02T00:00:00.000Z',
+      };
+      const ssh = {
+        isConnected: () => false,
+        getLastError: () => null,
+        disconnect: async () => {},
+      };
+      const altScreen = { active: false, feed: () => {}, reset: () => {} };
+      (app as any).tabs.set('t1', { term: {}, ssh, config, altScreen });
+      (app as any).tabs.set('t2', { term: {}, ssh: { ...ssh }, config, altScreen });
+
+      (app as any).reportTabError('t1', config.host, 'Timed out while waiting for handshake');
+
+      // The healthy tab stays on screen; the failure is reported in the
+      // status bar, with the host so it cannot be mistaken for the active tab.
+      expect(panelCalls).toEqual([]);
+      await t.renderOnce();
+      expect(t.captureCharFrame()).toContain('192.168.10.46');
+      expect(t.captureCharFrame()).toContain('Timed out');
+
+      // When the failing tab is the visible one, the panel does show it.
+      (app as any).terminalPanel.getActiveTabId = () => 't1';
+      (app as any).reportTabError('t1', config.host, 'Timed out while waiting for handshake');
+      expect(panelCalls).toEqual([['error', 'Timed out while waiting for handshake']]);
+    } finally {
+      await (app as any).clipboard?.dispose?.();
+      await t.dispose();
+    }
+  });
+
+  test('a background tab closing does not hide the visible terminal', async () => {
+    const t = await createTestRenderer({ width: 100, height: 24 });
+    const app = new App(t.renderer);
+
+    try {
+      (app as any).connections = [];
+      (app as any).buildLayout();
+
+      const panelCalls: Array<[string, string]> = [];
+      (app as any).terminalPanel = {
+        getActiveTabId: () => 't2',
+        showError: () => {},
+        showDisconnected: () => panelCalls.push(['disconnected', '']),
+      };
+
+      const config = {
+        id: 'c1',
+        name: 'slow',
+        host: '192.168.10.46',
+        port: 22,
+        username: 'root',
+        authType: 'key' as const,
+        createdAt: '2026-11-02T00:00:00.000Z',
+      };
+      const ssh = { isConnected: () => false, getLastError: () => null, disconnect: async () => {} };
+      const altScreen = { active: false, feed: () => {}, reset: () => {} };
+      (app as any).tabs.set('t1', { term: {}, ssh, config, altScreen });
+      (app as any).tabs.set('t2', { term: {}, ssh: { ...ssh }, config, altScreen });
+
+      (app as any).reportTabClosed('t1', config.host);
+
+      expect(panelCalls).toEqual([]);
+      await t.renderOnce();
+      expect(t.captureCharFrame()).toContain('Connection closed (192.168.10.46)');
+    } finally {
+      await (app as any).clipboard?.dispose?.();
+      await t.dispose();
+    }
+  });
+});
+
 describe('App confirmation modal', () => {
   test('blocks other keys, resolves on Escape, and restores focus', async () => {
     const t = await createTestRenderer({ width: 100, height: 30 });
