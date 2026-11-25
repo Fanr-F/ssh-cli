@@ -67,4 +67,26 @@ describe('sidebar selection', () => {
       await t.dispose();
     }
   });
+
+  test('fills the dot only for connections with a live session', async () => {
+    const t = await createTestRenderer({ width: 100, height: 30 });
+    const never = connection('never');
+    // Having connected before must NOT light the dot: the dot means "live now".
+    const before = { ...connection('before'), lastConnectedAt: '2026-01-01T00:00:00.000Z' };
+    const sidebar = createSidebar(t.renderer, [never, before]);
+    t.renderer.root.add(sidebar);
+
+    try {
+      await t.renderOnce();
+      expect(t.captureCharFrame()).toContain('○ before');
+
+      sidebar.setLiveConnections([before.id]);
+      await t.renderOnce();
+      const frame = t.captureCharFrame();
+      expect(frame).toContain('● before');
+      expect(frame).toContain('○ never');
+    } finally {
+      await t.dispose();
+    }
+  });
 });

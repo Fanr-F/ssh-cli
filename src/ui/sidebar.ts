@@ -17,6 +17,12 @@ export interface SidebarAPI {
   getSelectedConnection(): ConnectionConfig | null;
   /** Patch one connection in place without resetting the current selection. */
   updateConnection(id: string, updates: Partial<ConnectionConfig>): void;
+  /**
+   * Connections with a live SSH session right now. Their dot is filled (●);
+   * every other row shows a hollow dot (○). The dot is rendered in the same
+   * colour as the row text — `SelectOption.name` has a single colour.
+   */
+  setLiveConnections(ids: Iterable<string>): void;
   /** Move selection one item down. Stops at the end – does NOT wrap. */
   selectNext(): void;
   /** Move selection one item up. Stops at the beginning – does NOT wrap. */
@@ -62,6 +68,8 @@ export function createSidebar(
   // ── Internal state ──────────────────────────────────────────────────────
 
   let items: ConnectionConfig[] = [...connections];
+  /** Connections whose SSH transport is up right now (filled dot). */
+  let liveIds = new Set<string>();
 
   // The Select renders every entry itself; keeping its height at
   // items × ITEM_LINES means it never scrolls internally (scrollOffset
@@ -108,7 +116,7 @@ export function createSidebar(
   // ── Logic ───────────────────────────────────────────────────────────────
 
   function toOption(conn: ConnectionConfig): { name: string; description: string } {
-    const dot = conn.lastConnectedAt ? '\u25CF' : '\u25CB'; // ●  ○
+    const dot = liveIds.has(conn.id) ? '\u25CF' : '\u25CB'; // ●  ○
     return {
       name: ` ${dot} ${conn.name}`,
       description: `  ${conn.username}@${conn.host}:${conn.port}`,
@@ -208,6 +216,13 @@ export function createSidebar(
       const index = items.findIndex((item) => item.id === id);
       if (index === -1) return;
       Object.assign(items[index], updates);
+      const selected = select.getSelectedIndex();
+      select.options = items.map(toOption);
+      select.setSelectedIndex(selected);
+    },
+
+    setLiveConnections(ids: Iterable<string>): void {
+      liveIds = new Set(ids);
       const selected = select.getSelectedIndex();
       select.options = items.map(toOption);
       select.setSelectedIndex(selected);

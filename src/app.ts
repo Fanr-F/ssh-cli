@@ -609,6 +609,8 @@ export class App {
     // Create the SSH connection first — the terminal's onData/onTerminalResize
     // callbacks need to reference it.
     const ssh = new SshConnection();
+    // Keep the sidebar's live dots in sync (Connecting → Connected → Disconnected).
+    ssh.on('stateChange', () => this.refreshSidebarLiveState());
 
     // Ghostty VT 终端（原生解析器）：键盘编码、粘贴、滚轮、选区、resize 全部内建
     const term = createTerminalRenderable({
@@ -888,6 +890,19 @@ export class App {
     }
   }
 
+  /**
+   * Refresh the sidebar's connection dots from the live tab map. The dot means
+   * "there is an SSH session right now", not "this connection was used before".
+   */
+  private refreshSidebarLiveState(): void {
+    if (!this.sidebar) return;
+    const live = new Set<string>();
+    for (const tab of this.tabs.values()) {
+      if (tab.ssh.isConnected()) live.add(tab.config.id);
+    }
+    this.sidebar.setLiveConnections(live);
+  }
+
   /** Restore keyboard focus after a modal closes. */
   private restoreFocus(zone: FocusZone): void {
     if (zone === 'form' && this.form) {
@@ -1004,6 +1019,7 @@ export class App {
       // `configure` subscribes before connecting because an ssh2 error with
       // no listener would kill the process.
       sftpSsh = await createSshSession(this.store, config, (ssh) => {
+        ssh.on('stateChange', () => this.refreshSidebarLiveState());
         ssh.on('error', (err: Error) => {
           logDebug(`[SFTP ERROR] ${err.message}`);
           this.statusBar.setStatus(`SFTP error: ${err.message}`, 'error');
@@ -1052,6 +1068,7 @@ export class App {
       sftpTabId = tabId;
 
       this.tabBar.addTab(tabId, tabTitle, 'sftp');
+      this.refreshSidebarLiveState();
       this.statusBar.setStatus(`SFTP connected to ${config.host}`, 'success');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to open SFTP';
