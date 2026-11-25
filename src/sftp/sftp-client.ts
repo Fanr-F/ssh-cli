@@ -158,6 +158,7 @@ export class SftpClient {
     return new Promise<void>((resolve, reject) => {
       let transferred = 0;
       let settled = false;
+      let sourceEnded = false;
 
       const settle = (err?: unknown): void => {
         if (settled) return;
@@ -180,6 +181,9 @@ export class SftpClient {
       }
       signal?.addEventListener('abort', onAbort, { once: true });
 
+      source.once('end', () => {
+        sourceEnded = true;
+      });
       source.on('data', (chunk: Buffer | string) => {
         transferred += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
         onProgress?.(transferred, total);
@@ -187,10 +191,19 @@ export class SftpClient {
       source.once('error', (err) => settle(err));
       target.once('error', (err) => settle(err));
       target.once('finish', () => settle());
-      // A write stream that closes without finishing means the remote side
-      // dropped the transfer; surface it instead of hanging forever.
+      // ssh2's SFTP write stream closes its handle from `_final` and disables
+      // `autoDestroy`; under Bun that means 'finish' never fires and
+      // `writableFinished` stays false even for a completed upload. So a close
+      // is a success once the local source has been fully read, and the real
+      // write error (`errored`) is preferred over a generic interruption — a
+      // write failure closes the stream before Node emits 'error'.
       target.once('close', () => {
-        if (!(target as Writable & { writableFinished?: boolean }).writableFinished) {
+        const errored = (target as Writable & { errored?: Error | null }).errored;
+        if (errored) {
+          settle(errored);
+        } else if (sourceEnded) {
+          settle();
+        } else {
           settle(new Error('Transfer interrupted'));
         }
       });

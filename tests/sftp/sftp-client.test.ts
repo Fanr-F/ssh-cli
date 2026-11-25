@@ -63,6 +63,70 @@ describe('SftpClient transfers', () => {
     return { sink, text: () => Buffer.concat(chunks).toString('utf-8') };
   }
 
+  /**
+   * Mirrors ssh2's SFTP write stream: `_final` closes the handle, `autoDestroy`
+   * is off and 'close' is emitted by hand. Under Bun 'finish' never fires, so
+   * `writableFinished` is false even for a completed upload.
+   */
+  class Ssh2LikeWriteStream extends Writable {
+    private readonly chunks: Buffer[] = [];
+    private written = 0;
+
+    constructor(private readonly failAfter?: number) {
+      super({ emitClose: false, autoDestroy: false });
+    }
+
+    override _write(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null) => void): void {
+      if (this.failAfter !== undefined && this.written >= this.failAfter) {
+        this.destroy();
+        cb(new Error('remote write failed'));
+        return;
+      }
+      this.chunks.push(Buffer.from(chunk));
+      this.written += chunk.length;
+      cb();
+    }
+
+    override _final(cb: (err?: Error | null) => void): void {
+      this.destroy();
+      cb();
+    }
+
+    override _destroy(err: Error | null, cb: (err?: Error | null) => void): void {
+      setTimeout(() => {
+        cb(err);
+        this.emit('close');
+      }, 0);
+    }
+
+    text(): string {
+      return Buffer.concat(this.chunks).toString('utf-8');
+    }
+  }
+
+  test('upload completes when the remote stream closes without emitting finish', async () => {
+    const dir = await tempDir();
+    const localPath = join(dir, 'a.txt');
+    await writeFile(localPath, 'ssh2 upload', 'utf-8');
+    const remote = new Ssh2LikeWriteStream();
+
+    const client = new SftpClient({ createWriteStream: () => remote } as any);
+
+    await client.upload(localPath, '/remote/a.txt');
+    expect(remote.text()).toBe('ssh2 upload');
+  });
+
+  test('upload surfaces a remote write error instead of "Transfer interrupted"', async () => {
+    const dir = await tempDir();
+    const localPath = join(dir, 'a.txt');
+    await writeFile(localPath, 'ssh2 upload', 'utf-8');
+    const remote = new Ssh2LikeWriteStream(0);
+
+    const client = new SftpClient({ createWriteStream: () => remote } as any);
+
+    await expect(client.upload(localPath, '/remote/a.txt')).rejects.toThrow('remote write failed');
+  });
+
   test('upload copies the file and reports progress', async () => {
     const dir = await tempDir();
     const localPath = join(dir, 'a.txt');
