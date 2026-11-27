@@ -1,6 +1,33 @@
 import { describe, expect, test } from 'bun:test';
-import { ClipboardController, normalizePasteText, type ClipboardPasteTarget } from '../../src/app/clipboard';
+import {
+  ClipboardController,
+  getVisibleSelectionText,
+  isVisibleInScene,
+  normalizePasteText,
+  type ClipboardPasteTarget,
+} from '../../src/app/clipboard';
 import type { StatusKind } from '../../src/ui/status-bar';
+
+type FakeNode = { visible: boolean; parent: FakeNode | null; text?: string };
+
+function node(visible: boolean, parent: FakeNode | null = null, text = ''): FakeNode {
+  return { visible, parent, text };
+}
+
+function makeSelection(renderables: FakeNode[]) {
+  let current = renderables;
+  return {
+    get selectedRenderables() {
+      return current;
+    },
+    updateSelectedRenderables(next: FakeNode[]) {
+      current = next;
+    },
+    getSelectedText() {
+      return current.map((r) => r.text).join('');
+    },
+  } as any;
+}
 
 function makeController(options: {
   writeResult?: any;
@@ -21,6 +48,25 @@ function makeController(options: {
   });
   return { controller, statuses, renders: () => renders };
 }
+
+describe('selection text', () => {
+  test('treats a hidden ancestor as invisible', () => {
+    const hiddenPanel = node(false);
+    expect(isVisibleInScene(node(true, hiddenPanel) as any)).toBe(false);
+    expect(isVisibleInScene(node(true, node(true)) as any)).toBe(true);
+  });
+
+  test('drops renderables hidden by a tab switch from the copied text', () => {
+    const visible = node(true, null, 'mysql84-community-release-el7-2.noarch.rpm');
+    const hidden = node(false, node(true), 'e, reproducible, and ');
+    const selection = makeSelection([hidden, visible]);
+
+    expect(getVisibleSelectionText(selection)).toBe(
+      'mysql84-community-release-el7-2.noarch.rpm',
+    );
+    expect(selection.selectedRenderables).toEqual([visible]);
+  });
+});
 
 describe('clipboard controller', () => {
   test('normalises CRLF and strips trailing newlines', () => {

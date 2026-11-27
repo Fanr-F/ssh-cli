@@ -1,4 +1,4 @@
-import type { ClipboardService } from '@opentui/core';
+import type { ClipboardService, Renderable, Selection } from '@opentui/core';
 import { logDebug } from '../logger';
 import type { StatusKind } from '../ui/status-bar';
 
@@ -30,6 +30,40 @@ export function normalizePasteText(bytes: Uint8Array): string {
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .replace(/\n+$/, '');
+}
+
+/**
+ * True when the renderable and every ancestor is visible.
+ *
+ * A hidden renderable keeps the last layout rectangle it had while visible, so
+ * it still falls inside a drag rectangle even though it is not drawn.
+ */
+export function isVisibleInScene(renderable: Renderable): boolean {
+  let node: Renderable | null = renderable;
+  while (node) {
+    if (!node.visible) return false;
+    node = node.parent;
+  }
+  return true;
+}
+
+/**
+ * Selected text limited to renderables that are actually on screen.
+ *
+ * OpenTUI's `Selection` merges every selectable renderable whose (possibly
+ * stale) rectangle intersects the drag. Sibling terminals in the shared
+ * terminal panel — and anything under a hidden tab or overlay — are therefore
+ * selected too, which used to leak text from another SSH session into the
+ * copied text. Dropping the hidden ones keeps copy scoped to what the user
+ * sees.
+ */
+export function getVisibleSelectionText(selection: Selection): string {
+  const selected = selection.selectedRenderables;
+  const visible = selected.filter(isVisibleInScene);
+  if (visible.length !== selected.length) {
+    selection.updateSelectedRenderables(visible);
+  }
+  return selection.getSelectedText();
 }
 
 function isCopySuccessful(

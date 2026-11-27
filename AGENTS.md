@@ -98,7 +98,7 @@ Key behaviors that are easy to break:
 ### Mouse Support
 - Mouse support enabled via `useMouse: true` in index.ts renderer config
 - **Sidebar items**: `onMouseDown` handles single-click (select) and double-click (connect)
-- **Text selection**: handled by OpenTUI; `App` listens for `CliRenderEvents.SELECTION` and copies automatically
+- **Text selection**: handled by OpenTUI; `App` listens for `CliRenderEvents.SELECTION` and copies automatically. Copy only collects renderables that are visible in the scene (`getVisibleSelectionText()` in `app/clipboard.ts`): a hidden tab/overlay keeps its last layout rectangle, so OpenTUI's own `Selection.getSelectedText()` would otherwise merge text from background terminals into the clipboard. The terminal panel additionally sets hidden tabs `selectable = false` and clears their selection (`terminal-panel.ts`)
 - **Right-click = paste**: terminal (`App.connectTo()` overrides `term.onMouseDown/onMouseUp`, keeping `forwardMouse` for other buttons), SFTP root container (command mode only), form fields (`onPasteRequest`)
 - **Help popup**: `onMouseDrag` for dragging (no onMouseDown/onMouseUp needed)
 - **Tab bar**: Double-click to close tab

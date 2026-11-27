@@ -190,6 +190,23 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
   // ── Multi-tab terminal tracking ──────────────────────────────────────
   const terminals = new Map<string, EmbeddedTerminalRenderable>();
   let activeTabId: string | null = null;
+  let panelVisible = true;
+
+  /**
+   * Only the terminal the user can see may take part in a text selection.
+   *
+   * 隐藏的终端（后台 tab 或整个面板被 SFTP 覆盖时）不会重新布局，仍保留着
+   * 隐藏前的矩形；它们都是同一个父容器的兄弟节点，OpenTUI 拖选会按矩形命中
+   * 它们，于是复制会把另一个会话的文本拼进来。把 selectable 关掉即可让拖选
+   * 跳过它们，同时清掉它们残留的高亮。
+   */
+  function syncSelectable(): void {
+    for (const [id, term] of terminals) {
+      const selectable = panelVisible && id === activeTabId;
+      if (term.selectable !== selectable) term.selectable = selectable;
+      if (!selectable && term.hasSelection()) term.onSelectionChanged(null);
+    }
+  }
 
   // ── Public API ────────────────────────────────────────────────────────
   return {
@@ -206,6 +223,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
         term.visible = false;
       }
       terminals.set(tabId, term);
+      syncSelectable();
       log.debug(`[TERMINAL PANEL] registerTerminal: terminals count now=${terminals.size}`);
     },
 
@@ -234,6 +252,7 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
       }
 
       activeTabId = tabId;
+      syncSelectable();
       showOnly(r.connected);
     },
 
@@ -294,6 +313,8 @@ export function createTerminalPanel(renderer: CliRenderer): TerminalPanelAPI {
     setVisible(visible: boolean): void {
       const r = resolve();
       if (r) r.container.visible = visible;
+      panelVisible = visible;
+      syncSelectable();
     },
   };
 }

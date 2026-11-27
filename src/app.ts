@@ -40,6 +40,7 @@ import {
 } from './keymap';
 import {
   ClipboardController,
+  getVisibleSelectionText,
   type ClipboardPasteTarget,
 } from './app/clipboard';
 import { createTerminalRenderable } from './app/terminal-tab';
@@ -278,7 +279,9 @@ export class App {
 
       let text = '';
       try {
-        text = selection.getSelectedText();
+        // 只复制屏幕上可见的 renderable：后台 tab / 隐藏浮层的 renderable 仍保留着
+        // 隐藏前的布局矩形，会被同一次拖选命中，把别的会话的文本拼进来。
+        text = getVisibleSelectionText(selection);
       } catch (err) {
         logDebug(`[COPY] getSelectedText failed: ${err}`);
       }
