@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { Box } from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
 import { createSidebar } from '../../src/ui/sidebar';
 import type { ConnectionConfig } from '../../src/types/connection';
@@ -14,6 +15,33 @@ function connection(id: string, name = id): ConnectionConfig {
     createdAt: '2026-01-01T00:00:00.000Z',
   };
 }
+
+describe('sidebar layout', () => {
+  test('keeps the vertical scrollbar on the right edge, not below the list', async () => {
+    const t = await createTestRenderer({ width: 100, height: 30 });
+    const connections = Array.from({ length: 20 }, (_, i) => connection(`c${i}`));
+    const sidebar = createSidebar(t.renderer, connections);
+    // Constrain the height (row + stretch) so the list actually scrolls.
+    t.renderer.root.add(
+      Box({ width: 30, height: 20, flexDirection: 'row' }, sidebar as any),
+    );
+
+    try {
+      await t.renderOnce();
+      const sb = t.renderer.root.findDescendantById('sidebar') as any;
+      expect(sb).toBeTruthy();
+
+      const bar = sb.verticalScrollBar;
+      expect(bar.visible).toBe(true);
+      expect(bar.screenY).toBe(sb.wrapper.screenY);
+      expect(bar.screenX).toBeGreaterThanOrEqual(sb.wrapper.screenX + sb.wrapper.width);
+      expect(bar.height).toBe(sb.wrapper.height);
+      expect(bar.width).toBeLessThanOrEqual(2);
+    } finally {
+      await t.dispose();
+    }
+  });
+});
 
 describe('sidebar selection', () => {
   test('keeps the selected connection by id after setConnections', async () => {

@@ -181,11 +181,13 @@ export function createSidebar(
       borderColor: BORDER,
       title: ' Connections ',
       titleColor: TITLE,
-      flexDirection: 'column',
       padding: 0,
       scrollY: true,
       scrollX: false,
       stickyScroll: false,
+      // 不要给 ScrollBox 根节点设置 flexDirection：内部布局是 row（wrapper + 右侧
+      // 竖向滚动条），写成 column 会把滚动条挤到内容下方。列表方向由
+      // contentOptions 控制。
       contentOptions: { flexDirection: 'column' },
     },
     select,
